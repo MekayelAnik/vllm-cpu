@@ -1,0 +1,65 @@
+# Git
+.git
+.gitignore
+.github
+.claude
+# Python
+__pycache__
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+venv/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Documentation
+*.md
+!README.md
+!*_README.md
+docs/
+
+# Test and CI
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+
+# Docker
+Dockerfile
+.dockerignore
+docker-build.sh
+docker-experimental/
+
+# Build artifacts
+*.whl
+package_metadata/
+
+# Temporary
+*.log
+*.tmp
+.DS_Store
+
+# Claude Code
+.claude/

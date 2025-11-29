@@ -1,0 +1,69 @@
+{
+  "builds": {
+    "vllm-cpu": {
+      "description": "vLLM CPU inference engine (without AVX512 support, Runs on both x86_64 and Arm64 Processors)",
+      "package_name": "vllm-cpu",
+      "readme_file": "noavx512_README.md",
+      "flags": {
+        "disable_avx512": true,
+        "enable_avx512vnni": false,
+        "enable_avx512bf16": false,
+        "enable_amxbf16": false
+      },
+      "platforms": ["x86_64", "aarch64"],
+      "keywords": ["vllm", "llm", "inference", "cpu", "noavx512"]
+    },
+    "vllm-cpu-avx512": {
+      "description": "vLLM CPU inference engine (AVX512 optimized)",
+      "package_name": "vllm-cpu-avx512",
+      "readme_file": "avx512_README.md",
+      "flags": {
+        "disable_avx512": false,
+        "enable_avx512vnni": false,
+        "enable_avx512bf16": false,
+        "enable_amxbf16": false
+      },
+      "platforms": ["x86_64"],
+      "keywords": ["vllm", "llm", "inference", "cpu", "avx512"]
+    },
+    "vllm-cpu-avx512vnni": {
+      "description": "vLLM CPU inference engine (AVX512 + VNNI optimized)",
+      "package_name": "vllm-cpu-avx512vnni",
+      "readme_file": "avx512vnni_README.md",
+      "flags": {
+        "disable_avx512": false,
+        "enable_avx512vnni": true,
+        "enable_avx512bf16": false,
+        "enable_amxbf16": false
+      },
+      "platforms": ["x86_64"],
+      "keywords": ["vllm", "llm", "inference", "cpu", "avx512", "vnni"]
+    },
+    "vllm-cpu-avx512bf16": {
+      "description": "vLLM CPU inference engine (AVX512 + VNNI + BF16 optimized)",
+      "package_name": "vllm-cpu-avx512bf16",
+      "readme_file": "avx512bf16_README.md",
+      "flags": {
+        "disable_avx512": false,
+        "enable_avx512vnni": true,
+        "enable_avx512bf16": true,
+        "enable_amxbf16": false
+      },
+      "platforms": ["x86_64"],
+      "keywords": ["vllm", "llm", "inference", "cpu", "avx512", "vnni", "bf16"]
+    },
+    "vllm-cpu-amxbf16": {
+      "description": "vLLM CPU inference engine (AVX512 + VNNI + BF16 + AMX optimized)",
+      "package_name": "vllm-cpu-amxbf16",
+      "readme_file": "amxbf16_README.md",
+      "flags": {
+        "disable_avx512": false,
+        "enable_avx512vnni": true,
+        "enable_avx512bf16": true,
+        "enable_amxbf16": true
+      },
+      "platforms": ["x86_64"],
+      "keywords": ["vllm", "llm", "inference", "cpu", "avx512", "vnni", "bf16", "amx"]
+    }
+  }
+}

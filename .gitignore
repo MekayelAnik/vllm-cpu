@@ -1,0 +1,22 @@
+build_logs
+resources/build_data
+resources/build-timestamp
+resources/tag
+Dockerfile.*
+dist/
+*.whl
+.vs
+__pycache__/
+*.pyc
+*.pyo
+.env
+package_metadata/
+cpu_detect/dist/
+cpu_detect/build/
+cpu_detect/*.egg-info/
+*.log*
+*backup*
+.env
+.claude/
+# Build workspace (vLLM repository and build artifacts)
+build/

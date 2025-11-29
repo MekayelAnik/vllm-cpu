@@ -1,0 +1,101 @@
+[project]
+name = "vllm-cpu-builder"
+version = "1.0.0"
+description = "Build tooling for creating CPU-optimized vLLM wheel packages"
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "GPL-3.0-or-later"}
+authors = [
+    {name = "vLLM CPU Builder Team"},
+]
+keywords = ["vllm", "llm", "inference", "cpu", "wheel", "builder", "pypi"]
+
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: GNU General Public License v3 or later (GPLv3+)",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development :: Build Tools",
+    "Topic :: System :: Software Distribution",
+]
+
+# No dependencies for the main scripts (they use standard library)
+dependencies = []
+
+[project.optional-dependencies]
+# Development and publishing tools
+dev = [
+    "twine>=5.0.0",
+    "build>=1.0.0",
+    "wheel>=0.42.0",
+]
+
+# Tools for testing the built wheels
+test = [
+    "pytest>=7.0.0",
+    "pytest-asyncio>=0.21.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/vllm-project/vllm"
+Documentation = "https://docs.vllm.ai/"
+Repository = "https://github.com/yourusername/vllm-cpu"
+"Bug Tracker" = "https://github.com/yourusername/vllm-cpu/issues"
+"vLLM Upstream" = "https://github.com/vllm-project/vllm"
+
+[project.scripts]
+# Helper script for generating package metadata
+vllm-cpu-generate-metadata = "generate_package_metadata:main"
+
+[tool.setuptools]
+# This is not a Python package to be installed, it's a build tool repository
+# No py-modules or packages to install
+
+[tool.ruff]
+# Linting configuration for Python scripts
+line-length = 100
+target-version = "py39"
+
+[tool.ruff.lint]
+select = [
+    "E",   # pycodestyle errors
+    "W",   # pycodestyle warnings
+    "F",   # pyflakes
+    "I",   # isort
+    "B",   # flake8-bugbear
+    "C4",  # flake8-comprehensions
+    "UP",  # pyupgrade
+]
+ignore = [
+    "E501",  # line too long (handled by formatter)
+    "B008",  # do not perform function calls in argument defaults
+]
+
+[tool.ruff.lint.isort]
+known-first-party = ["generate_package_metadata"]
+
+[tool.mypy]
+# Type checking configuration
+python_version = "3.9"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = false
+disallow_incomplete_defs = false
+check_untyped_defs = true
+no_implicit_optional = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+warn_no_return = true
+strict_equality = true
+
+[[tool.mypy.overrides]]
+module = "generate_package_metadata"
+disallow_untyped_defs = false
+
+# Build configuration (not for this repo, but included for completeness)
+[build-system]
+requires = ["setuptools>=77.0.0", "wheel"]
+build-backend = "setuptools.build_meta"

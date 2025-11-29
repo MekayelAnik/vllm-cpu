@@ -1,0 +1,343 @@
+name: Build Multi-Arch vLLM CPU Wheels
+
+on:
+  workflow_dispatch:
+    inputs:
+      vllm_version:
+        description: 'vLLM version to build (e.g., 0.11.2)'
+        required: true
+        type: string
+      python_versions:
+        description: 'Python versions (e.g., 3.10-3.13 or 3.12)'
+        required: false
+        type: string
+        default: '3.12'
+      variants:
+        description: 'Variants to build (noavx512, avx512, avx512vnni, avx512bf16, amxbf16, all)'
+        required: false
+        type: string
+        default: 'noavx512'
+      platforms:
+        description: 'Platforms to build'
+        required: true
+        type: choice
+        options:
+          - 'amd64'
+          - 'arm64'
+          - 'both'
+        default: 'both'
+      skip_pypi:
+        description: 'Skip PyPI publishing'
+        required: false
+        type: boolean
+        default: false
+      skip_github_release:
+        description: 'Skip GitHub release creation'
+        required: false
+        type: boolean
+        default: false
+      dry_run:
+        description: 'Dry run (no actual publish)'
+        required: false
+        type: boolean
+        default: false
+
+jobs:
+  # Build on AMD64 (x86_64)
+  build-amd64:
+    name: Build AMD64 (${{ github.event.inputs.variants }})
+    if: github.event.inputs.platforms == 'amd64' || github.event.inputs.platforms == 'both'
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install uv
+        run: |
+          curl -LsSf https://astral.sh/uv/install.sh | sh
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential gcc g++ \
+            cmake ninja-build ccache \
+            libnuma-dev numactl jq
+
+      - name: Cache build artifacts
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/ccache
+            ~/.cache/uv
+          key: amd64-${{ github.event.inputs.variants }}-${{ github.event.inputs.vllm_version }}
+          restore-keys: amd64-
+
+      - name: Build wheels
+        run: |
+          ./build_wheels.sh \
+            --variant="${{ github.event.inputs.variants }}" \
+            --vllm-versions="${{ github.event.inputs.vllm_version }}" \
+            --python-versions="${{ github.event.inputs.python_versions }}" \
+            --output-dir=dist
+
+      - name: List built wheels
+        run: |
+          echo "=== AMD64 wheels ==="
+          find dist -name "*.whl" -exec ls -lh {} \;
+
+      - name: Upload wheel artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: wheels-amd64
+          path: dist/**/*.whl
+          retention-days: 30
+          if-no-files-found: error
+
+  # Build on ARM64 (aarch64) - Native runner, no QEMU
+  build-arm64:
+    name: Build ARM64 (vllm-cpu only)
+    if: github.event.inputs.platforms == 'arm64' || github.event.inputs.platforms == 'both'
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 300
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install uv
+        run: |
+          curl -LsSf https://astral.sh/uv/install.sh | sh
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential gcc g++ \
+            cmake ninja-build ccache \
+            libnuma-dev numactl jq
+
+      - name: Cache build artifacts
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/ccache
+            ~/.cache/uv
+          key: arm64-vllm-cpu-${{ github.event.inputs.vllm_version }}
+          restore-keys: arm64-
+
+      - name: Build wheels
+        run: |
+          # ARM64 only supports vllm-cpu (noavx512) variant
+          ./build_wheels.sh \
+            --variant=noavx512 \
+            --vllm-versions="${{ github.event.inputs.vllm_version }}" \
+            --python-versions="${{ github.event.inputs.python_versions }}" \
+            --output-dir=dist
+
+      - name: List built wheels
+        run: |
+          echo "=== ARM64 wheels ==="
+          find dist -name "*.whl" -exec ls -lh {} \;
+
+      - name: Upload wheel artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: wheels-arm64
+          path: dist/**/*.whl
+          retention-days: 30
+          if-no-files-found: error
+
+  # Publish all wheels to PyPI
+  publish:
+    name: Publish to PyPI
+    needs: [build-amd64, build-arm64]
+    if: |
+      always() &&
+      github.event.inputs.skip_pypi != 'true' &&
+      (needs.build-amd64.result == 'success' || needs.build-amd64.result == 'skipped') &&
+      (needs.build-arm64.result == 'success' || needs.build-arm64.result == 'skipped')
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download AMD64 wheels
+        if: needs.build-amd64.result == 'success'
+        uses: actions/download-artifact@v4
+        with:
+          name: wheels-amd64
+          path: dist/
+
+      - name: Download ARM64 wheels
+        if: needs.build-arm64.result == 'success'
+        uses: actions/download-artifact@v4
+        with:
+          name: wheels-arm64
+          path: dist/
+
+      - name: List all wheels
+        run: |
+          echo "=========================================="
+          echo "All wheels to publish:"
+          echo "=========================================="
+          find dist -name "*.whl" -exec ls -lh {} \;
+          echo ""
+          echo "Total: $(find dist -name '*.whl' | wc -l) wheels"
+
+      - name: Install twine
+        run: pip install twine
+
+      - name: Validate wheels
+        run: |
+          find dist -name "*.whl" -exec twine check {} \;
+
+      - name: Publish to PyPI
+        if: github.event.inputs.dry_run != 'true'
+        run: |
+          # Upload each wheel with its variant-specific token
+          for wheel in $(find dist -name "*.whl"); do
+            basename=$(basename "$wheel")
+            echo "Uploading: $basename"
+
+            # Determine which token to use based on package name
+            if [[ "$basename" == vllm_cpu_amxbf16-* ]]; then
+              TOKEN="$PYPI_TOKEN_AMXBF16"
+            elif [[ "$basename" == vllm_cpu_avx512bf16-* ]]; then
+              TOKEN="$PYPI_TOKEN_AVX512BF16"
+            elif [[ "$basename" == vllm_cpu_avx512vnni-* ]]; then
+              TOKEN="$PYPI_TOKEN_AVX512VNNI"
+            elif [[ "$basename" == vllm_cpu_avx512-* ]]; then
+              TOKEN="$PYPI_TOKEN_AVX512"
+            else
+              # vllm_cpu (base package)
+              TOKEN="$PYPI_TOKEN_CPU"
+            fi
+
+            # Fallback to generic token if variant-specific not set
+            if [[ -z "$TOKEN" ]]; then
+              TOKEN="$PYPI_TOKEN"
+            fi
+
+            if [[ -z "$TOKEN" ]]; then
+              echo "ERROR: No token found for $basename"
+              exit 1
+            fi
+
+            twine upload \
+              --username __token__ \
+              --password "$TOKEN" \
+              --skip-existing \
+              "$wheel"
+          done
+        env:
+          PYPI_TOKEN: ${{ secrets.PYPI_API_TOKEN }}
+          PYPI_TOKEN_CPU: ${{ secrets.PYPI_TOKEN_CPU }}
+          PYPI_TOKEN_AVX512: ${{ secrets.PYPI_TOKEN_AVX512 }}
+          PYPI_TOKEN_AVX512VNNI: ${{ secrets.PYPI_TOKEN_AVX512VNNI }}
+          PYPI_TOKEN_AVX512BF16: ${{ secrets.PYPI_TOKEN_AVX512BF16 }}
+          PYPI_TOKEN_AMXBF16: ${{ secrets.PYPI_TOKEN_AMXBF16 }}
+
+      - name: Dry run - show what would be published
+        if: github.event.inputs.dry_run == 'true'
+        run: |
+          echo "DRY RUN - Would publish these wheels:"
+          find dist -name "*.whl" -exec basename {} \;
+
+  # Create GitHub Release
+  github-release:
+    name: Create GitHub Release
+    needs: [build-amd64, build-arm64, publish]
+    if: |
+      always() &&
+      github.event.inputs.skip_github_release != 'true' &&
+      github.event.inputs.dry_run != 'true' &&
+      (needs.build-amd64.result == 'success' || needs.build-amd64.result == 'skipped') &&
+      (needs.build-arm64.result == 'success' || needs.build-arm64.result == 'skipped')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download all wheels
+        uses: actions/download-artifact@v4
+        with:
+          path: dist/
+          pattern: wheels-*
+          merge-multiple: true
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ github.event.inputs.vllm_version }}
+          name: vLLM CPU v${{ github.event.inputs.vllm_version }}
+          files: dist/**/*.whl
+          body: |
+            ## vLLM CPU Wheels v${{ github.event.inputs.vllm_version }}
+
+            ### Packages
+            - `vllm-cpu` - Base build (x86_64 + ARM64)
+            - `vllm-cpu-avx512` - AVX512 optimized (x86_64)
+            - `vllm-cpu-avx512vnni` - AVX512 + VNNI (x86_64)
+            - `vllm-cpu-avx512bf16` - AVX512 + BF16 (x86_64)
+            - `vllm-cpu-amxbf16` - AMX optimized (x86_64)
+
+            ### Installation
+            ```bash
+            pip install vllm-cpu==${{ github.event.inputs.vllm_version }}
+            ```
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # Summary
+  summary:
+    name: Build Summary
+    needs: [build-amd64, build-arm64, publish, github-release]
+    if: always()
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Summary
+        run: |
+          echo "=========================================="
+          echo "Multi-Arch Build Summary"
+          echo "=========================================="
+          echo "vLLM Version: ${{ github.event.inputs.vllm_version }}"
+          echo "Python: ${{ github.event.inputs.python_versions }}"
+          echo "Platforms: ${{ github.event.inputs.platforms }}"
+          echo "Variants: ${{ github.event.inputs.variants }}"
+          echo ""
+          echo "Build Results:"
+          echo "  AMD64: ${{ needs.build-amd64.result }}"
+          echo "  ARM64: ${{ needs.build-arm64.result }}"
+          echo ""
+          echo "Publish: ${{ needs.publish.result }}"
+          echo "GitHub Release: ${{ needs.github-release.result }}"
+          echo "=========================================="
+
+          # Fail if builds failed
+          if [[ "${{ needs.build-amd64.result }}" == "failure" ]] || [[ "${{ needs.build-arm64.result }}" == "failure" ]]; then
+            echo "::error::One or more builds failed"
+            exit 1
+          fi
