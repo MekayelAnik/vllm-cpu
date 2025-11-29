@@ -22,10 +22,10 @@ on:
         required: true
         type: choice
         options:
-          - 'amd64'
-          - 'arm64'
-          - 'both'
-        default: 'both'
+          - 'linux/amd64'
+          - 'linux/arm64'
+          - 'all'
+        default: 'all'
       skip_pypi:
         description: 'Skip PyPI publishing'
         required: false
@@ -46,7 +46,7 @@ jobs:
   # Build on AMD64 (x86_64)
   build-amd64:
     name: Build AMD64 (${{ github.event.inputs.variants }})
-    if: github.event.inputs.platforms == 'amd64' || github.event.inputs.platforms == 'both'
+    if: github.event.inputs.platforms == 'linux/amd64' || github.event.inputs.platforms == 'all'
     runs-on: ubuntu-latest
     timeout-minutes: 240
 
@@ -92,20 +92,32 @@ jobs:
       - name: List built wheels
         run: |
           echo "=== AMD64 wheels ==="
-          find dist -name "*.whl" -exec ls -lh {} \;
+          mkdir -p dist/linux_amd64
+          if find dist -name "*.whl" 2>/dev/null | grep -q .; then
+            find dist -name "*.whl" -exec ls -lh {} \;
+            echo ""
+            echo "Directory structure:"
+            ls -laR dist/
+          else
+            echo "ERROR: No wheels found in dist/"
+            ls -laR dist/ 2>/dev/null || echo "dist/ directory is empty or doesn't exist"
+            exit 1
+          fi
 
       - name: Upload wheel artifacts
         uses: actions/upload-artifact@v4
         with:
           name: wheels-amd64
-          path: dist/**/*.whl
+          path: |
+            dist/**/*.whl
+            dist/*.whl
           retention-days: 30
           if-no-files-found: error
 
   # Build on ARM64 (aarch64) - Native runner, no QEMU
   build-arm64:
     name: Build ARM64 (vllm-cpu only)
-    if: github.event.inputs.platforms == 'arm64' || github.event.inputs.platforms == 'both'
+    if: github.event.inputs.platforms == 'linux/arm64' || github.event.inputs.platforms == 'all'
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 300
 
@@ -152,13 +164,25 @@ jobs:
       - name: List built wheels
         run: |
           echo "=== ARM64 wheels ==="
-          find dist -name "*.whl" -exec ls -lh {} \;
+          mkdir -p dist/linux_arm64
+          if find dist -name "*.whl" 2>/dev/null | grep -q .; then
+            find dist -name "*.whl" -exec ls -lh {} \;
+            echo ""
+            echo "Directory structure:"
+            ls -laR dist/
+          else
+            echo "ERROR: No wheels found in dist/"
+            ls -laR dist/ 2>/dev/null || echo "dist/ directory is empty or doesn't exist"
+            exit 1
+          fi
 
       - name: Upload wheel artifacts
         uses: actions/upload-artifact@v4
         with:
           name: wheels-arm64
-          path: dist/**/*.whl
+          path: |
+            dist/**/*.whl
+            dist/*.whl
           retention-days: 30
           if-no-files-found: error
 
@@ -197,22 +221,28 @@ jobs:
           echo "=========================================="
           echo "All wheels to publish:"
           echo "=========================================="
-          find dist -name "*.whl" -exec ls -lh {} \;
+          mkdir -p dist
+          find dist -name "*.whl" -exec ls -lh {} \; || echo "No wheels found"
           echo ""
-          echo "Total: $(find dist -name '*.whl' | wc -l) wheels"
+          echo "Total: $(find dist -name '*.whl' 2>/dev/null | wc -l) wheels"
 
       - name: Install twine
         run: pip install twine
 
       - name: Validate wheels
         run: |
-          find dist -name "*.whl" -exec twine check {} \;
+          if find dist -name "*.whl" 2>/dev/null | grep -q .; then
+            find dist -name "*.whl" -exec twine check {} \;
+          else
+            echo "No wheels found to validate"
+            exit 1
+          fi
 
       - name: Publish to PyPI
         if: github.event.inputs.dry_run != 'true'
         run: |
           # Upload each wheel with its variant-specific token
-          for wheel in $(find dist -name "*.whl"); do
+          for wheel in $(find dist -name "*.whl" 2>/dev/null); do
             basename=$(basename "$wheel")
             echo "Uploading: $basename"
 
@@ -258,7 +288,7 @@ jobs:
         if: github.event.inputs.dry_run == 'true'
         run: |
           echo "DRY RUN - Would publish these wheels:"
-          find dist -name "*.whl" -exec basename {} \;
+          find dist -name "*.whl" -exec basename {} \; 2>/dev/null || echo "No wheels found"
 
   # Create GitHub Release
   github-release:
