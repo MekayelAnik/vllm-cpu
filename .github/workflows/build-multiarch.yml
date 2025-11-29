@@ -78,7 +78,7 @@ jobs:
           path: |
             ~/.cache/ccache
             ~/.cache/uv
-          key: amd64-${{ github.event.inputs.variants }}-${{ github.event.inputs.vllm_version }}
+          key: amd64-${{ github.event.inputs.variants }}-${{ hashFiles('build_config.json') }}
           restore-keys: amd64-
 
       - name: Build wheels
@@ -137,7 +137,7 @@ jobs:
           path: |
             ~/.cache/ccache
             ~/.cache/uv
-          key: arm64-vllm-cpu-${{ github.event.inputs.vllm_version }}
+          key: arm64-vllm-cpu-${{ hashFiles('build_config.json') }}
           restore-keys: arm64-
 
       - name: Build wheels
