@@ -854,6 +854,10 @@ parse_args() {
                 ;;
             --output-dir=*)
                 OUTPUT_DIR="${1#*=}"
+                # Convert to absolute path to avoid issues when cd'ing into build directories
+                if [[ "$OUTPUT_DIR" != /* ]]; then
+                    OUTPUT_DIR="$(pwd)/$OUTPUT_DIR"
+                fi
                 shift
                 ;;
             --max-jobs=*)
