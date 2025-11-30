@@ -1587,8 +1587,9 @@ main() {
             fi
 
             if [[ ${#py_versions_for_vllm[@]} -eq 0 ]]; then
-                log_warning "No supported Python versions for vLLM $vllm_ver - skipping"
-                continue
+                log_error "No supported Python versions found for vLLM $vllm_ver"
+                log_error "Auto-detection may have failed. Try specifying versions manually: --python-versions=3.10-3.13"
+                exit 1
             fi
             log_info "Python versions for vLLM $vllm_ver: ${py_versions_for_vllm[*]}"
         else
@@ -1655,7 +1656,9 @@ main() {
         log_info "  $OUTPUT_DIR/linux_amd64/*.whl  (x86_64)"
         log_info "  $OUTPUT_DIR/linux_arm64/*.whl  (aarch64)"
     else
-        log_warning "No wheels found in output directory"
+        log_error "No wheels found in output directory!"
+        log_error "Build failed - check logs above for errors"
+        exit 1
     fi
 }
 
