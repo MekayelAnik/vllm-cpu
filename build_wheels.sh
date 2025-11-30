@@ -348,7 +348,7 @@ cleanup_after_wheel() {
 
     if [[ $DRY_RUN -eq 1 ]]; then
         log_info "[DRY RUN] Would clean up:"
-        log_info "  - Virtual environment: $WORKSPACE/venv/"
+        log_info "  - Virtual environments: $WORKSPACE/venv-*/"
         log_info "  - CMake build artifacts: $WORKSPACE/vllm/build/"
         log_info "  - Egg-info directories: $WORKSPACE/vllm/*.egg-info/"
         log_info "  - Python cache: $WORKSPACE/vllm/__pycache__/"
@@ -370,11 +370,14 @@ cleanup_after_wheel() {
     local disk_before
     disk_before=$(du -sb "$WORKSPACE" 2>/dev/null | cut -f1)
 
-    # 1. Remove virtual environment (will be recreated for next build if needed)
-    if [[ -d "venv" ]]; then
-        log_info "Removing virtual environment..."
-        rm -rf venv/ || log_warning "Failed to remove venv/"
-    fi
+    # 1. Remove virtual environments for all Python versions (will be recreated for next build)
+    # Note: venvs are named venv-3.10, venv-3.11, etc.
+    for venv_dir in venv-* venv; do
+        if [[ -d "$venv_dir" ]]; then
+            log_info "Removing virtual environment: $venv_dir..."
+            rm -rf "$venv_dir" || log_warning "Failed to remove $venv_dir/"
+        fi
+    done
 
     # 2. Remove CMake build artifacts (largest space consumer: ~125MB)
     if [[ -d "vllm/build" ]]; then
@@ -1115,17 +1118,21 @@ build_variant() {
     fi
 
     # Set up virtual environment (shared across all variants)
-    log_info "Creating build environment..."
-    local venv_path="$WORKSPACE/venv"
+    log_info "Creating build environment for Python $PYTHON_VERSION..."
+    local venv_path="$WORKSPACE/venv-$PYTHON_VERSION"  # Separate venv per Python version
     if [[ ! -d "$venv_path" ]] || [[ $DRY_RUN -eq 1 ]]; then
         if [[ $DRY_RUN -eq 1 ]]; then
             log_info "[DRY RUN] Would execute: uv venv --python $PYTHON_VERSION $venv_path"
         else
+            log_info "Creating virtual environment with Python $PYTHON_VERSION..."
             if ! uv venv --python "$PYTHON_VERSION" "$venv_path"; then
-                log_error "Failed to create virtual environment"
+                log_error "Failed to create virtual environment for Python $PYTHON_VERSION"
+                log_error "Make sure Python $PYTHON_VERSION is available"
                 exit 1
             fi
         fi
+    else
+        log_info "Reusing existing virtual environment: $venv_path"
     fi
 
     # shellcheck source=/dev/null
@@ -1136,6 +1143,9 @@ build_variant() {
             log_error "Failed to activate virtual environment"
             exit 1
         fi
+        # Log the actual Python version being used
+        log_info "Activated Python: $(python --version 2>&1)"
+        log_info "Python path: $(which python)"
     fi
 
     # Install build dependencies (including setuptools-scm required by setup.py)
@@ -1639,12 +1649,8 @@ main() {
             log_info "└────────────────────────────────────────┘"
             PYTHON_VERSION="$py_ver"
 
-            # Delete existing venv to force recreation with new Python version
-            # (This is a safety measure; per-wheel cleanup should have already removed it)
-            if [[ -d "$WORKSPACE/venv" ]]; then
-                log_info "Removing existing venv for Python version switch..."
-                rm -rf "$WORKSPACE/venv"
-            fi
+            # Note: Each Python version uses its own venv (venv-3.10, venv-3.11, etc.)
+            # so no need to remove existing venv - it will be reused or created as needed
 
             # Build variant(s)
             if [[ -n "$VARIANT" ]]; then

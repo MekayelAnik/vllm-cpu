@@ -242,11 +242,34 @@ jobs:
         run: |
           # Use test_and_publish.sh with --skip-build to verify and publish existing wheels
           # The script handles wheel verification, token selection, and upload
+
+          # Detect Python versions from existing wheels
+          echo "Detecting Python versions from built wheels..."
+          WHEEL_PY_VERSIONS=$(find dist -name "*.whl" -type f | sed -n 's/.*-cp\([0-9]*\)-cp.*/\1/p' | sort -u | while read v; do echo "3.${v#3}"; done | tr '\n' ',' | sed 's/,$//')
+          echo "Detected Python versions from wheels: $WHEEL_PY_VERSIONS"
+
+          # Detect platforms from existing wheels
+          echo "Detecting platforms from built wheels..."
+          WHEEL_PLATFORMS=""
+          if find dist -name "*aarch64*.whl" -type f | grep -q .; then
+            WHEEL_PLATFORMS="linux/arm64"
+          fi
+          if find dist -name "*x86_64*.whl" -type f | grep -q .; then
+            if [[ -n "$WHEEL_PLATFORMS" ]]; then
+              WHEEL_PLATFORMS="all"
+            else
+              WHEEL_PLATFORMS="linux/amd64"
+            fi
+          fi
+          echo "Detected platforms from wheels: ${WHEEL_PLATFORMS:-all}"
+
           ./test_and_publish.sh \
             --skip-build \
             --skip-github \
             --variant="${{ github.event.inputs.variants }}" \
             --vllm-versions="${{ github.event.inputs.vllm_version }}" \
+            --python-versions="${WHEEL_PY_VERSIONS:-auto}" \
+            --platform="${WHEEL_PLATFORMS:-all}" \
             --dist-dir=dist
         env:
           # Variant-specific tokens (one per PyPI package)
@@ -262,12 +285,33 @@ jobs:
         if: github.event.inputs.dry_run == 'true'
         run: |
           echo "DRY RUN - Verifying wheels without publishing:"
+
+          # Detect Python versions from existing wheels
+          WHEEL_PY_VERSIONS=$(find dist -name "*.whl" -type f | sed -n 's/.*-cp\([0-9]*\)-cp.*/\1/p' | sort -u | while read v; do echo "3.${v#3}"; done | tr '\n' ',' | sed 's/,$//')
+          echo "Detected Python versions from wheels: $WHEEL_PY_VERSIONS"
+
+          # Detect platforms from existing wheels
+          WHEEL_PLATFORMS=""
+          if find dist -name "*aarch64*.whl" -type f | grep -q .; then
+            WHEEL_PLATFORMS="linux/arm64"
+          fi
+          if find dist -name "*x86_64*.whl" -type f | grep -q .; then
+            if [[ -n "$WHEEL_PLATFORMS" ]]; then
+              WHEEL_PLATFORMS="all"
+            else
+              WHEEL_PLATFORMS="linux/amd64"
+            fi
+          fi
+          echo "Detected platforms from wheels: ${WHEEL_PLATFORMS:-all}"
+
           ./test_and_publish.sh \
             --skip-build \
             --skip-github \
             --dry-run \
             --variant="${{ github.event.inputs.variants }}" \
             --vllm-versions="${{ github.event.inputs.vllm_version }}" \
+            --python-versions="${WHEEL_PY_VERSIONS:-auto}" \
+            --platform="${WHEEL_PLATFORMS:-all}" \
             --dist-dir=dist
 
   # Create GitHub Release
