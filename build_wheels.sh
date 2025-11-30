@@ -839,9 +839,9 @@ parse_args() {
                 ;;
             --python-version=*|--python-versions=*)
                 local versions_input="${1#*=}"
-                # Auto-detect if it's a single version, range, or comma-separated list
-                if [[ "$versions_input" == *","* ]] || [[ "$versions_input" == *"-"* ]]; then
-                    # Multiple versions or range
+                # Auto-detect if it's auto, a single version, range, or comma-separated list
+                if [[ "$versions_input" == "auto" ]] || [[ "$versions_input" == *","* ]] || [[ "$versions_input" == *"-"* ]]; then
+                    # Auto mode, multiple versions, or range - use parse_python_versions
                     parse_python_versions "$versions_input"
                 else
                     # Single version
