@@ -1433,6 +1433,7 @@ build_variant() {
 
         # Copy wheel to platform-based output directory
         # Structure: dist/linux_amd64/ or dist/linux_arm64/
+        log_info "Copying wheel to output directory: $final_output_dir"
         if ! mkdir -p "$final_output_dir"; then
             log_error "Failed to create output directory: $final_output_dir"
             exit 1
@@ -1443,15 +1444,22 @@ build_variant() {
         local wheels=("$wheel_dir"/*.whl)
         shopt -u nullglob
 
+        log_info "Found ${#wheels[@]} wheel(s) in $wheel_dir"
         if [[ ${#wheels[@]} -eq 0 ]]; then
             log_error "No wheels found in $wheel_dir"
+            log_error "Listing $wheel_dir contents:"
+            ls -la "$wheel_dir" 2>/dev/null || log_error "Directory does not exist"
             exit 1
         fi
 
-        if ! cp "${wheels[@]}" "$final_output_dir/"; then
+        log_info "Copying: ${wheels[*]}"
+        if ! cp -v "${wheels[@]}" "$final_output_dir/"; then
             log_error "Failed to copy wheels to output directory"
             exit 1
         fi
+
+        log_info "Verifying wheel in output directory..."
+        ls -la "$final_output_dir"/*.whl || log_error "Wheel not found in output after copy!"
 
         log_success "Built wheel for $variant → $final_output_dir"
     fi
