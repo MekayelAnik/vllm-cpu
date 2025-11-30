@@ -54,23 +54,19 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
+      - name: Install system dependencies and Python
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            python3 python3-pip python3-venv \
+            build-essential gcc g++ \
+            cmake ninja-build ccache \
+            libnuma-dev numactl jq
 
       - name: Install uv
         run: |
           curl -LsSf https://astral.sh/uv/install.sh | sh
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
-
-      - name: Install system dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            build-essential gcc g++ \
-            cmake ninja-build ccache \
-            libnuma-dev numactl jq
 
       - name: Cache build artifacts
         uses: actions/cache@v4
@@ -126,23 +122,19 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
+      - name: Install system dependencies and Python
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            python3 python3-pip python3-venv \
+            build-essential gcc g++ \
+            cmake ninja-build ccache \
+            libnuma-dev numactl jq
 
       - name: Install uv
         run: |
           curl -LsSf https://astral.sh/uv/install.sh | sh
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
-
-      - name: Install system dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            build-essential gcc g++ \
-            cmake ninja-build ccache \
-            libnuma-dev numactl jq
 
       - name: Cache build artifacts
         uses: actions/cache@v4
@@ -204,15 +196,11 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
-
       - name: Install dependencies
         run: |
-          pip install twine
-          sudo apt-get update && sudo apt-get install -y jq unzip
+          sudo apt-get update
+          sudo apt-get install -y python3 python3-pip jq unzip
+          pip3 install twine
 
       - name: Download AMD64 wheels
         if: needs.build-amd64.result == 'success'
