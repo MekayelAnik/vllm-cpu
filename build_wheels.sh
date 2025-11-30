@@ -714,22 +714,13 @@ get_auto_python_versions() {
         fi
     fi
 
-    # If fetch failed, use hardcoded fallback based on known vLLM history
+    # If fetch failed, error out - we need accurate Python version info
     if [[ -z "$requires_python" ]]; then
-        log_warning "Could not fetch requires-python for vLLM $vllm_ver from GitHub, using fallback"
-        # Parse vLLM version for fallback logic
-        local major minor patch
-        IFS='.' read -r major minor patch _ <<< "$vllm_ver"
-        patch="${patch:-0}"
-
-        # Fallback: Python 3.13 added in 0.10.2
-        if [[ "$major" -eq 0 ]] && [[ "$minor" -lt 10 ]]; then
-            requires_python=">=3.10,<3.13"
-        elif [[ "$major" -eq 0 ]] && [[ "$minor" -eq 10 ]] && [[ "$patch" -lt 2 ]]; then
-            requires_python=">=3.10,<3.13"
-        else
-            requires_python=">=3.10,<3.14"  # Default for newer versions
-        fi
+        log_error "Could not fetch requires-python for vLLM $vllm_ver from GitHub"
+        log_error "URL attempted: $pyproject_url"
+        log_error "Please check network connectivity or specify --python-versions explicitly"
+        echo ""  # Return empty to signal failure
+        return 1
     fi
 
     log_info "vLLM $vllm_ver requires-python: $requires_python"
@@ -755,9 +746,14 @@ get_auto_python_versions() {
         max_py="3.$((tmp_minor + 1))"
     fi
 
-    # Default min/max if not specified
-    min_py="${min_py:-3.10}"
-    max_py="${max_py:-3.14}"  # Reasonable default upper limit
+    # Validate we got both min and max
+    if [[ -z "$min_py" ]]; then
+        log_error "Could not parse minimum Python version from: $requires_python"
+        echo ""
+        return 1
+    fi
+    # If no max specified, use a reasonable upper bound (current Python + 1)
+    max_py="${max_py:-3.15}"
 
     local min_minor="${min_py#*.}"
     local max_minor="${max_py#*.}"
