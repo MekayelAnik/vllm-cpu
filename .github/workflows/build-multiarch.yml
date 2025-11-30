@@ -149,6 +149,8 @@ jobs:
         run: |
           # ARM64 only supports vllm-cpu (noavx512) variant
           echo "Building with Python versions: ${{ github.event.inputs.python_versions }}"
+          echo "Architecture: $(uname -m)"
+          echo "Platform: $(uname -a)"
           ./build_wheels.sh \
             --variant=noavx512 \
             --vllm-versions="${{ github.event.inputs.vllm_version }}" \
@@ -158,15 +160,24 @@ jobs:
       - name: List built wheels
         run: |
           echo "=== ARM64 wheels ==="
-          mkdir -p dist/linux_arm64
+          echo "Looking for wheels in dist/ and build/ directories..."
+          echo ""
+          echo "=== dist/ directory ==="
+          find dist -type f -name "*.whl" 2>/dev/null || echo "No wheels in dist/"
+          ls -laR dist/ 2>/dev/null || echo "dist/ doesn't exist"
+          echo ""
+          echo "=== build/ directory (workspace) ==="
+          find build -type f -name "*.whl" 2>/dev/null || echo "No wheels in build/"
+          ls -laR build/ 2>/dev/null | head -100 || echo "build/ doesn't exist"
+          echo ""
+          # Check if wheels exist anywhere
           if find dist -name "*.whl" 2>/dev/null | grep -q .; then
+            echo "SUCCESS: Wheels found in dist/"
             find dist -name "*.whl" -exec ls -lh {} \;
-            echo ""
-            echo "Directory structure:"
-            ls -laR dist/
           else
             echo "ERROR: No wheels found in dist/"
-            ls -laR dist/ 2>/dev/null || echo "dist/ directory is empty or doesn't exist"
+            echo "Checking if wheels were left in build workspace..."
+            find . -name "*.whl" -type f 2>/dev/null | head -20 || echo "No .whl files found anywhere"
             exit 1
           fi
 
