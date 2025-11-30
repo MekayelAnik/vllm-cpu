@@ -8,10 +8,10 @@ on:
         required: true
         type: string
       python_versions:
-        description: 'Python versions (e.g., 3.10-3.13 or 3.12)'
+        description: 'Python versions: "auto" to detect from vLLM, or specify (e.g., 3.10-3.13, 3.12)'
         required: false
         type: string
-        default: '3.12'
+        default: 'auto'
       variants:
         description: 'Variants to build (noavx512, avx512, avx512vnni, avx512bf16, amxbf16, all)'
         required: false
@@ -83,6 +83,7 @@ jobs:
 
       - name: Build wheels
         run: |
+          echo "Building with Python versions: ${{ github.event.inputs.python_versions }}"
           ./build_wheels.sh \
             --variant="${{ github.event.inputs.variants }}" \
             --vllm-versions="${{ github.event.inputs.vllm_version }}" \
@@ -155,6 +156,7 @@ jobs:
       - name: Build wheels
         run: |
           # ARM64 only supports vllm-cpu (noavx512) variant
+          echo "Building with Python versions: ${{ github.event.inputs.python_versions }}"
           ./build_wheels.sh \
             --variant=noavx512 \
             --vllm-versions="${{ github.event.inputs.vllm_version }}" \
@@ -186,7 +188,7 @@ jobs:
           retention-days: 30
           if-no-files-found: error
 
-  # Publish all wheels to PyPI
+  # Publish all wheels to PyPI using test_and_publish.sh
   publish:
     name: Publish to PyPI
     needs: [build-amd64, build-arm64]
@@ -201,6 +203,16 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: |
+          pip install twine
+          sudo apt-get update && sudo apt-get install -y jq unzip
 
       - name: Download AMD64 wheels
         if: needs.build-amd64.result == 'success'
@@ -226,69 +238,38 @@ jobs:
           echo ""
           echo "Total: $(find dist -name '*.whl' 2>/dev/null | wc -l) wheels"
 
-      - name: Install twine
-        run: pip install twine
-
-      - name: Validate wheels
-        run: |
-          if find dist -name "*.whl" 2>/dev/null | grep -q .; then
-            find dist -name "*.whl" -exec twine check {} \;
-          else
-            echo "No wheels found to validate"
-            exit 1
-          fi
-
-      - name: Publish to PyPI
+      - name: Verify and publish wheels
         if: github.event.inputs.dry_run != 'true'
         run: |
-          # Upload each wheel with its variant-specific token
-          for wheel in $(find dist -name "*.whl" 2>/dev/null); do
-            basename=$(basename "$wheel")
-            echo "Uploading: $basename"
-
-            # Determine which token to use based on package name
-            if [[ "$basename" == vllm_cpu_amxbf16-* ]]; then
-              TOKEN="$PYPI_TOKEN_AMXBF16"
-            elif [[ "$basename" == vllm_cpu_avx512bf16-* ]]; then
-              TOKEN="$PYPI_TOKEN_AVX512BF16"
-            elif [[ "$basename" == vllm_cpu_avx512vnni-* ]]; then
-              TOKEN="$PYPI_TOKEN_AVX512VNNI"
-            elif [[ "$basename" == vllm_cpu_avx512-* ]]; then
-              TOKEN="$PYPI_TOKEN_AVX512"
-            else
-              # vllm_cpu (base package)
-              TOKEN="$PYPI_TOKEN_CPU"
-            fi
-
-            # Fallback to generic token if variant-specific not set
-            if [[ -z "$TOKEN" ]]; then
-              TOKEN="$PYPI_TOKEN"
-            fi
-
-            if [[ -z "$TOKEN" ]]; then
-              echo "ERROR: No token found for $basename"
-              exit 1
-            fi
-
-            twine upload \
-              --username __token__ \
-              --password "$TOKEN" \
-              --skip-existing \
-              "$wheel"
-          done
+          # Use test_and_publish.sh with --skip-build to verify and publish existing wheels
+          # The script handles wheel verification, token selection, and upload
+          ./test_and_publish.sh \
+            --skip-build \
+            --skip-github \
+            --variant="${{ github.event.inputs.variants }}" \
+            --vllm-versions="${{ github.event.inputs.vllm_version }}" \
+            --dist-dir=dist
         env:
-          PYPI_TOKEN: ${{ secrets.PYPI_API_TOKEN }}
+          # Variant-specific tokens (one per PyPI package)
           PYPI_TOKEN_CPU: ${{ secrets.PYPI_TOKEN_CPU }}
           PYPI_TOKEN_AVX512: ${{ secrets.PYPI_TOKEN_AVX512 }}
           PYPI_TOKEN_AVX512VNNI: ${{ secrets.PYPI_TOKEN_AVX512VNNI }}
           PYPI_TOKEN_AVX512BF16: ${{ secrets.PYPI_TOKEN_AVX512BF16 }}
           PYPI_TOKEN_AMXBF16: ${{ secrets.PYPI_TOKEN_AMXBF16 }}
+          # Fallback token (optional, used if variant-specific token not set)
+          PYPI_TOKEN: ${{ secrets.PYPI_API_TOKEN }}
 
-      - name: Dry run - show what would be published
+      - name: Dry run - verify wheels only
         if: github.event.inputs.dry_run == 'true'
         run: |
-          echo "DRY RUN - Would publish these wheels:"
-          find dist -name "*.whl" -exec basename {} \; 2>/dev/null || echo "No wheels found"
+          echo "DRY RUN - Verifying wheels without publishing:"
+          ./test_and_publish.sh \
+            --skip-build \
+            --skip-github \
+            --dry-run \
+            --variant="${{ github.event.inputs.variants }}" \
+            --vllm-versions="${{ github.event.inputs.vllm_version }}" \
+            --dist-dir=dist
 
   # Create GitHub Release
   github-release:
@@ -354,7 +335,7 @@ jobs:
           echo "Multi-Arch Build Summary"
           echo "=========================================="
           echo "vLLM Version: ${{ github.event.inputs.vllm_version }}"
-          echo "Python: ${{ github.event.inputs.python_versions }}"
+          echo "Python versions: ${{ github.event.inputs.python_versions }}"
           echo "Platforms: ${{ github.event.inputs.platforms }}"
           echo "Variants: ${{ github.event.inputs.variants }}"
           echo ""

@@ -16,7 +16,8 @@
 #                               Accepts: single (0.11.0) or multiple (0.10.0,0.10.1,0.11.0)
 #                               Alias: --vllm-version (deprecated, use --vllm-versions)
 #   --python-versions=VERSION   Python version(s) to build (default: 3.12)
-#                               Accepts: single (3.12), multiple (3.10,3.11,3.12), or range (3.10-3.13)
+#                               Accepts: single (3.12), multiple (3.10,3.11,3.12), range (3.10-3.13),
+#                               or "auto" to detect from vLLM's pyproject.toml
 #                               Alias: --python-version (deprecated, use --python-versions)
 #   --version-suffix=SUFFIX     Add version suffix for re-uploading (e.g., .post1, .post2, .dev1)
 #                               Required when re-uploading previously deleted wheels (PyPI filename policy)
@@ -40,6 +41,9 @@
 #
 #   # Re-upload deleted wheel with .post1 suffix (PyPI immutable filename policy workaround)
 #   ./build_wheels.sh --variant=vllm-cpu-avx512 --vllm-versions=0.10.0 --version-suffix=.post1
+#
+#   # Auto-detect Python versions from vLLM's pyproject.toml
+#   ./build_wheels.sh --vllm-versions=0.11.2 --python-versions=auto
 #
 
 # Check Bash version (require 4.0+)
@@ -514,10 +518,19 @@ validate_python_version() {
     return 0
 }
 
-# Parse --python-versions parameter (supports comma-separated list or range)
+# Parse --python-versions parameter (supports comma-separated list, range, or "auto")
+# When "auto" is specified, Python versions will be detected from vLLM's pyproject.toml
+# at build time for each vLLM version
 parse_python_versions() {
     local input="$1"
     PYTHON_VERSIONS=()  # Clear array
+
+    # Check for "auto" mode - defer to vLLM's requires-python
+    if [[ "$input" == "auto" ]]; then
+        log_info "Python version auto-detection enabled - will detect from vLLM's pyproject.toml"
+        PYTHON_VERSIONS=("auto")
+        return 0
+    fi
 
     # Check if it's a range (e.g., "3.9-3.13")
     if [[ "$input" =~ ^3\.([0-9]+)-3\.([0-9]+)$ ]]; then
@@ -674,6 +687,86 @@ get_supported_python_versions() {
 
     # Return the filtered versions
     echo "${supported_versions[*]}"
+}
+
+# Get all supported Python versions for a vLLM version (for --python-versions=auto mode)
+# Unlike get_supported_python_versions which filters, this returns ALL versions vLLM supports
+# Returns: space-separated list of all supported Python versions
+get_auto_python_versions() {
+    local vllm_ver="$1"
+
+    # Try to fetch requires-python from upstream vLLM for this version
+    local requires_python=""
+    local pyproject_url="https://raw.githubusercontent.com/vllm-project/vllm/v${vllm_ver}/pyproject.toml"
+
+    log_info "Auto-detecting Python versions for vLLM $vllm_ver..."
+
+    # Fetch and parse requires-python (with timeout and silent failure)
+    if command -v curl &>/dev/null; then
+        local pyproject_content
+        pyproject_content=$(curl -sfL --max-time 10 "$pyproject_url" 2>/dev/null || echo "")
+        if [[ -n "$pyproject_content" ]]; then
+            # Extract requires-python = ">=3.X,<3.Y" or requires-python = ">=3.X"
+            requires_python=$(echo "$pyproject_content" | grep -E '^requires-python\s*=' | head -1 | sed 's/.*"\(.*\)".*/\1/' | tr -d ' ')
+        fi
+    fi
+
+    # If fetch failed, use hardcoded fallback based on known vLLM history
+    if [[ -z "$requires_python" ]]; then
+        log_warning "Could not fetch requires-python for vLLM $vllm_ver from GitHub, using fallback"
+        # Parse vLLM version for fallback logic
+        local major minor patch
+        IFS='.' read -r major minor patch _ <<< "$vllm_ver"
+        patch="${patch:-0}"
+
+        # Fallback: Python 3.13 added in 0.10.2
+        if [[ "$major" -eq 0 ]] && [[ "$minor" -lt 10 ]]; then
+            requires_python=">=3.10,<3.13"
+        elif [[ "$major" -eq 0 ]] && [[ "$minor" -eq 10 ]] && [[ "$patch" -lt 2 ]]; then
+            requires_python=">=3.10,<3.13"
+        else
+            requires_python=">=3.10,<3.14"  # Default for newer versions
+        fi
+    fi
+
+    log_info "vLLM $vllm_ver requires-python: $requires_python"
+
+    # Parse the constraint to extract min and max Python versions
+    local min_py="" max_py=""
+
+    # Extract minimum (>=3.X or >3.X)
+    if [[ "$requires_python" =~ \>=([0-9]+\.[0-9]+) ]]; then
+        min_py="${BASH_REMATCH[1]}"
+    elif [[ "$requires_python" =~ \>([0-9]+\.[0-9]+) ]]; then
+        local tmp="${BASH_REMATCH[1]}"
+        local tmp_minor="${tmp#*.}"
+        min_py="3.$((tmp_minor + 1))"
+    fi
+
+    # Extract maximum (<3.X or <=3.X)
+    if [[ "$requires_python" =~ \<([0-9]+\.[0-9]+) ]]; then
+        max_py="${BASH_REMATCH[1]}"
+    elif [[ "$requires_python" =~ \<=([0-9]+\.[0-9]+) ]]; then
+        local tmp="${BASH_REMATCH[1]}"
+        local tmp_minor="${tmp#*.}"
+        max_py="3.$((tmp_minor + 1))"
+    fi
+
+    # Default min/max if not specified
+    min_py="${min_py:-3.10}"
+    max_py="${max_py:-3.14}"  # Reasonable default upper limit
+
+    local min_minor="${min_py#*.}"
+    local max_minor="${max_py#*.}"
+
+    # Generate all versions in range (max is exclusive)
+    local versions=()
+    for ((i=min_minor; i<max_minor; i++)); do
+        versions+=("3.$i")
+    done
+
+    log_info "Auto-detected Python versions for vLLM $vllm_ver: ${versions[*]}"
+    echo "${versions[*]}"
 }
 
 # Validate MAX_JOBS
@@ -1431,9 +1524,16 @@ main() {
     fi
 
     # Determine Python versions to build
+    # Special case: "auto" means detect from vLLM's pyproject.toml per-version
+    local python_auto_mode=0
     local -a python_versions_to_build=()
     if [[ ${#PYTHON_VERSIONS[@]} -gt 0 ]]; then
-        python_versions_to_build=("${PYTHON_VERSIONS[@]}")
+        if [[ "${PYTHON_VERSIONS[0]}" == "auto" ]]; then
+            python_auto_mode=1
+            log_info "Python version auto-detection mode enabled"
+        else
+            python_versions_to_build=("${PYTHON_VERSIONS[@]}")
+        fi
     else
         python_versions_to_build=("$PYTHON_VERSION")
     fi
@@ -1442,13 +1542,25 @@ main() {
     log_info "=========================================="
     log_info "Build Matrix:"
     log_info "  vLLM versions: ${#vllm_versions_to_build[@]} (${vllm_versions_to_build[*]:-latest})"
-    log_info "  Python versions: ${#python_versions_to_build[@]} (${python_versions_to_build[*]})"
+    if [[ $python_auto_mode -eq 1 ]]; then
+        log_info "  Python versions: auto (will detect from vLLM's pyproject.toml)"
+    else
+        log_info "  Python versions: ${#python_versions_to_build[@]} (${python_versions_to_build[*]})"
+    fi
     if [[ -n "$VARIANT" ]] && [[ "$VARIANT" != "all" ]]; then
         log_info "  Variants: 1 ($VARIANT)"
-        log_info "  Total wheels: $((${#vllm_versions_to_build[@]} * ${#python_versions_to_build[@]}))"
+        if [[ $python_auto_mode -eq 0 ]]; then
+            log_info "  Total wheels: $((${#vllm_versions_to_build[@]} * ${#python_versions_to_build[@]}))"
+        else
+            log_info "  Total wheels: (will be determined after auto-detection)"
+        fi
     else
         log_info "  Variants: 5 (all)"
-        log_info "  Total wheels: $((${#vllm_versions_to_build[@]} * ${#python_versions_to_build[@]} * 5))"
+        if [[ $python_auto_mode -eq 0 ]]; then
+            log_info "  Total wheels: $((${#vllm_versions_to_build[@]} * ${#python_versions_to_build[@]} * 5))"
+        else
+            log_info "  Total wheels: (will be determined after auto-detection)"
+        fi
     fi
     log_info "=========================================="
 
@@ -1460,10 +1572,19 @@ main() {
             log_info "╚════════════════════════════════════════╝"
             VLLM_VERSION="$vllm_ver"
 
-            # Get version-aware Python versions (filters out unsupported combinations)
-            local supported_py_versions
-            supported_py_versions=$(get_supported_python_versions "$vllm_ver" "${python_versions_to_build[@]}")
-            read -ra py_versions_for_vllm <<< "$supported_py_versions"
+            # Get Python versions for this vLLM version
+            local py_versions_for_vllm=()
+            if [[ $python_auto_mode -eq 1 ]]; then
+                # Auto mode: detect all supported versions from vLLM's pyproject.toml
+                local auto_versions
+                auto_versions=$(get_auto_python_versions "$vllm_ver")
+                read -ra py_versions_for_vllm <<< "$auto_versions"
+            else
+                # Manual mode: filter requested versions against vLLM's requirements
+                local supported_py_versions
+                supported_py_versions=$(get_supported_python_versions "$vllm_ver" "${python_versions_to_build[@]}")
+                read -ra py_versions_for_vllm <<< "$supported_py_versions"
+            fi
 
             if [[ ${#py_versions_for_vllm[@]} -eq 0 ]]; then
                 log_warning "No supported Python versions for vLLM $vllm_ver - skipping"
@@ -1475,8 +1596,14 @@ main() {
             log_info "║ Building for vLLM version: latest"
             log_info "╚════════════════════════════════════════╝"
             VLLM_VERSION=""
-            # For latest, assume all requested Python versions are supported
-            py_versions_for_vllm=("${python_versions_to_build[@]}")
+            # For latest without auto mode, use requested versions
+            # For latest with auto mode, use a sensible default
+            if [[ $python_auto_mode -eq 1 ]]; then
+                log_warning "Auto mode with 'latest' vLLM version - using default 3.10-3.13"
+                py_versions_for_vllm=("3.10" "3.11" "3.12" "3.13")
+            else
+                py_versions_for_vllm=("${python_versions_to_build[@]}")
+            fi
         fi
 
         for py_ver in "${py_versions_for_vllm[@]}"; do

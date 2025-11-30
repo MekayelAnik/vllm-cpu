@@ -20,7 +20,7 @@
 #                               Accepts: single (0.11.2) or multiple (0.10.0,0.11.0,0.11.2)
 #   --python-versions=VERSION   Python version(s) (default: 3.12)
 #                               Accepts: single (3.12), multiple (3.10,3.11,3.12),
-#                               or range (3.10-3.13)
+#                               range (3.10-3.13), or "auto" to detect from vLLM's pyproject.toml
 #   --platform=PLATFORM         Target platform(s): auto, linux/amd64, linux/arm64
 #                               'auto' reads from build_config.json (default)
 #   --output-dir=PATH           Output directory for wheels (default: ./dist)
@@ -57,6 +57,9 @@
 #
 #   # Dry run - see what would be built
 #   ./docker-buildx.sh --variant=all --vllm-versions=0.11.2 --dry-run
+#
+#   # Auto-detect Python versions from vLLM's pyproject.toml
+#   ./docker-buildx.sh --variant=noavx512 --vllm-versions=0.11.2 --python-versions=auto
 #
 # Output structure (with platform-split):
 #   dist/
@@ -427,9 +430,16 @@ normalize_variant() {
 }
 
 # Expand Python version range (e.g., "3.10-3.13" -> "3.10 3.11 3.12 3.13")
+# Note: "auto" is handled separately - this function doesn't expand it
 expand_python_versions() {
     local input="$1"
     local versions=()
+
+    # "auto" is a special keyword - pass through as-is
+    if [[ "$input" == "auto" ]]; then
+        echo "auto"
+        return 0
+    fi
 
     # Split on comma first
     IFS=',' read -ra parts <<< "$input"
@@ -457,6 +467,85 @@ expand_python_versions() {
     done
 
     echo "${versions[@]}"
+}
+
+# Get all supported Python versions for a vLLM version (for --python-versions=auto mode)
+# Returns: space-separated list of all supported Python versions
+get_auto_python_versions() {
+    local vllm_ver="$1"
+
+    # Try to fetch requires-python from upstream vLLM for this version
+    local requires_python=""
+    local pyproject_url="https://raw.githubusercontent.com/vllm-project/vllm/v${vllm_ver}/pyproject.toml"
+
+    log_info "Auto-detecting Python versions for vLLM $vllm_ver..."
+
+    # Fetch and parse requires-python (with timeout and silent failure)
+    if command -v curl &>/dev/null; then
+        local pyproject_content
+        pyproject_content=$(curl -sfL --max-time 10 "$pyproject_url" 2>/dev/null || echo "")
+        if [[ -n "$pyproject_content" ]]; then
+            # Extract requires-python = ">=3.X,<3.Y" or requires-python = ">=3.X"
+            requires_python=$(echo "$pyproject_content" | grep -E '^requires-python\s*=' | head -1 | sed 's/.*"\(.*\)".*/\1/' | tr -d ' ')
+        fi
+    fi
+
+    # If fetch failed, use hardcoded fallback based on known vLLM history
+    if [[ -z "$requires_python" ]]; then
+        log_warning "Could not fetch requires-python for vLLM $vllm_ver from GitHub, using fallback"
+        # Parse vLLM version for fallback logic
+        local major minor patch
+        IFS='.' read -r major minor patch _ <<< "$vllm_ver"
+        patch="${patch:-0}"
+
+        # Fallback: Python 3.13 added in 0.10.2
+        if [[ "$major" -eq 0 ]] && [[ "$minor" -lt 10 ]]; then
+            requires_python=">=3.10,<3.13"
+        elif [[ "$major" -eq 0 ]] && [[ "$minor" -eq 10 ]] && [[ "$patch" -lt 2 ]]; then
+            requires_python=">=3.10,<3.13"
+        else
+            requires_python=">=3.10,<3.14"  # Default for newer versions
+        fi
+    fi
+
+    log_info "vLLM $vllm_ver requires-python: $requires_python"
+
+    # Parse the constraint to extract min and max Python versions
+    local min_py="" max_py=""
+
+    # Extract minimum (>=3.X or >3.X)
+    if [[ "$requires_python" =~ \>=([0-9]+\.[0-9]+) ]]; then
+        min_py="${BASH_REMATCH[1]}"
+    elif [[ "$requires_python" =~ \>([0-9]+\.[0-9]+) ]]; then
+        local tmp="${BASH_REMATCH[1]}"
+        local tmp_minor="${tmp#*.}"
+        min_py="3.$((tmp_minor + 1))"
+    fi
+
+    # Extract maximum (<3.X or <=3.X)
+    if [[ "$requires_python" =~ \<([0-9]+\.[0-9]+) ]]; then
+        max_py="${BASH_REMATCH[1]}"
+    elif [[ "$requires_python" =~ \<=([0-9]+\.[0-9]+) ]]; then
+        local tmp="${BASH_REMATCH[1]}"
+        local tmp_minor="${tmp#*.}"
+        max_py="3.$((tmp_minor + 1))"
+    fi
+
+    # Default min/max if not specified
+    min_py="${min_py:-3.10}"
+    max_py="${max_py:-3.14}"  # Reasonable default upper limit
+
+    local min_minor="${min_py#*.}"
+    local max_minor="${max_py#*.}"
+
+    # Generate all versions in range (max is exclusive)
+    local versions=()
+    for ((i=min_minor; i<max_minor; i++)); do
+        versions+=("3.$i")
+    done
+
+    log_info "Auto-detected Python versions for vLLM $vllm_ver: ${versions[*]}"
+    echo "${versions[*]}"
 }
 
 # Show help
@@ -1001,8 +1090,17 @@ main() {
     fi
 
     # Expand Python versions
-    local python_versions_array
-    read -ra python_versions_array <<< "$(expand_python_versions "$PYTHON_VERSIONS")"
+    # Check if Python version is "auto"
+    local python_auto_mode=0
+    local python_versions_array=()
+    local expanded_versions
+    expanded_versions=$(expand_python_versions "$PYTHON_VERSIONS")
+    if [[ "$expanded_versions" == "auto" ]]; then
+        python_auto_mode=1
+        log_info "Python version auto-detection mode enabled"
+    else
+        read -ra python_versions_array <<< "$expanded_versions"
+    fi
 
     # Split vLLM versions
     IFS=',' read -ra vllm_versions_array <<< "$VLLM_VERSIONS"
@@ -1015,13 +1113,22 @@ main() {
         variants_to_build=("$VARIANT")
     fi
 
-    # Calculate total builds
-    local total_builds=$((${#variants_to_build[@]} * ${#vllm_versions_array[@]} * ${#python_versions_array[@]}))
+    # Calculate total builds (if not auto mode)
+    local total_builds
+    if [[ $python_auto_mode -eq 1 ]]; then
+        total_builds="(auto-detect)"
+    else
+        total_builds=$((${#variants_to_build[@]} * ${#vllm_versions_array[@]} * ${#python_versions_array[@]}))
+    fi
 
     log_info "Build plan:"
     log_info "  Variants:        ${variants_to_build[*]}"
     log_info "  vLLM versions:   ${vllm_versions_array[*]}"
-    log_info "  Python versions: ${python_versions_array[*]}"
+    if [[ $python_auto_mode -eq 1 ]]; then
+        log_info "  Python versions: auto (will detect from vLLM's pyproject.toml)"
+    else
+        log_info "  Python versions: ${python_versions_array[*]}"
+    fi
     log_info "  Total builds:    $total_builds"
     echo ""
 
@@ -1066,18 +1173,34 @@ main() {
         fi
 
         for vllm_ver in "${vllm_versions_array[@]}"; do
-            for py_ver in "${python_versions_array[@]}"; do
+            # Determine Python versions for this vLLM version
+            local py_versions_for_vllm=()
+            if [[ $python_auto_mode -eq 1 ]]; then
+                # Auto mode: detect from vLLM's pyproject.toml
+                local auto_versions
+                auto_versions=$(get_auto_python_versions "$vllm_ver")
+                read -ra py_versions_for_vllm <<< "$auto_versions"
+            else
+                py_versions_for_vllm=("${python_versions_array[@]}")
+            fi
+
+            if [[ ${#py_versions_for_vllm[@]} -eq 0 ]]; then
+                log_warning "No Python versions for vLLM $vllm_ver - skipping"
+                continue
+            fi
+
+            for py_ver in "${py_versions_for_vllm[@]}"; do
                 ((build_count++)) || true
                 echo ""
                 log_step "═══════════════════════════════════════════════════════════"
-                log_step "Build $build_count/$total_builds"
+                log_step "Build $build_count (variant: $variant, vLLM: $vllm_ver, Python: $py_ver)"
                 log_step "═══════════════════════════════════════════════════════════"
 
                 if build_single_wheel "$variant" "$vllm_ver" "$py_ver" "$build_platforms" "$OUTPUT_DIR"; then
-                    log_success "✓ Build $build_count/$total_builds completed"
+                    log_success "✓ Build $build_count completed"
                 else
                     ((failed_count++)) || true
-                    log_error "✗ Build $build_count/$total_builds failed"
+                    log_error "✗ Build $build_count failed"
                 fi
             done
         done
@@ -1087,9 +1210,9 @@ main() {
     echo ""
     echo "═══════════════════════════════════════════════════════════════"
     if [[ $failed_count -eq 0 ]]; then
-        log_success "All $total_builds build(s) completed successfully!"
+        log_success "All $build_count build(s) completed successfully!"
     else
-        log_warning "$((total_builds - failed_count))/$total_builds builds succeeded, $failed_count failed"
+        log_warning "$((build_count - failed_count))/$build_count builds succeeded, $failed_count failed"
     fi
     echo ""
     log_info "Output directory: $OUTPUT_DIR"

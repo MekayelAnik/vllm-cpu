@@ -22,7 +22,8 @@
 #                            Default: none (required)
 #
 #   --python-versions=3.X    Python version(s) to build
-#                            Accepts: single (3.12), multiple (3.10,3.11,3.12), or range (3.10-3.13)
+#                            Accepts: single (3.12), multiple (3.10,3.11,3.12), range (3.10-3.13),
+#                            or "auto" to detect from vLLM's pyproject.toml
 #                            Default: 3.13
 #
 #   --builder=TYPE           Build method
@@ -65,7 +66,12 @@
 #   --help                   Show this help
 #
 # Environment Variables:
-#   PYPI_TOKEN or PYPI_API_TOKEN  Production PyPI API token (required for publishing)
+#   PYPI_TOKEN or PYPI_API_TOKEN  Default PyPI API token (fallback for all variants)
+#   PYPI_TOKEN_CPU                Token for vllm-cpu package
+#   PYPI_TOKEN_AVX512             Token for vllm-cpu-avx512 package
+#   PYPI_TOKEN_AVX512VNNI         Token for vllm-cpu-avx512vnni package
+#   PYPI_TOKEN_AVX512BF16         Token for vllm-cpu-avx512bf16 package
+#   PYPI_TOKEN_AMXBF16            Token for vllm-cpu-amxbf16 package
 #   DEBUG=1                       Enable debug logging
 #
 # Examples:
@@ -86,6 +92,9 @@
 #
 #   # Re-upload previously deleted wheel with .rebuild1 suffix
 #   ./test_and_publish.sh --variant=vllm-cpu-avx512 --vllm-versions=0.10.0 --version-suffix=.rebuild1
+#
+#   # Auto-detect Python versions from vLLM's pyproject.toml
+#   ./test_and_publish.sh --variant=noavx512 --vllm-versions=0.11.2 --python-versions=auto
 #
 # Multi-wheel Support:
 #   When --variant=all, all 5 CPU variants will be built, verified, and published.
@@ -167,10 +176,18 @@ validate_python_version() {
     return 0
 }
 
-# Parse --python-versions parameter (supports comma-separated list or range)
+# Parse --python-versions parameter (supports comma-separated list, range, or "auto")
+# When "auto" is specified, Python versions will be detected from vLLM's pyproject.toml
 parse_python_versions() {
     local input="$1"
     PYTHON_VERSIONS=()  # Clear array
+
+    # Check for "auto" mode - defer to vLLM's requires-python
+    if [[ "$input" == "auto" ]]; then
+        log_info "Python version auto-detection enabled - will detect from vLLM's pyproject.toml"
+        PYTHON_VERSIONS=("auto")
+        return 0
+    fi
 
     # Check if it's a range (e.g., "3.9-3.13")
     if [[ "$input" =~ ^3\.([0-9]+)-3\.([0-9]+)$ ]]; then
@@ -295,6 +312,86 @@ get_supported_python_versions() {
 
     # Return the filtered versions
     echo "${supported_versions[*]}"
+}
+
+# Get all supported Python versions for a vLLM version (for --python-versions=auto mode)
+# Unlike get_supported_python_versions which filters, this returns ALL versions vLLM supports
+# Returns: space-separated list of all supported Python versions
+get_auto_python_versions() {
+    local vllm_ver="$1"
+
+    # Try to fetch requires-python from upstream vLLM for this version
+    local requires_python=""
+    local pyproject_url="https://raw.githubusercontent.com/vllm-project/vllm/v${vllm_ver}/pyproject.toml"
+
+    log_info "Auto-detecting Python versions for vLLM $vllm_ver..."
+
+    # Fetch and parse requires-python (with timeout and silent failure)
+    if command -v curl &>/dev/null; then
+        local pyproject_content
+        pyproject_content=$(curl -sfL --max-time 10 "$pyproject_url" 2>/dev/null || echo "")
+        if [[ -n "$pyproject_content" ]]; then
+            # Extract requires-python = ">=3.X,<3.Y" or requires-python = ">=3.X"
+            requires_python=$(echo "$pyproject_content" | grep -E '^requires-python\s*=' | head -1 | sed 's/.*"\(.*\)".*/\1/' | tr -d ' ')
+        fi
+    fi
+
+    # If fetch failed, use hardcoded fallback based on known vLLM history
+    if [[ -z "$requires_python" ]]; then
+        log_warning "Could not fetch requires-python for vLLM $vllm_ver from GitHub, using fallback"
+        # Parse vLLM version for fallback logic
+        local major minor patch
+        IFS='.' read -r major minor patch _ <<< "$vllm_ver"
+        patch="${patch:-0}"
+
+        # Fallback: Python 3.13 added in 0.10.2
+        if [[ "$major" -eq 0 ]] && [[ "$minor" -lt 10 ]]; then
+            requires_python=">=3.10,<3.13"
+        elif [[ "$major" -eq 0 ]] && [[ "$minor" -eq 10 ]] && [[ "$patch" -lt 2 ]]; then
+            requires_python=">=3.10,<3.13"
+        else
+            requires_python=">=3.10,<3.14"  # Default for newer versions
+        fi
+    fi
+
+    log_info "vLLM $vllm_ver requires-python: $requires_python"
+
+    # Parse the constraint to extract min and max Python versions
+    local min_py="" max_py=""
+
+    # Extract minimum (>=3.X or >3.X)
+    if [[ "$requires_python" =~ \>=([0-9]+\.[0-9]+) ]]; then
+        min_py="${BASH_REMATCH[1]}"
+    elif [[ "$requires_python" =~ \>([0-9]+\.[0-9]+) ]]; then
+        local tmp="${BASH_REMATCH[1]}"
+        local tmp_minor="${tmp#*.}"
+        min_py="3.$((tmp_minor + 1))"
+    fi
+
+    # Extract maximum (<3.X or <=3.X)
+    if [[ "$requires_python" =~ \<([0-9]+\.[0-9]+) ]]; then
+        max_py="${BASH_REMATCH[1]}"
+    elif [[ "$requires_python" =~ \<=([0-9]+\.[0-9]+) ]]; then
+        local tmp="${BASH_REMATCH[1]}"
+        local tmp_minor="${tmp#*.}"
+        max_py="3.$((tmp_minor + 1))"
+    fi
+
+    # Default min/max if not specified
+    min_py="${min_py:-3.10}"
+    max_py="${max_py:-3.14}"  # Reasonable default upper limit
+
+    local min_minor="${min_py#*.}"
+    local max_minor="${max_py#*.}"
+
+    # Generate all versions in range (max is exclusive)
+    local versions=()
+    for ((i=min_minor; i<max_minor; i++)); do
+        versions+=("3.$i")
+    done
+
+    log_info "Auto-detected Python versions for vLLM $vllm_ver: ${versions[*]}"
+    echo "${versions[*]}"
 }
 
 # Check if a variant supports a given platform architecture
@@ -2480,13 +2577,6 @@ publish_to_production_pypi() {
         log_info "  - $(basename "$wheel")"
     done
 
-    # Get PyPI token
-    local token="${PYPI_TOKEN:-}"
-    if [[ -z "$token" ]]; then
-        log_error "PYPI_TOKEN environment variable not set"
-        return 1
-    fi
-
     # Upload wheels one by one to handle individual failures gracefully
     local upload_success=0
     local upload_failed=0
@@ -2496,6 +2586,33 @@ publish_to_production_pypi() {
         local wheel_basename
         wheel_basename=$(basename "$wheel")
         log_info "Uploading: $wheel_basename"
+
+        # Get variant-specific token based on wheel filename
+        local token=""
+        if [[ "$wheel_basename" == vllm_cpu_amxbf16-* ]]; then
+            token="${PYPI_TOKEN_AMXBF16:-}"
+        elif [[ "$wheel_basename" == vllm_cpu_avx512bf16-* ]]; then
+            token="${PYPI_TOKEN_AVX512BF16:-}"
+        elif [[ "$wheel_basename" == vllm_cpu_avx512vnni-* ]]; then
+            token="${PYPI_TOKEN_AVX512VNNI:-}"
+        elif [[ "$wheel_basename" == vllm_cpu_avx512-* ]]; then
+            token="${PYPI_TOKEN_AVX512:-}"
+        elif [[ "$wheel_basename" == vllm_cpu-* ]]; then
+            token="${PYPI_TOKEN_CPU:-}"
+        fi
+
+        # Fallback to generic token if variant-specific not set
+        if [[ -z "$token" ]]; then
+            token="${PYPI_TOKEN:-}"
+        fi
+
+        if [[ -z "$token" ]]; then
+            log_error "No PyPI token found for $wheel_basename"
+            log_error "Set PYPI_TOKEN_CPU, PYPI_TOKEN_AVX512, etc. or PYPI_TOKEN as fallback"
+            failed_wheels+=("$wheel_basename")
+            ((upload_failed++)) || true
+            continue
+        fi
 
         if twine upload \
             --username __token__ \
@@ -3268,7 +3385,13 @@ main() {
 
             # Get version-aware Python versions for this vLLM version
             local supported_py_versions
-            supported_py_versions=$(get_supported_python_versions "$vllm_ver" "${PYTHON_VERSIONS[@]}")
+            if [[ "${PYTHON_VERSIONS[0]}" == "auto" ]]; then
+                # Auto mode: detect all supported versions from vLLM's pyproject.toml
+                supported_py_versions=$(get_auto_python_versions "$vllm_ver")
+            else
+                # Manual mode: filter requested versions against vLLM's requirements
+                supported_py_versions=$(get_supported_python_versions "$vllm_ver" "${PYTHON_VERSIONS[@]}")
+            fi
 
             if [[ -z "$supported_py_versions" ]]; then
                 log_warning "No supported Python versions for vLLM $vllm_ver - skipping"

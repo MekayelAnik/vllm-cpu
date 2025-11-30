@@ -9,11 +9,16 @@
 # Options:
 #   --variant=NAME              Variant to build (vllm-cpu, vllm-cpu-avx512, etc.)
 #   --vllm-versions=VERSION     vLLM version(s) to build
-#   --python-versions=VERSION   Python version(s) to build
+#   --python-versions=VERSION   Python version(s) to build, or "auto" to detect from vLLM
 #   --platform=ARCH             Target platform (linux/amd64, linux/arm64, all)
 #   --output-dir=PATH           Output directory for wheels (default: ./dist)
 #   --no-cache                  Build Docker image without cache
 #   --help                      Show this help
+#
+# Examples:
+#   ./docker-build.sh --variant=vllm-cpu --vllm-versions=0.11.2
+#   ./docker-build.sh --variant=vllm-cpu --vllm-versions=0.11.2 --python-versions=auto
+#   ./docker-build.sh --variant=vllm-cpu --vllm-versions=0.11.2 --platform=all
 
 set -euo pipefail
 
