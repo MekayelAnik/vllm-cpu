@@ -692,8 +692,10 @@ get_supported_python_versions() {
         fi
     done
 
-    # Return the filtered versions
-    echo "${supported_versions[*]}"
+    # Return the filtered versions as space-separated string
+    # NOTE: Script sets IFS=$'\n\t' globally, so ${array[*]} would use newline as separator
+    # We must explicitly use space as separator in a subshell
+    (IFS=' '; echo "${supported_versions[*]}")
 }
 
 # Get all supported Python versions for a vLLM version (for --python-versions=auto mode)
@@ -771,7 +773,10 @@ get_auto_python_versions() {
     done
 
     # Build space-separated string explicitly
-    local version_str="${versions[*]}"
+    # NOTE: Script sets IFS=$'\n\t' globally, so ${versions[*]} would use newline as separator
+    # We must explicitly join with spaces using a subshell with local IFS
+    local version_str
+    version_str=$(IFS=' '; echo "${versions[*]}")
     log_info "Auto-detected Python versions for vLLM $vllm_ver: $version_str (${#versions[@]} versions)"
 
     # Return space-separated versions on a single line
@@ -1621,12 +1626,14 @@ main() {
                 # Auto mode: detect all supported versions from vLLM's pyproject.toml
                 local auto_versions
                 auto_versions=$(get_auto_python_versions "$vllm_ver")
-                read -ra py_versions_for_vllm <<< "$auto_versions"
+                # IMPORTANT: Script sets IFS=$'\n\t' globally, so we must explicitly use space for read
+                IFS=' ' read -ra py_versions_for_vllm <<< "$auto_versions"
             else
                 # Manual mode: filter requested versions against vLLM's requirements
                 local supported_py_versions
                 supported_py_versions=$(get_supported_python_versions "$vllm_ver" "${python_versions_to_build[@]}")
-                read -ra py_versions_for_vllm <<< "$supported_py_versions"
+                # IMPORTANT: Script sets IFS=$'\n\t' globally, so we must explicitly use space for read
+                IFS=' ' read -ra py_versions_for_vllm <<< "$supported_py_versions"
             fi
 
             if [[ ${#py_versions_for_vllm[@]} -eq 0 ]]; then
