@@ -1560,6 +1560,15 @@ main() {
     log_debug "Script: $SCRIPT_DIR/$SCRIPT_NAME"
     log_debug "Bash version: ${BASH_VERSION}"
 
+    # Log git commit for debugging (helps verify which version of build script is running)
+    if [[ -d "$SCRIPT_DIR/.git" ]]; then
+        local build_script_commit
+        build_script_commit=$(git -C "$SCRIPT_DIR" rev-parse --short HEAD 2>/dev/null || echo "unknown")
+        local build_script_branch
+        build_script_branch=$(git -C "$SCRIPT_DIR" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "unknown")
+        log_info "Build script commit: $build_script_commit (branch: $build_script_branch)"
+    fi
+
     parse_args "$@"
 
     # Show dry-run mode if enabled
