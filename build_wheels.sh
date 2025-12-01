@@ -1255,7 +1255,8 @@ build_variant() {
             log_info "[DRY RUN] Would backup pyproject.toml"
             log_info "[DRY RUN] Would update package name to: $package_name"
             log_info "[DRY RUN] Would update description to: $description"
-            log_info "[DRY RUN] Would update license to: GPL-3.0"
+            log_info "[DRY RUN] Would update license to: {text = \"GPL-3.0-only\"} (PEP 621 format)"
+            log_info "[DRY RUN] Would remove PEP 639 license-files field"
             log_info "[DRY RUN] Would set author: Mekayel Anik <mekayel.anik@gmail.com>"
             log_info "[DRY RUN] Would set maintainer: Mekayel Anik <mekayel.anik@gmail.com>"
             log_info "[DRY RUN] Would update project URLs:"
@@ -1290,18 +1291,36 @@ build_variant() {
                 exit 1
             fi
 
-            # Update license to GPL-3.0 (use simple string format, not PEP 639 table format)
-            log_info "Updating license to GPL-3.0..."
-            # Remove any PEP 639 license fields (license-files, license.file, license.text)
-            # These fields cause PyPI upload to fail with "unrecognized or malformed field"
-            # PyPI doesn't fully support PEP 639 yet
-            sed -i '/^license-files/d' pyproject.toml
+            # Update license to GPL-3.0
+            # IMPORTANT: PyPI does NOT fully support PEP 639 yet (as of Dec 2024)
+            # PEP 639 uses: license = "SPDX-ID" and license-files = [...]
+            # These generate License-Expression and License-File headers in METADATA
+            # which cause twine/PyPI to reject with "unrecognized or malformed field"
+            #
+            # Solution: Use the deprecated PEP 621 table format which PyPI still accepts:
+            #   license = {text = "GPL-3.0"}
+            # This generates the classic "License:" header instead of "License-Expression:"
+            #
+            # Reference: https://github.com/pypa/twine/issues/1216
+            log_info "Updating license to GPL-3.0 (using PEP 621 table format for PyPI compatibility)..."
+
+            # Step 1: Remove PEP 639 license-files field (matches with any whitespace)
+            # Format: license-files = ["LICENSE"] or license-files = ["LICENSE", "NOTICE"]
+            sed -i '/^license-files[[:space:]]*=/d' pyproject.toml
+
+            # Step 2: Remove any [project.license] table section if present
             sed -i '/^\[project\.license\]/,/^[^[:space:]]/{/^\[project\.license\]/d;/^file/d;/^text/d}' pyproject.toml
-            # Handle inline table format: license = {file = "LICENSE"} or license = {text = "..."}
-            sed -i 's/^license = {.*}/license = "GPL-3.0"/' pyproject.toml
-            # Handle simple string format
-            sed -i 's/^license = ".*"/license = "GPL-3.0"/' pyproject.toml
-            # Also update license classifier if present
+
+            # Step 3: Replace license field with PEP 621 table format
+            # This works for all formats:
+            # - license = "Apache-2.0" (SPDX string - PEP 639)
+            # - license = {file = "LICENSE"} (PEP 621 file reference)
+            # - license = {text = "..."} (PEP 621 text)
+            # We convert ALL to: license = {text = "GPL-3.0-only"}
+            # Using {text = ...} instead of string prevents setuptools from generating License-Expression
+            sed -i 's/^license[[:space:]]*=.*/license = {text = "GPL-3.0-only"}/' pyproject.toml
+
+            # Step 4: Update license classifier
             sed -i 's/"License :: OSI Approved :: Apache Software License"/"License :: OSI Approved :: GNU General Public License v3 (GPLv3)"/' pyproject.toml
 
             # Add/Update author and maintainer information
