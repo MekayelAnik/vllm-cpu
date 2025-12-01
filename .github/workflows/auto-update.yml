@@ -1,0 +1,467 @@
+name: Auto-Update vLLM CPU Wheels
+
+# Automatically checks for new vLLM releases and builds wheels for them
+# - noavx512 (vllm-cpu): Built for both AMD64 and ARM64
+# - avx512, avx512vnni, avx512bf16, amxbf16: Built for AMD64 only
+
+on:
+  # Run daily at 00:00 UTC
+  schedule:
+    - cron: '0 0 * * *'
+
+  # Allow manual trigger
+  workflow_dispatch:
+    inputs:
+      force_version:
+        description: 'Force build specific version (optional, e.g., 0.12.0)'
+        required: false
+        type: string
+      dry_run:
+        description: 'Dry run - check versions only, no build'
+        required: false
+        type: boolean
+        default: false
+
+jobs:
+  # Check for new vLLM versions
+  check-versions:
+    name: Check for New Versions
+    runs-on: ubuntu-latest
+    outputs:
+      new_versions: ${{ steps.compare.outputs.new_versions }}
+      has_new_versions: ${{ steps.compare.outputs.has_new_versions }}
+
+    steps:
+      - name: Fetch vLLM releases from GitHub
+        id: github
+        run: |
+          echo "Fetching vLLM releases from GitHub..."
+
+          # Fetch all releases (paginate if needed)
+          GITHUB_VERSIONS=$(curl -s "https://api.github.com/repos/vllm-project/vllm/releases?per_page=100" | \
+            jq -r '.[].tag_name' | \
+            grep -E '^v[0-9]+\.[0-9]+\.[0-9]+(\.[0-9]+)?$' | \
+            sed 's/^v//' | \
+            sort -V)
+
+          echo "GitHub versions (stable only):"
+          echo "$GITHUB_VERSIONS"
+
+          # Save to file for later use
+          echo "$GITHUB_VERSIONS" > /tmp/github_versions.txt
+
+      - name: Fetch existing versions from PyPI
+        id: pypi
+        run: |
+          echo "Fetching existing versions from PyPI..."
+
+          # Query PyPI for vllm-cpu package versions
+          PYPI_VERSIONS=$(curl -s "https://pypi.org/pypi/vllm-cpu/json" | \
+            jq -r '.releases | keys[]' | \
+            grep -E '^[0-9]+\.[0-9]+\.[0-9]+(\.[0-9]+)?$' | \
+            sort -V)
+
+          echo "PyPI versions (excluding .post/.dev):"
+          echo "$PYPI_VERSIONS"
+
+          # Save to file for later use
+          echo "$PYPI_VERSIONS" > /tmp/pypi_versions.txt
+
+      - name: Compare versions
+        id: compare
+        run: |
+          echo "Comparing versions..."
+
+          # Handle force version input
+          if [[ -n "${{ github.event.inputs.force_version }}" ]]; then
+            echo "Force building version: ${{ github.event.inputs.force_version }}"
+            NEW_VERSIONS="${{ github.event.inputs.force_version }}"
+            echo "new_versions=[\"$NEW_VERSIONS\"]" >> "$GITHUB_OUTPUT"
+            echo "has_new_versions=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Find versions in GitHub but not in PyPI
+          NEW_VERSIONS=""
+          while IFS= read -r version; do
+            if [[ -n "$version" ]] && ! grep -qx "$version" /tmp/pypi_versions.txt; then
+              echo "New version found: $version"
+              if [[ -n "$NEW_VERSIONS" ]]; then
+                NEW_VERSIONS="$NEW_VERSIONS,$version"
+              else
+                NEW_VERSIONS="$version"
+              fi
+            fi
+          done < /tmp/github_versions.txt
+
+          if [[ -z "$NEW_VERSIONS" ]]; then
+            echo "No new versions found"
+            echo "new_versions=[]" >> "$GITHUB_OUTPUT"
+            echo "has_new_versions=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "New versions to build: $NEW_VERSIONS"
+            # Convert comma-separated to JSON array
+            JSON_ARRAY=$(echo "$NEW_VERSIONS" | tr ',' '\n' | jq -R . | jq -s -c .)
+            echo "new_versions=$JSON_ARRAY" >> "$GITHUB_OUTPUT"
+            echo "has_new_versions=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Summary
+        run: |
+          echo "=========================================="
+          echo "Version Check Summary"
+          echo "=========================================="
+          echo "New versions: ${{ steps.compare.outputs.new_versions }}"
+          echo "Has new versions: ${{ steps.compare.outputs.has_new_versions }}"
+          echo "=========================================="
+
+  # Build noavx512 (vllm-cpu) for AMD64 + ARM64
+  build-noavx512-amd64:
+    name: Build noavx512 AMD64 (${{ matrix.version }})
+    needs: check-versions
+    if: needs.check-versions.outputs.has_new_versions == 'true' && github.event.inputs.dry_run != 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    strategy:
+      fail-fast: false
+      matrix:
+        version: ${{ fromJson(needs.check-versions.outputs.new_versions) }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            python3 python3-pip python3-venv \
+            build-essential gcc g++ \
+            cmake ninja-build ccache \
+            libnuma-dev numactl jq
+
+      - name: Install uv
+        run: |
+          curl -LsSf https://astral.sh/uv/install.sh | sh
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Cache build artifacts
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/ccache
+            ~/.cache/uv
+          key: auto-amd64-noavx512-${{ matrix.version }}-${{ hashFiles('build_config.json') }}
+          restore-keys: |
+            auto-amd64-noavx512-
+            amd64-
+
+      - name: Build wheels
+        run: |
+          echo "Building noavx512 for AMD64, vLLM ${{ matrix.version }}"
+          ./build_wheels.sh \
+            --variant=noavx512 \
+            --vllm-versions="${{ matrix.version }}" \
+            --python-versions=auto \
+            --output-dir=dist
+
+      - name: List built wheels
+        run: |
+          echo "=== Built wheels ==="
+          find dist -name "*.whl" -exec ls -lh {} \;
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: wheels-noavx512-amd64-${{ matrix.version }}
+          path: dist/**/*.whl
+          retention-days: 30
+          if-no-files-found: error
+
+  build-noavx512-arm64:
+    name: Build noavx512 ARM64 (${{ matrix.version }})
+    needs: check-versions
+    if: needs.check-versions.outputs.has_new_versions == 'true' && github.event.inputs.dry_run != 'true'
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 300
+    strategy:
+      fail-fast: false
+      matrix:
+        version: ${{ fromJson(needs.check-versions.outputs.new_versions) }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            python3 python3-pip python3-venv \
+            build-essential gcc g++ \
+            cmake ninja-build ccache \
+            libnuma-dev numactl jq
+
+      - name: Install uv
+        run: |
+          curl -LsSf https://astral.sh/uv/install.sh | sh
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Cache build artifacts
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/ccache
+            ~/.cache/uv
+          key: auto-arm64-noavx512-${{ matrix.version }}-${{ hashFiles('build_config.json') }}
+          restore-keys: |
+            auto-arm64-noavx512-
+            arm64-
+
+      - name: Build wheels
+        run: |
+          echo "Building noavx512 for ARM64, vLLM ${{ matrix.version }}"
+          ./build_wheels.sh \
+            --variant=noavx512 \
+            --vllm-versions="${{ matrix.version }}" \
+            --python-versions=auto \
+            --output-dir=dist
+
+      - name: List built wheels
+        run: |
+          echo "=== Built wheels ==="
+          find dist -name "*.whl" -exec ls -lh {} \;
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: wheels-noavx512-arm64-${{ matrix.version }}
+          path: dist/**/*.whl
+          retention-days: 30
+          if-no-files-found: error
+
+  # Build AVX512 variants for AMD64 only
+  build-avx512-variants:
+    name: Build ${{ matrix.variant }} AMD64 (${{ matrix.version }})
+    needs: check-versions
+    if: needs.check-versions.outputs.has_new_versions == 'true' && github.event.inputs.dry_run != 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    strategy:
+      fail-fast: false
+      matrix:
+        version: ${{ fromJson(needs.check-versions.outputs.new_versions) }}
+        variant: [avx512, avx512vnni, avx512bf16, amxbf16]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            python3 python3-pip python3-venv \
+            build-essential gcc g++ \
+            cmake ninja-build ccache \
+            libnuma-dev numactl jq
+
+      - name: Install uv
+        run: |
+          curl -LsSf https://astral.sh/uv/install.sh | sh
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Cache build artifacts
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/ccache
+            ~/.cache/uv
+          key: auto-amd64-${{ matrix.variant }}-${{ matrix.version }}-${{ hashFiles('build_config.json') }}
+          restore-keys: |
+            auto-amd64-${{ matrix.variant }}-
+            amd64-
+
+      - name: Build wheels
+        run: |
+          echo "Building ${{ matrix.variant }} for AMD64, vLLM ${{ matrix.version }}"
+          ./build_wheels.sh \
+            --variant=${{ matrix.variant }} \
+            --vllm-versions="${{ matrix.version }}" \
+            --python-versions=auto \
+            --output-dir=dist
+
+      - name: List built wheels
+        run: |
+          echo "=== Built wheels ==="
+          find dist -name "*.whl" -exec ls -lh {} \;
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: wheels-${{ matrix.variant }}-amd64-${{ matrix.version }}
+          path: dist/**/*.whl
+          retention-days: 30
+          if-no-files-found: error
+
+  # Publish all wheels to PyPI
+  publish:
+    name: Publish to PyPI (${{ matrix.version }})
+    needs: [check-versions, build-noavx512-amd64, build-noavx512-arm64, build-avx512-variants]
+    if: |
+      always() &&
+      needs.check-versions.outputs.has_new_versions == 'true' &&
+      github.event.inputs.dry_run != 'true' &&
+      (needs.build-noavx512-amd64.result == 'success' || needs.build-noavx512-amd64.result == 'skipped') &&
+      (needs.build-noavx512-arm64.result == 'success' || needs.build-noavx512-arm64.result == 'skipped') &&
+      (needs.build-avx512-variants.result == 'success' || needs.build-avx512-variants.result == 'skipped')
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        version: ${{ fromJson(needs.check-versions.outputs.new_versions) }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y python3 python3-pip jq
+          pip3 install twine
+
+      - name: Download all wheels for version ${{ matrix.version }}
+        uses: actions/download-artifact@v4
+        with:
+          path: dist/
+          pattern: wheels-*-${{ matrix.version }}
+          merge-multiple: true
+
+      - name: List all wheels
+        run: |
+          echo "=========================================="
+          echo "Wheels to publish for v${{ matrix.version }}:"
+          echo "=========================================="
+          find dist -name "*.whl" -exec ls -lh {} \;
+          echo ""
+          echo "Total: $(find dist -name '*.whl' 2>/dev/null | wc -l) wheels"
+
+      - name: Publish wheels
+        run: |
+          # Detect Python versions from existing wheels
+          WHEEL_PY_VERSIONS=$(find dist -name "*.whl" -type f | sed -n 's/.*-cp\([0-9]*\)-cp.*/\1/p' | sort -u | while read v; do echo "3.${v#3}"; done | tr '\n' ',' | sed 's/,$//')
+          echo "Detected Python versions: $WHEEL_PY_VERSIONS"
+
+          ./test_and_publish.sh \
+            --skip-build \
+            --skip-github \
+            --variant=all \
+            --vllm-versions="${{ matrix.version }}" \
+            --python-versions="${WHEEL_PY_VERSIONS:-auto}" \
+            --platform=all \
+            --dist-dir=dist
+        env:
+          PYPI_TOKEN_CPU: ${{ secrets.PYPI_TOKEN_CPU }}
+          PYPI_TOKEN_AVX512: ${{ secrets.PYPI_TOKEN_AVX512 }}
+          PYPI_TOKEN_AVX512VNNI: ${{ secrets.PYPI_TOKEN_AVX512VNNI }}
+          PYPI_TOKEN_AVX512BF16: ${{ secrets.PYPI_TOKEN_AVX512BF16 }}
+          PYPI_TOKEN_AMXBF16: ${{ secrets.PYPI_TOKEN_AMXBF16 }}
+          PYPI_TOKEN: ${{ secrets.PYPI_API_TOKEN }}
+
+  # Create GitHub Release
+  github-release:
+    name: GitHub Release (${{ matrix.version }})
+    needs: [check-versions, build-noavx512-amd64, build-noavx512-arm64, build-avx512-variants, publish]
+    if: |
+      always() &&
+      needs.check-versions.outputs.has_new_versions == 'true' &&
+      github.event.inputs.dry_run != 'true' &&
+      needs.publish.result == 'success'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        version: ${{ fromJson(needs.check-versions.outputs.new_versions) }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download all wheels for version ${{ matrix.version }}
+        uses: actions/download-artifact@v4
+        with:
+          path: dist/
+          pattern: wheels-*-${{ matrix.version }}
+          merge-multiple: true
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ matrix.version }}
+          name: vLLM CPU v${{ matrix.version }}
+          files: dist/**/*.whl
+          body: |
+            ## vLLM CPU Wheels v${{ matrix.version }}
+
+            Automatically built from upstream vLLM release.
+
+            ### Packages
+            | Package | Platforms | Description |
+            |---------|-----------|-------------|
+            | `vllm-cpu` | x86_64, ARM64 | Base CPU build |
+            | `vllm-cpu-avx512` | x86_64 | AVX512 optimized |
+            | `vllm-cpu-avx512vnni` | x86_64 | AVX512 + VNNI |
+            | `vllm-cpu-avx512bf16` | x86_64 | AVX512 + BF16 |
+            | `vllm-cpu-amxbf16` | x86_64 | AMX optimized |
+
+            ### Installation
+            ```bash
+            # Auto-detect best package for your CPU
+            pip install vllm-cpu-detect
+            vllm-cpu-detect
+
+            # Or install directly
+            pip install vllm-cpu==${{ matrix.version }}
+            ```
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # Summary
+  summary:
+    name: Auto-Update Summary
+    needs: [check-versions, build-noavx512-amd64, build-noavx512-arm64, build-avx512-variants, publish, github-release]
+    if: always()
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Summary
+        run: |
+          echo "=========================================="
+          echo "Auto-Update Summary"
+          echo "=========================================="
+          echo ""
+          echo "New versions found: ${{ needs.check-versions.outputs.new_versions }}"
+          echo ""
+          echo "Build Results:"
+          echo "  noavx512 AMD64: ${{ needs.build-noavx512-amd64.result }}"
+          echo "  noavx512 ARM64: ${{ needs.build-noavx512-arm64.result }}"
+          echo "  AVX512 variants: ${{ needs.build-avx512-variants.result }}"
+          echo ""
+          echo "Publish: ${{ needs.publish.result }}"
+          echo "GitHub Release: ${{ needs.github-release.result }}"
+          echo "=========================================="
+
+          # Report overall status
+          if [[ "${{ needs.check-versions.outputs.has_new_versions }}" != "true" ]]; then
+            echo "No new versions to build - all up to date!"
+          elif [[ "${{ needs.publish.result }}" == "success" ]]; then
+            echo "Successfully built and published new versions!"
+          else
+            echo "::warning::Some jobs failed - check logs for details"
+          fi
