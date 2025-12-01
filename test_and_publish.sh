@@ -386,8 +386,12 @@ get_auto_python_versions() {
         versions+=("3.$i")
     done
 
-    log_info "Auto-detected Python versions for vLLM $vllm_ver: ${versions[*]}"
-    echo "${versions[*]}"
+    # Build space-separated string explicitly
+    local version_str="${versions[*]}"
+    log_info "Auto-detected Python versions for vLLM $vllm_ver: $version_str (${#versions[@]} versions)"
+
+    # Return space-separated versions on a single line
+    printf '%s\n' "$version_str"
 }
 
 # Check if a variant supports a given platform architecture
