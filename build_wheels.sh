@@ -1290,9 +1290,17 @@ build_variant() {
                 exit 1
             fi
 
-            # Update license to GPL-3.0
+            # Update license to GPL-3.0 (use simple string format, not PEP 639 table format)
             log_info "Updating license to GPL-3.0..."
-            sed -i 's/license = .*/license = "GPL-3.0"/' pyproject.toml
+            # Remove any PEP 639 license fields (license-files, license.file, license.text)
+            # These fields cause PyPI upload to fail with "unrecognized or malformed field"
+            # PyPI doesn't fully support PEP 639 yet
+            sed -i '/^license-files/d' pyproject.toml
+            sed -i '/^\[project\.license\]/,/^[^[:space:]]/{/^\[project\.license\]/d;/^file/d;/^text/d}' pyproject.toml
+            # Handle inline table format: license = {file = "LICENSE"} or license = {text = "..."}
+            sed -i 's/^license = {.*}/license = "GPL-3.0"/' pyproject.toml
+            # Handle simple string format
+            sed -i 's/^license = ".*"/license = "GPL-3.0"/' pyproject.toml
             # Also update license classifier if present
             sed -i 's/"License :: OSI Approved :: Apache Software License"/"License :: OSI Approved :: GNU General Public License v3 (GPLv3)"/' pyproject.toml
 
