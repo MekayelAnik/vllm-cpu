@@ -370,14 +370,18 @@ cleanup_after_wheel() {
     local disk_before
     disk_before=$(du -sb "$WORKSPACE" 2>/dev/null | cut -f1)
 
-    # 1. Remove virtual environments for all Python versions (will be recreated for next build)
-    # Note: venvs are named venv-3.10, venv-3.11, etc.
-    for venv_dir in venv-* venv; do
-        if [[ -d "$venv_dir" ]]; then
-            log_info "Removing virtual environment: $venv_dir..."
-            rm -rf "$venv_dir" || log_warning "Failed to remove $venv_dir/"
-        fi
-    done
+    # 1. Remove current Python version's virtual environment only
+    # During multi-version builds, we keep other venvs to avoid recreating them
+    local current_venv="venv-$PYTHON_VERSION"
+    if [[ -d "$current_venv" ]]; then
+        log_info "Removing virtual environment: $current_venv..."
+        rm -rf "$current_venv" || log_warning "Failed to remove $current_venv/"
+    fi
+    # Also clean legacy venv path if it exists
+    if [[ -d "venv" ]]; then
+        log_info "Removing legacy virtual environment..."
+        rm -rf "venv" || log_warning "Failed to remove venv/"
+    fi
 
     # 2. Remove CMake build artifacts (largest space consumer: ~125MB)
     if [[ -d "vllm/build" ]]; then
@@ -758,13 +762,15 @@ get_auto_python_versions() {
     local min_minor="${min_py#*.}"
     local max_minor="${max_py#*.}"
 
+    log_info "Parsed version range: min=$min_py ($min_minor), max=$max_py ($max_minor)"
+
     # Generate all versions in range (max is exclusive)
     local versions=()
     for ((i=min_minor; i<max_minor; i++)); do
         versions+=("3.$i")
     done
 
-    log_info "Auto-detected Python versions for vLLM $vllm_ver: ${versions[*]}"
+    log_info "Auto-detected Python versions for vLLM $vllm_ver: ${versions[*]} (${#versions[@]} versions)"
     echo "${versions[*]}"
 }
 
@@ -1624,6 +1630,7 @@ main() {
                 continue
             fi
             log_info "Python versions for vLLM $vllm_ver: ${py_versions_for_vllm[*]}"
+            log_info "Number of Python versions to build: ${#py_versions_for_vllm[@]}"
         else
             log_info "╔════════════════════════════════════════╗"
             log_info "║ Building for vLLM version: latest"
