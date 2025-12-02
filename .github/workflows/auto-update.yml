@@ -7,7 +7,7 @@ name: Auto-Update vLLM CPU Wheels
 on:
   # Run every 30 minutes
   schedule:
-    - cron: '*/30 * * * *'
+    - cron: '0 0 * * *'
 
   # Allow manual trigger
   workflow_dispatch:
