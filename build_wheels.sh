@@ -1323,6 +1323,25 @@ build_variant() {
             # Step 4: Update license classifier
             sed -i 's/"License :: OSI Approved :: Apache Software License"/"License :: OSI Approved :: GNU General Public License v3 (GPLv3)"/' pyproject.toml
 
+            # Step 5: Disable setuptools automatic license file inclusion
+            # Setuptools has a DEFAULT behavior to auto-include files matching LICENSE*, COPYING*, etc.
+            # This generates License-File metadata even without license-files in [project]
+            # We must explicitly set an empty list to disable this
+            # Reference: https://github.com/pypa/setuptools/issues/4759
+            log_info "Disabling setuptools automatic license-files inclusion..."
+            if grep -q "\[tool\.setuptools\]" pyproject.toml; then
+                # Section exists - check if license-files is already set
+                if ! grep -q "^license-files" pyproject.toml; then
+                    # Add license-files = [] after [tool.setuptools]
+                    sed -i '/^\[tool\.setuptools\]/a license-files = []' pyproject.toml
+                fi
+            else
+                # Section doesn't exist - add it at the end
+                echo "" >> pyproject.toml
+                echo "[tool.setuptools]" >> pyproject.toml
+                echo "license-files = []" >> pyproject.toml
+            fi
+
             # Add/Update author and maintainer information
             log_info "Adding author and maintainer metadata..."
             # Remove existing authors/maintainers lines if present
