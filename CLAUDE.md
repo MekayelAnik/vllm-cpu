@@ -540,6 +540,160 @@ docker build -t vllm-cpu-builder:latest .
 
 **Note**: The `docker-experimental/` directory contains older Docker-related experiments that are not actively maintained.
 
+## Docker Runtime Images
+
+Pre-built Docker images are published to both Docker Hub and GitHub Container Registry (GHCR) for easy deployment without building from source.
+
+### Image Repositories
+
+- **Docker Hub**: `mekayelanik/vllm-cpu`
+- **GitHub Container Registry**: `ghcr.io/mekayelanik/vllm-cpu`
+
+### Image Tags
+
+Each variant has two types of tags:
+- `<variant>-<version>`: Specific version (e.g., `noavx512-0.11.2`)
+- `<variant>-latest`: Latest version for that variant (e.g., `noavx512-latest`)
+
+| Variant | Version Tag | Latest Tag | Platforms |
+|---------|-------------|------------|-----------|
+| noavx512 | `noavx512-0.11.2` | `noavx512-latest` | linux/amd64, linux/arm64 |
+| avx512 | `avx512-0.11.2` | `avx512-latest` | linux/amd64 |
+| avx512vnni | `avx512vnni-0.11.2` | `avx512vnni-latest` | linux/amd64 |
+| avx512bf16 | `avx512bf16-0.11.2` | `avx512bf16-latest` | linux/amd64 |
+| amxbf16 | `amxbf16-0.11.2` | `amxbf16-latest` | linux/amd64 |
+
+### Pulling Images
+
+```bash
+# Docker Hub
+docker pull mekayelanik/vllm-cpu:noavx512-latest
+docker pull mekayelanik/vllm-cpu:avx512bf16-0.11.2
+
+# GitHub Container Registry
+docker pull ghcr.io/mekayelanik/vllm-cpu:noavx512-latest
+```
+
+### Running vLLM in Docker
+
+```bash
+# Basic usage - run OpenAI-compatible API server
+docker run -p 8000:8000 \
+  -v $HOME/.cache/huggingface:/root/.cache/huggingface \
+  mekayelanik/vllm-cpu:noavx512-latest \
+  --model facebook/opt-125m
+
+# With specific variant for better performance
+docker run -p 8000:8000 \
+  -v $HOME/.cache/huggingface:/root/.cache/huggingface \
+  mekayelanik/vllm-cpu:avx512bf16-latest \
+  --model facebook/opt-125m \
+  --max-model-len 2048
+
+# Run with custom configuration
+docker run -p 8000:8000 \
+  -v /path/to/models:/models \
+  -e OMP_NUM_THREADS=8 \
+  mekayelanik/vllm-cpu:amxbf16-latest \
+  --model /models/my-model \
+  --host 0.0.0.0 \
+  --port 8000
+
+# Interactive mode for debugging
+docker run -it --rm \
+  mekayelanik/vllm-cpu:noavx512-latest \
+  python -c "import vllm; print(vllm.__version__)"
+```
+
+### Docker Compose Example
+
+```yaml
+version: '3.8'
+services:
+  vllm:
+    image: mekayelanik/vllm-cpu:noavx512-latest
+    ports:
+      - "8000:8000"
+    volumes:
+      - huggingface-cache:/root/.cache/huggingface
+    environment:
+      - OMP_NUM_THREADS=8
+      - MKL_NUM_THREADS=8
+    command: ["--model", "facebook/opt-125m", "--host", "0.0.0.0"]
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+volumes:
+  huggingface-cache:
+```
+
+### Building Docker Images Locally
+
+```bash
+# Build a specific variant
+docker build \
+  --build-arg VLLM_VERSION=0.11.2 \
+  --build-arg VARIANT=noavx512 \
+  --build-arg PYTHON_VERSION=3.12 \
+  -t vllm-cpu:noavx512-0.11.2 \
+  -f docker/Dockerfile \
+  docker/
+
+# Build using GitHub release instead of PyPI
+docker build \
+  --build-arg VLLM_VERSION=0.11.2 \
+  --build-arg VARIANT=avx512bf16 \
+  --build-arg USE_GITHUB_RELEASE=true \
+  -t vllm-cpu:avx512bf16-0.11.2 \
+  -f docker/Dockerfile \
+  docker/
+```
+
+### CI/CD: GitHub Actions Workflow
+
+The `docker-publish.yml` workflow builds and publishes Docker images:
+
+```bash
+# Trigger manually via GitHub Actions UI or CLI
+gh workflow run docker-publish.yml \
+  -f vllm_version=0.11.2 \
+  -f variants=all \
+  -f platforms=all \
+  -f push=true
+```
+
+**Workflow features:**
+- Builds all 5 variants in parallel
+- Publishes to both Docker Hub and GHCR
+- Multi-platform support (amd64 + arm64 for noavx512)
+- Automatic Python version detection from vLLM's requirements
+- Falls back to GitHub release wheels if PyPI unavailable
+- Triggered on release creation or manual dispatch
+
+**Required GitHub Secrets:**
+- `DOCKERHUB_USERNAME` - Docker Hub username
+- `DOCKERHUB_TOKEN` - Docker Hub access token
+- `GITHUB_TOKEN` - Automatically provided for GHCR
+
+### Image Architecture
+
+The Docker images are built from the pre-compiled PyPI wheels (or GitHub release wheels as fallback):
+
+```
+docker/
+└── Dockerfile          # Runtime image from PyPI/GitHub wheels
+```
+
+**Key features:**
+- Minimal runtime image based on `python:3.x-slim-bookworm`
+- Non-root user (`vllm`) for security
+- Health check endpoint at `/health`
+- Automatic CPU variant selection via environment variable
+- Performance tuning via `OMP_NUM_THREADS`, `MKL_NUM_THREADS`
+
 ## License
 
 GNU General Public License v3.0

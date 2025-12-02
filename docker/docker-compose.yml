@@ -1,0 +1,75 @@
+# vLLM CPU Docker Compose Example
+#
+# Usage:
+#   # Start vLLM server with default model
+#   docker compose up -d
+#
+#   # Start with a specific model
+#   MODEL_NAME=mistralai/Mistral-7B-v0.1 docker compose up -d
+#
+#   # Start with a specific variant
+#   VLLM_VARIANT=avx512bf16 docker compose up -d
+#
+#   # View logs
+#   docker compose logs -f
+#
+#   # Stop
+#   docker compose down
+
+version: '3.8'
+
+services:
+  vllm:
+    image: mekayelanik/vllm-cpu:${VLLM_VARIANT:-noavx512}-${VLLM_VERSION:-latest}
+    container_name: vllm-cpu
+    ports:
+      - "${VLLM_PORT:-8000}:8000"
+    volumes:
+      # Cache HuggingFace models to avoid re-downloading
+      - huggingface-cache:/root/.cache/huggingface
+      # Optional: Mount local models directory
+      # - ./models:/models:ro
+    environment:
+      # Performance tuning
+      - OMP_NUM_THREADS=${OMP_NUM_THREADS:-0}
+      - MKL_NUM_THREADS=${MKL_NUM_THREADS:-0}
+      # Memory optimization
+      - MALLOC_TRIM_THRESHOLD_=100000
+      # HuggingFace token for gated models (optional)
+      - HF_TOKEN=${HF_TOKEN:-}
+    command:
+      - --model
+      - ${MODEL_NAME:-facebook/opt-125m}
+      - --host
+      - "0.0.0.0"
+      - --port
+      - "8000"
+      # Uncomment and adjust as needed:
+      # - --max-model-len
+      # - "4096"
+      # - --tensor-parallel-size
+      # - "1"
+      # - --dtype
+      # - "auto"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      start_period: 120s
+      retries: 5
+    restart: unless-stopped
+    # Resource limits (optional)
+    # deploy:
+    #   resources:
+    #     limits:
+    #       cpus: '8'
+    #       memory: 32G
+
+volumes:
+  huggingface-cache:
+    name: vllm-huggingface-cache
+
+# Network configuration (optional)
+# networks:
+#   default:
+#     name: vllm-network

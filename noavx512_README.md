@@ -91,7 +91,7 @@ vLLM is fast with:
 - State-of-the-art serving throughput
 - Efficient management of attention key and value memory with [**PagedAttention**](https://blog.vllm.ai/2023/06/20/vllm.html)
 - Continuous batching of incoming requests
-- Fast model execution with <b>VNNI on supported CPUs</b> Uuse this package <b>ONLY IF</b> your CPU doesn't have <b>avx512</b> instruction set
+- Fast model execution with <b>VNNI on supported CPUs</b> Use this package <b>ONLY IF</b> your CPU doesn't have <b>avx512</b> instruction set
 - Quantizations: [GPTQ](https://arxiv.org/abs/2210.17323), [AWQ](https://arxiv.org/abs/2306.00978), [AutoRound](https://arxiv.org/abs/2309.05516), INT4, INT8, and FP8
 - Optimized CPU kernels, including integration with FlashAttention and FlashInfer
 - Speculative decoding
