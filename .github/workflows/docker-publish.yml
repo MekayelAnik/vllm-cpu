@@ -38,7 +38,7 @@ on:
         description: 'Use GitHub release wheels instead of PyPI'
         required: false
         type: boolean
-        default: true
+        default: false
       push:
         description: 'Push images to registries'
         required: false
@@ -269,7 +269,7 @@ jobs:
           VLLM_VERSION: ${{ needs.prepare.outputs.vllm_version }}
           VARIANT: ${{ matrix.variant }}
           PLATFORMS: ${{ matrix.platforms }}
-          USE_GITHUB_RELEASE: ${{ github.event.inputs.use_github_release || 'true' }}
+          USE_GITHUB_RELEASE: ${{ github.event.inputs.use_github_release || 'false' }}
           PYTHON_VERSION: ${{ github.event.inputs.python_version || '' }}
           DRY_RUN: ${{ github.event.inputs.dry_run || 'false' }}
           # For release triggers, inputs are null, so default to 'true' for push

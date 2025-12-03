@@ -48,7 +48,7 @@ on:
         description: 'Use GitHub release wheels instead of PyPI'
         required: false
         type: boolean
-        default: true
+        default: false
       skip_dockerhub:
         description: 'Skip Docker Hub publishing'
         required: false
