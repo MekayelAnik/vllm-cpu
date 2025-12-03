@@ -66,6 +66,10 @@ jobs:
     outputs:
       new_versions: ${{ steps.compare.outputs.new_versions }}
       has_new_versions: ${{ steps.compare.outputs.has_new_versions }}
+      selected_variant: ${{ steps.variants.outputs.selected }}
+      build_noavx512: ${{ steps.variants.outputs.build_noavx512 }}
+      build_avx512_variants: ${{ steps.variants.outputs.build_avx512_variants }}
+      avx512_matrix: ${{ steps.variants.outputs.avx512_matrix }}
 
     steps:
       - name: Fetch vLLM releases from GitHub
@@ -143,6 +147,33 @@ jobs:
             echo "has_new_versions=true" >> "$GITHUB_OUTPUT"
           fi
 
+      - name: Determine variants to build
+        id: variants
+        run: |
+          SELECTED="${{ github.event.inputs.variants || 'all' }}"
+          echo "Selected variant: $SELECTED"
+          echo "selected=$SELECTED" >> "$GITHUB_OUTPUT"
+
+          # Determine which jobs to run
+          if [[ "$SELECTED" == "all" || "$SELECTED" == "noavx512" ]]; then
+            echo "build_noavx512=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "build_noavx512=false" >> "$GITHUB_OUTPUT"
+          fi
+
+          # Build AVX512 variants matrix
+          if [[ "$SELECTED" == "all" ]]; then
+            echo "build_avx512_variants=true" >> "$GITHUB_OUTPUT"
+            echo 'avx512_matrix=["avx512", "avx512vnni", "avx512bf16", "amxbf16"]' >> "$GITHUB_OUTPUT"
+          elif [[ "$SELECTED" == "noavx512" ]]; then
+            echo "build_avx512_variants=false" >> "$GITHUB_OUTPUT"
+            echo 'avx512_matrix=[]' >> "$GITHUB_OUTPUT"
+          else
+            # Single AVX512 variant selected
+            echo "build_avx512_variants=true" >> "$GITHUB_OUTPUT"
+            echo "avx512_matrix=[\"$SELECTED\"]" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Summary
         run: |
           echo "=========================================="
@@ -150,13 +181,20 @@ jobs:
           echo "=========================================="
           echo "New versions: ${{ steps.compare.outputs.new_versions }}"
           echo "Has new versions: ${{ steps.compare.outputs.has_new_versions }}"
+          echo "Selected variant: ${{ steps.variants.outputs.selected }}"
+          echo "Build noavx512: ${{ steps.variants.outputs.build_noavx512 }}"
+          echo "Build AVX512 variants: ${{ steps.variants.outputs.build_avx512_variants }}"
+          echo "AVX512 matrix: ${{ steps.variants.outputs.avx512_matrix }}"
           echo "=========================================="
 
   # Build noavx512 (vllm-cpu) for AMD64 + ARM64
   build-noavx512-amd64:
     name: Build noavx512 AMD64 (${{ matrix.version }})
     needs: check-versions
-    if: needs.check-versions.outputs.has_new_versions == 'true' && github.event.inputs.dry_run != 'true'
+    if: |
+      needs.check-versions.outputs.has_new_versions == 'true' &&
+      needs.check-versions.outputs.build_noavx512 == 'true' &&
+      github.event.inputs.dry_run != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 240
     strategy:
@@ -218,7 +256,10 @@ jobs:
   build-noavx512-arm64:
     name: Build noavx512 ARM64 (${{ matrix.version }})
     needs: check-versions
-    if: needs.check-versions.outputs.has_new_versions == 'true' && github.event.inputs.dry_run != 'true'
+    if: |
+      needs.check-versions.outputs.has_new_versions == 'true' &&
+      needs.check-versions.outputs.build_noavx512 == 'true' &&
+      github.event.inputs.dry_run != 'true'
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 300
     strategy:
@@ -281,14 +322,17 @@ jobs:
   build-avx512-variants:
     name: Build ${{ matrix.variant }} AMD64 (${{ matrix.version }})
     needs: check-versions
-    if: needs.check-versions.outputs.has_new_versions == 'true' && github.event.inputs.dry_run != 'true'
+    if: |
+      needs.check-versions.outputs.has_new_versions == 'true' &&
+      needs.check-versions.outputs.build_avx512_variants == 'true' &&
+      github.event.inputs.dry_run != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 240
     strategy:
       fail-fast: false
       matrix:
         version: ${{ fromJson(needs.check-versions.outputs.new_versions) }}
-        variant: [avx512, avx512vnni, avx512bf16, amxbf16]
+        variant: ${{ fromJson(needs.check-versions.outputs.avx512_matrix) }}
 
     steps:
       - name: Checkout

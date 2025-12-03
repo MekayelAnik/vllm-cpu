@@ -84,6 +84,7 @@ jobs:
       has_new_versions: ${{ steps.compare.outputs.has_new_versions }}
       latest_version: ${{ steps.compare.outputs.latest_version }}
       needs_latest_update: ${{ steps.check_latest.outputs.needs_update }}
+      variants_matrix: ${{ steps.variants.outputs.matrix }}
 
     steps:
       - name: Fetch vLLM releases from GitHub
@@ -221,6 +222,21 @@ jobs:
             echo "needs_update=false" >> "$GITHUB_OUTPUT"
           fi
 
+      - name: Determine variants to build
+        id: variants
+        run: |
+          SELECTED_VARIANT="${{ github.event.inputs.variants || 'all' }}"
+          echo "Selected variant input: $SELECTED_VARIANT"
+
+          if [[ "$SELECTED_VARIANT" == "all" ]]; then
+            MATRIX='["noavx512", "avx512", "avx512vnni", "avx512bf16", "amxbf16"]'
+          else
+            MATRIX="[\"$SELECTED_VARIANT\"]"
+          fi
+
+          echo "Variants matrix: $MATRIX"
+          echo "matrix=$MATRIX" >> "$GITHUB_OUTPUT"
+
       - name: Summary
         run: |
           echo "=========================================="
@@ -230,6 +246,7 @@ jobs:
           echo "Has new versions: ${{ steps.compare.outputs.has_new_versions }}"
           echo "Latest version: ${{ steps.compare.outputs.latest_version }}"
           echo "Needs latest update: ${{ steps.check_latest.outputs.needs_update }}"
+          echo "Variants to build: ${{ steps.variants.outputs.matrix }}"
           echo "=========================================="
 
   # Build Docker images for each variant and platform
@@ -243,7 +260,7 @@ jobs:
       fail-fast: false
       matrix:
         version: ${{ fromJson(needs.check-versions.outputs.new_versions) }}
-        variant: [noavx512, avx512, avx512vnni, avx512bf16, amxbf16]
+        variant: ${{ fromJson(needs.check-versions.outputs.variants_matrix) }}
 
     permissions:
       contents: read
@@ -333,7 +350,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        variant: [noavx512, avx512, avx512vnni, avx512bf16, amxbf16]
+        variant: ${{ fromJson(needs.check-versions.outputs.variants_matrix) }}
 
     permissions:
       contents: read
