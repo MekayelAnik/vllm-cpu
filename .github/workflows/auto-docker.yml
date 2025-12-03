@@ -1,0 +1,270 @@
+name: Auto-Build Docker Images
+
+# Automatically checks for new vLLM releases and builds Docker images
+# - Builds for both AMD64 and ARM64
+# - All 5 variants: noavx512, avx512, avx512vnni, avx512bf16, amxbf16
+# - Tags: version-specific and 'latest' for newest version
+
+on:
+  # Run every 30 minutes
+  schedule:
+    - cron: '*/30 * * * *'
+
+  # Allow manual trigger
+  workflow_dispatch:
+    inputs:
+      force_version:
+        description: 'Force build specific version (optional, e.g., 0.12.0)'
+        required: false
+        type: string
+      dry_run:
+        description: 'Dry run - check versions only, no build'
+        required: false
+        type: boolean
+        default: false
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  # Check for new vLLM versions that need Docker images
+  check-versions:
+    name: Check for New Versions
+    runs-on: ubuntu-latest
+    outputs:
+      new_versions: ${{ steps.compare.outputs.new_versions }}
+      has_new_versions: ${{ steps.compare.outputs.has_new_versions }}
+      latest_version: ${{ steps.compare.outputs.latest_version }}
+
+    steps:
+      - name: Fetch vLLM releases from GitHub
+        id: github
+        run: |
+          echo "Fetching vLLM releases from GitHub..."
+
+          # Fetch all releases >= 0.8.4 (no older versions needed)
+          GITHUB_VERSIONS=$(curl -s "https://api.github.com/repos/vllm-project/vllm/releases?per_page=100" | \
+            jq -r '.[].tag_name' | \
+            grep -E '^v[0-9]+\.[0-9]+\.[0-9]+(\.[0-9]+)?$' | \
+            sed 's/^v//' | \
+            sort -V | \
+            awk -F. '$1 > 0 || ($1 == 0 && ($2 > 8 || ($2 == 8 && $3 >= 4)))')
+
+          echo "GitHub versions (stable only, >= 0.8.4):"
+          echo "$GITHUB_VERSIONS"
+
+          # Save to file for later use
+          echo "$GITHUB_VERSIONS" > /tmp/github_versions.txt
+
+          # Get the latest version
+          LATEST=$(echo "$GITHUB_VERSIONS" | tail -1)
+          echo "Latest version: $LATEST"
+          echo "$LATEST" > /tmp/latest_version.txt
+
+      - name: Log in to Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Check existing Docker images
+        id: docker
+        run: |
+          echo "Checking existing Docker images..."
+
+          # Get list of existing tags from GHCR for the base variant (noavx512)
+          # We check noavx512 as the reference since all variants are built together
+          EXISTING_VERSIONS=""
+
+          # Use GitHub API to list package versions
+          PACKAGE_NAME=$(echo "${{ env.IMAGE_NAME }}" | tr '/' '\n' | tail -1)
+          OWNER=$(echo "${{ env.IMAGE_NAME }}" | tr '/' '\n' | head -1)
+
+          # Fetch existing tags from GHCR
+          GHCR_TAGS=$(curl -s -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+            "https://ghcr.io/v2/${OWNER}/${PACKAGE_NAME}/tags/list" 2>/dev/null | \
+            jq -r '.tags[]?' 2>/dev/null || echo "")
+
+          if [ -n "$GHCR_TAGS" ]; then
+            # Extract version numbers from tags (format: X.Y.Z-variant or X.Y.Z)
+            EXISTING_VERSIONS=$(echo "$GHCR_TAGS" | \
+              grep -oE '^[0-9]+\.[0-9]+\.[0-9]+(\.[0-9]+)?' | \
+              sort -V -u)
+            echo "Existing Docker image versions:"
+            echo "$EXISTING_VERSIONS"
+          else
+            echo "No existing Docker images found or unable to fetch"
+          fi
+
+          # Save to file
+          echo "$EXISTING_VERSIONS" > /tmp/docker_versions.txt
+
+      - name: Compare versions
+        id: compare
+        run: |
+          echo "Comparing versions..."
+
+          # Handle force version input
+          if [[ -n "${{ github.event.inputs.force_version }}" ]]; then
+            echo "Force building version: ${{ github.event.inputs.force_version }}"
+            NEW_VERSIONS="${{ github.event.inputs.force_version }}"
+            echo "new_versions=[\"$NEW_VERSIONS\"]" >> "$GITHUB_OUTPUT"
+            echo "has_new_versions=true" >> "$GITHUB_OUTPUT"
+            echo "latest_version=$(cat /tmp/latest_version.txt)" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Find versions in GitHub but not in Docker registry
+          NEW_VERSIONS=""
+          while IFS= read -r version; do
+            if [[ -n "$version" ]] && ! grep -qx "$version" /tmp/docker_versions.txt; then
+              echo "New version found: $version"
+              if [[ -n "$NEW_VERSIONS" ]]; then
+                NEW_VERSIONS="$NEW_VERSIONS,$version"
+              else
+                NEW_VERSIONS="$version"
+              fi
+            fi
+          done < /tmp/github_versions.txt
+
+          LATEST_VERSION=$(cat /tmp/latest_version.txt)
+
+          if [[ -z "$NEW_VERSIONS" ]]; then
+            echo "No new versions found"
+            echo "new_versions=[]" >> "$GITHUB_OUTPUT"
+            echo "has_new_versions=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "New versions to build: $NEW_VERSIONS"
+            # Convert comma-separated to JSON array
+            JSON_ARRAY=$(echo "$NEW_VERSIONS" | tr ',' '\n' | jq -R . | jq -s -c .)
+            echo "new_versions=$JSON_ARRAY" >> "$GITHUB_OUTPUT"
+            echo "has_new_versions=true" >> "$GITHUB_OUTPUT"
+          fi
+
+          echo "latest_version=$LATEST_VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Summary
+        run: |
+          echo "=========================================="
+          echo "Docker Image Version Check Summary"
+          echo "=========================================="
+          echo "New versions: ${{ steps.compare.outputs.new_versions }}"
+          echo "Has new versions: ${{ steps.compare.outputs.has_new_versions }}"
+          echo "Latest version: ${{ steps.compare.outputs.latest_version }}"
+          echo "=========================================="
+
+  # Build Docker images for each variant and platform
+  build-images:
+    name: Build ${{ matrix.variant }} (${{ matrix.version }})
+    needs: check-versions
+    if: needs.check-versions.outputs.has_new_versions == 'true' && github.event.inputs.dry_run != 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        version: ${{ fromJson(needs.check-versions.outputs.new_versions) }}
+        variant: [noavx512, avx512, avx512vnni, avx512bf16, amxbf16]
+
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            # Version tag with variant: 0.11.2-noavx512
+            type=raw,value=${{ matrix.version }}-${{ matrix.variant }}
+            # Latest tag only for noavx512 variant and if this is the latest version
+            type=raw,value=latest,enable=${{ matrix.variant == 'noavx512' && matrix.version == needs.check-versions.outputs.latest_version }}
+            # Latest variant tag: latest-avx512bf16
+            type=raw,value=latest-${{ matrix.variant }},enable=${{ matrix.version == needs.check-versions.outputs.latest_version }}
+
+      - name: Determine platforms
+        id: platforms
+        run: |
+          # noavx512 supports both AMD64 and ARM64
+          # Other variants are x86_64 only
+          if [[ "${{ matrix.variant }}" == "noavx512" ]]; then
+            echo "platforms=linux/amd64,linux/arm64" >> "$GITHUB_OUTPUT"
+          else
+            echo "platforms=linux/amd64" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: ./docker
+          file: ./docker/Dockerfile
+          platforms: ${{ steps.platforms.outputs.platforms }}
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            VLLM_VERSION=${{ matrix.version }}
+            VARIANT=${{ matrix.variant }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Verify image
+        run: |
+          echo "Verifying image for ${{ matrix.variant }} @ ${{ matrix.version }}..."
+          docker pull ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ matrix.version }}-${{ matrix.variant }}
+          docker run --rm ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ matrix.version }}-${{ matrix.variant }} \
+            python -c "import vllm; print(f'vLLM version: {vllm.__version__}')"
+
+  # Summary
+  summary:
+    name: Build Summary
+    needs: [check-versions, build-images]
+    if: always()
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Summary
+        run: |
+          echo "=========================================="
+          echo "Auto Docker Build Summary"
+          echo "=========================================="
+          echo ""
+          echo "New versions found: ${{ needs.check-versions.outputs.new_versions }}"
+          echo "Latest version: ${{ needs.check-versions.outputs.latest_version }}"
+          echo ""
+          echo "Build Results: ${{ needs.build-images.result }}"
+          echo "=========================================="
+
+          if [[ "${{ needs.check-versions.outputs.has_new_versions }}" != "true" ]]; then
+            echo "No new versions to build - all Docker images up to date!"
+          elif [[ "${{ needs.build-images.result }}" == "success" ]]; then
+            echo "Successfully built and pushed new Docker images!"
+            echo ""
+            echo "Images available at:"
+            echo "  ghcr.io/${{ github.repository }}:<version>-<variant>"
+            echo ""
+            echo "Pull latest:"
+            echo "  docker pull ghcr.io/${{ github.repository }}:latest"
+          else
+            echo "::warning::Some builds failed - check logs for details"
+          fi
