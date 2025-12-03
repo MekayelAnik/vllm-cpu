@@ -182,22 +182,30 @@ ENV VLLM_ASSETS_CACHE=/root/.cache/vllm/assets
 # CPU Backend Specific Settings (vLLM CPU Optimization)
 # Reference: https://docs.vllm.ai/en/stable/getting_started/installation/cpu/
 # -----------------------------------------------------------------------------
-# CPU key-value cache space in GiB
-# Larger values allow more concurrent requests and longer contexts
-# vLLM default: 0 (internally treated as 4 GiB)
-# Recommended: Set based on available RAM minus model size
-ENV VLLM_CPU_KVCACHE_SPACE=4
-
-# CPU core binding for OpenMP threads
-# "auto" = bind threads to NUMA nodes automatically (recommended)
-# "nobind" = disable binding, use standard OMP_NUM_THREADS
-# Specific cores: "0-31", "0,1,2", or multi-rank: "0-15|16-31"
-ENV VLLM_CPU_OMP_THREADS_BIND=auto
-
-# Reserve CPU cores for vLLM front-end (recommended: 1 for online serving)
-# Only effective when VLLM_CPU_OMP_THREADS_BIND=auto
-# vLLM default: None (0 for world_size==1, 1 for world_size>1)
-ENV VLLM_CPU_NUM_OF_RESERVED_CPU=1
+# -----------------------------------------------------------------------------
+# CPU Performance Settings (Auto-configured by entrypoint if not set)
+# -----------------------------------------------------------------------------
+# These settings are dynamically configured at runtime based on available
+# resources. Set them explicitly to override auto-detection.
+#
+# VLLM_CPU_KVCACHE_SPACE: KV cache size in GiB
+#   - Auto: 25% of available memory, clamped to 1-64 GiB
+#   - Larger values = more concurrent requests and longer contexts
+#   - Example: docker run -e VLLM_CPU_KVCACHE_SPACE=16 ...
+#
+# VLLM_CPU_OMP_THREADS_BIND: CPU core binding for OpenMP threads
+#   - Auto: "auto" (NUMA-aware binding by vLLM)
+#   - Options: "auto", "nobind", "0-31", "0-15|16-31" (for tensor parallel)
+#   - Example: docker run -e VLLM_CPU_OMP_THREADS_BIND=0-15 ...
+#
+# VLLM_CPU_NUM_OF_RESERVED_CPU: Reserved cores for vLLM frontend
+#   - Auto: 1 for <=16 cores, 2 for >16 cores
+#   - Example: docker run -e VLLM_CPU_NUM_OF_RESERVED_CPU=2 ...
+#
+# VLLM_CPU_SGL_KERNEL: Small-batch optimized kernels (x86_64 + AMX only)
+#   - Auto: 1 for amxbf16 variant, 0 otherwise
+#   - Example: docker run -e VLLM_CPU_SGL_KERNEL=1 ...
+# -----------------------------------------------------------------------------
 
 # -----------------------------------------------------------------------------
 # Variant/Platform-Specific Settings
@@ -208,12 +216,12 @@ ENV VLLM_CPU_NUM_OF_RESERVED_CPU=1
 #   - Provides better performance for MoE models and small-batch scenarios
 
 # -----------------------------------------------------------------------------
-# OpenMP Threading Settings (Used by PyTorch CPU backend)
-# These affect PyTorch's CPU operations via GNU OpenMP (libgomp)
+# OpenMP Threading Settings
 # -----------------------------------------------------------------------------
-# Number of OpenMP threads (empty = auto-detect in entrypoint)
-# Will be set to $(nproc) by entrypoint if not specified
-ENV OMP_NUM_THREADS=""
+# OMP_NUM_THREADS is intentionally NOT set here.
+# vLLM manages thread count internally via VLLM_CPU_OMP_THREADS_BIND.
+# Only set OMP_NUM_THREADS if using VLLM_CPU_OMP_THREADS_BIND=nobind.
+# Example: docker run -e VLLM_CPU_OMP_THREADS_BIND=nobind -e OMP_NUM_THREADS=16 ...
 
 # -----------------------------------------------------------------------------
 # Memory Optimization (glibc malloc tuning)
@@ -479,9 +487,13 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     libgomp1 \
     libnuma1 \
     numactl \
+    # TCMalloc for better memory performance
+    libtcmalloc-minimal4 \
     # For health checks and debugging
     curl \
     procps \
+    # For API key generation
+    openssl \
     # For downloading wheels if needed
     wget \
     # Required for uv to install Python
@@ -670,100 +682,10 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 # This allows querying the Python version without running python --version
 RUN echo "VLLM_PYTHON_VERSION=$(cat /app/python_version.txt)" >> /etc/environment
 
-# Create entrypoint script for better environment variable handling
-RUN cat > /app/entrypoint.sh << 'EOF'
-#!/bin/bash
-set -e
-
-# Detect platform
-ARCH=$(uname -m)
-
-# =============================================================================
-# Platform-specific settings
-# =============================================================================
-if [ "${ARCH}" = "x86_64" ]; then
-    # x86_64 specific optimizations
-
-    # Enable SGL kernels only for amxbf16 variant (requires AMX instruction set)
-    # User can override by setting VLLM_CPU_SGL_KERNEL explicitly
-    if [ -z "${VLLM_CPU_SGL_KERNEL}" ]; then
-        if [ "${VLLM_CPU_VARIANT}" = "amxbf16" ]; then
-            export VLLM_CPU_SGL_KERNEL=1
-            echo "Enabling VLLM_CPU_SGL_KERNEL=1 for amxbf16 variant"
-        else
-            export VLLM_CPU_SGL_KERNEL=0
-        fi
-    fi
-
-elif [ "${ARCH}" = "aarch64" ]; then
-    # ARM64 specific settings
-
-    # SGL kernels are x86-only, ensure disabled on ARM
-    export VLLM_CPU_SGL_KERNEL=0
-
-    # ARM doesn't have the same NUMA topology considerations
-    # Use nobind if auto doesn't work well
-    if [ "${VLLM_CPU_OMP_THREADS_BIND}" = "auto" ]; then
-        # Check if numactl works on this ARM system
-        if ! numactl --show >/dev/null 2>&1; then
-            export VLLM_CPU_OMP_THREADS_BIND=nobind
-            echo "NUMA not available on ARM, using VLLM_CPU_OMP_THREADS_BIND=nobind"
-        fi
-    fi
-fi
-
-# =============================================================================
-# Auto-detect thread count
-# =============================================================================
-if [ -z "${OMP_NUM_THREADS}" ]; then
-    export OMP_NUM_THREADS=$(nproc)
-    echo "Auto-setting OMP_NUM_THREADS=${OMP_NUM_THREADS}"
-fi
-
-# =============================================================================
-# Debug output
-# =============================================================================
-if [ "${VLLM_LOGGING_LEVEL}" = "DEBUG" ]; then
-    echo "=== vLLM CPU Container Configuration ==="
-    echo "Platform: ${ARCH}"
-    echo "Variant: ${VLLM_CPU_VARIANT}"
-    echo "Python: $(python --version)"
-    echo "vLLM: $(python -c 'import vllm; print(vllm.__version__)')"
-    echo "CPU Cores: $(nproc)"
-    echo "Host: ${VLLM_HOST:-0.0.0.0}"
-    echo "Port: ${VLLM_PORT:-8000}"
-    echo "API Key: ${VLLM_API_KEY:+(set)}"
-    echo "--- CPU Optimization ---"
-    echo "OMP_NUM_THREADS: ${OMP_NUM_THREADS}"
-    echo "VLLM_CPU_KVCACHE_SPACE: ${VLLM_CPU_KVCACHE_SPACE:-4}"
-    echo "VLLM_CPU_OMP_THREADS_BIND: ${VLLM_CPU_OMP_THREADS_BIND}"
-    echo "VLLM_CPU_NUM_OF_RESERVED_CPU: ${VLLM_CPU_NUM_OF_RESERVED_CPU}"
-    echo "VLLM_CPU_SGL_KERNEL: ${VLLM_CPU_SGL_KERNEL:-0}"
-    echo "========================================"
-fi
-
-# =============================================================================
-# Start vLLM server or execute custom command
-# =============================================================================
-if [ $# -eq 0 ]; then
-    # Build command with environment variables
-    CMD="python -m vllm.entrypoints.openai.api_server"
-    CMD="${CMD} --host ${VLLM_HOST:-0.0.0.0}"
-    CMD="${CMD} --port ${VLLM_PORT:-8000}"
-
-    # Add API key if set
-    if [ -n "${VLLM_API_KEY}" ]; then
-        CMD="${CMD} --api-key ${VLLM_API_KEY}"
-    fi
-
-    echo "Starting vLLM server: ${CMD}"
-    exec ${CMD}
-else
-    # Execute custom command
-    exec "$@"
-fi
-EOF
-chmod +x /app/entrypoint.sh
+# Copy entrypoint and banner scripts
+COPY entrypoint.sh /app/entrypoint.sh
+COPY banner.sh /app/banner.sh
+RUN chmod +x /app/entrypoint.sh /app/banner.sh
 
 # Health check using environment variable for port
 HEALTHCHECK --interval=30s --timeout=10s --start-period=120s --retries=3 \
