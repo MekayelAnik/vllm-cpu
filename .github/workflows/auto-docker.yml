@@ -308,49 +308,51 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Re-tag image as latest (Docker Hub)
+      - name: Re-tag image as latest (Docker Hub & GHCR)
         run: |
           LATEST_VERSION="${{ needs.check-versions.outputs.latest_version }}"
           VARIANT="${{ matrix.variant }}"
 
-          echo "Re-tagging ${{ env.DOCKERHUB_IMAGE }}:${VARIANT}-${LATEST_VERSION} as ${VARIANT}-latest..."
+          SOURCE_TAG="${VARIANT}-${LATEST_VERSION}"
+          LATEST_TAG="${VARIANT}-latest"
 
-          # Pull the version-specific image
-          docker pull ${{ env.DOCKERHUB_IMAGE }}:${VARIANT}-${LATEST_VERSION}
+          echo "Attempting to re-tag ${SOURCE_TAG} as ${LATEST_TAG}..."
 
-          # Tag it as latest
-          docker tag ${{ env.DOCKERHUB_IMAGE }}:${VARIANT}-${LATEST_VERSION} \
-                     ${{ env.DOCKERHUB_IMAGE }}:${VARIANT}-latest
+          # Try to pull the version-specific image from Docker Hub
+          if docker pull ${{ env.DOCKERHUB_IMAGE }}:${SOURCE_TAG} 2>/dev/null; then
+            echo "Found image on Docker Hub, re-tagging..."
 
-          # Push the latest tag
-          docker push ${{ env.DOCKERHUB_IMAGE }}:${VARIANT}-latest
+            # Tag and push to Docker Hub
+            docker tag ${{ env.DOCKERHUB_IMAGE }}:${SOURCE_TAG} \
+                       ${{ env.DOCKERHUB_IMAGE }}:${LATEST_TAG}
+            docker push ${{ env.DOCKERHUB_IMAGE }}:${LATEST_TAG}
+            echo "Successfully updated Docker Hub ${LATEST_TAG} -> ${LATEST_VERSION}"
 
-          echo "Successfully updated Docker Hub ${VARIANT}-latest -> ${LATEST_VERSION}"
-
-      - name: Re-tag image as latest (GHCR)
-        run: |
-          LATEST_VERSION="${{ needs.check-versions.outputs.latest_version }}"
-          VARIANT="${{ matrix.variant }}"
-
-          echo "Re-tagging ${{ env.GHCR_IMAGE }}:${VARIANT}-${LATEST_VERSION} as ${VARIANT}-latest..."
-
-          # Pull the version-specific image
-          docker pull ${{ env.GHCR_IMAGE }}:${VARIANT}-${LATEST_VERSION}
-
-          # Tag it as latest
-          docker tag ${{ env.GHCR_IMAGE }}:${VARIANT}-${LATEST_VERSION} \
-                     ${{ env.GHCR_IMAGE }}:${VARIANT}-latest
-
-          # Push the latest tag
-          docker push ${{ env.GHCR_IMAGE }}:${VARIANT}-latest
-
-          echo "Successfully updated GHCR ${VARIANT}-latest -> ${LATEST_VERSION}"
+            # Tag and push to GHCR
+            docker tag ${{ env.DOCKERHUB_IMAGE }}:${SOURCE_TAG} \
+                       ${{ env.GHCR_IMAGE }}:${LATEST_TAG}
+            docker push ${{ env.GHCR_IMAGE }}:${LATEST_TAG}
+            echo "Successfully updated GHCR ${LATEST_TAG} -> ${LATEST_VERSION}"
+          else
+            echo "WARNING: Image ${SOURCE_TAG} not found on Docker Hub"
+            echo "This can happen if PyPI has a version we haven't built yet"
+            echo "Skipping latest tag update for ${VARIANT}"
+            exit 0
+          fi
 
       - name: Verify latest image
         run: |
-          echo "Verifying ${{ matrix.variant }}-latest -> ${{ needs.check-versions.outputs.latest_version }}..."
-          docker run --rm ${{ env.DOCKERHUB_IMAGE }}:${{ matrix.variant }}-latest \
-            python -c "import vllm; print(f'vLLM version: {vllm.__version__}')"
+          LATEST_VERSION="${{ needs.check-versions.outputs.latest_version }}"
+          VARIANT="${{ matrix.variant }}"
+
+          # Only verify if the image exists
+          if docker pull ${{ env.DOCKERHUB_IMAGE }}:${VARIANT}-latest 2>/dev/null; then
+            echo "Verifying ${VARIANT}-latest..."
+            docker run --rm ${{ env.DOCKERHUB_IMAGE }}:${VARIANT}-latest \
+              python -c "import vllm; print(f'vLLM version: {vllm.__version__}')"
+          else
+            echo "No ${VARIANT}-latest image to verify (expected if source image didn't exist)"
+          fi
 
   # Summary
   summary:
