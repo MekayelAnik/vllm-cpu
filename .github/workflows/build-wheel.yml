@@ -237,7 +237,7 @@ jobs:
           ./build_wheels.sh \
             --variant=noavx512 \
             --vllm-versions="${{ matrix.version }}" \
-            --python-versions=auto \
+            --python-versions="${{ github.event.inputs.python_versions || 'auto' }}" \
             --output-dir=dist
 
       - name: List built wheels
@@ -302,7 +302,7 @@ jobs:
           ./build_wheels.sh \
             --variant=noavx512 \
             --vllm-versions="${{ matrix.version }}" \
-            --python-versions=auto \
+            --python-versions="${{ github.event.inputs.python_versions || 'auto' }}" \
             --output-dir=dist
 
       - name: List built wheels
@@ -369,7 +369,7 @@ jobs:
           ./build_wheels.sh \
             --variant=${{ matrix.variant }} \
             --vllm-versions="${{ matrix.version }}" \
-            --python-versions=auto \
+            --python-versions="${{ github.event.inputs.python_versions || 'auto' }}" \
             --output-dir=dist
 
       - name: List built wheels
