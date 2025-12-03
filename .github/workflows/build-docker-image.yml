@@ -379,15 +379,44 @@ jobs:
       - name: Determine platforms
         id: platforms
         run: |
+          SELECTED_PLATFORM="${{ github.event.inputs.platforms || 'all' }}"
+          VARIANT="${{ matrix.variant }}"
+
+          # Determine available platforms for this variant
           # noavx512 supports both AMD64 and ARM64
           # Other variants are x86_64 only
-          if [[ "${{ matrix.variant }}" == "noavx512" ]]; then
-            echo "platforms=linux/amd64,linux/arm64" >> "$GITHUB_OUTPUT"
+          if [[ "$VARIANT" == "noavx512" ]]; then
+            VARIANT_PLATFORMS="linux/amd64,linux/arm64"
           else
-            echo "platforms=linux/amd64" >> "$GITHUB_OUTPUT"
+            VARIANT_PLATFORMS="linux/amd64"
           fi
 
+          # Apply user's platform filter
+          if [[ "$SELECTED_PLATFORM" == "all" ]]; then
+            FINAL_PLATFORMS="$VARIANT_PLATFORMS"
+          elif [[ "$SELECTED_PLATFORM" == "linux/arm64" && "$VARIANT" != "noavx512" ]]; then
+            echo "::warning::Variant $VARIANT does not support ARM64. Skipping this build."
+            echo "platforms=" >> "$GITHUB_OUTPUT"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          else
+            # User selected a specific platform - use it if variant supports it
+            if [[ "$VARIANT_PLATFORMS" == *"$SELECTED_PLATFORM"* ]]; then
+              FINAL_PLATFORMS="$SELECTED_PLATFORM"
+            else
+              echo "::warning::Variant $VARIANT does not support $SELECTED_PLATFORM. Skipping this build."
+              echo "platforms=" >> "$GITHUB_OUTPUT"
+              echo "skip=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+          fi
+
+          echo "Building $VARIANT for platforms: $FINAL_PLATFORMS"
+          echo "platforms=$FINAL_PLATFORMS" >> "$GITHUB_OUTPUT"
+          echo "skip=false" >> "$GITHUB_OUTPUT"
+
       - name: Build and push
+        if: steps.platforms.outputs.skip != 'true'
         uses: docker/build-push-action@v6
         with:
           context: ./docker
@@ -403,6 +432,7 @@ jobs:
           cache-to: type=gha,mode=max
 
       - name: Verify image
+        if: steps.platforms.outputs.skip != 'true'
         run: |
           echo "Verifying image for ${{ matrix.variant }} @ ${{ matrix.version }}..."
           docker pull ${{ env.DOCKERHUB_IMAGE }}:${{ matrix.version }}-${{ matrix.variant }}

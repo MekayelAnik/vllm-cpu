@@ -265,6 +265,38 @@ jobs:
             echo "build_arm64=false" >> "$GITHUB_OUTPUT"
           fi
 
+      - name: Validate platform-variant compatibility
+        run: |
+          SELECTED_VARIANT="${{ steps.variants.outputs.selected }}"
+          BUILD_AMD64="${{ steps.platforms.outputs.build_amd64 }}"
+          BUILD_ARM64="${{ steps.platforms.outputs.build_arm64 }}"
+          BUILD_NOAVX512="${{ steps.variants.outputs.build_noavx512 }}"
+          BUILD_AVX512="${{ steps.variants.outputs.build_avx512_variants }}"
+
+          # Check for incompatible combinations
+          # AVX512 variants require AMD64
+          if [[ "$BUILD_AVX512" == "true" && "$BUILD_AMD64" != "true" ]]; then
+            echo "::warning::AVX512 variants ($SELECTED_VARIANT) require linux/amd64 platform. Selected platform does not include AMD64 - AVX512 builds will be skipped."
+          fi
+
+          # ARM64 only supports noavx512
+          if [[ "$BUILD_ARM64" == "true" && "$BUILD_AMD64" != "true" && "$BUILD_NOAVX512" != "true" ]]; then
+            echo "::error::ARM64 platform only supports noavx512 variant, but '$SELECTED_VARIANT' was selected. No builds will run."
+          fi
+
+          # Check if any builds will actually run
+          WILL_BUILD=false
+          if [[ "$BUILD_NOAVX512" == "true" && ("$BUILD_AMD64" == "true" || "$BUILD_ARM64" == "true") ]]; then
+            WILL_BUILD=true
+          fi
+          if [[ "$BUILD_AVX512" == "true" && "$BUILD_AMD64" == "true" ]]; then
+            WILL_BUILD=true
+          fi
+
+          if [[ "$WILL_BUILD" != "true" && "${{ steps.compare.outputs.has_new_versions }}" == "true" ]]; then
+            echo "::error::No builds will run with the selected variant ($SELECTED_VARIANT) and platform combination."
+          fi
+
       - name: Summary
         run: |
           echo "=========================================="
