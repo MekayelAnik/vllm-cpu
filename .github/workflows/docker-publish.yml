@@ -4,17 +4,22 @@ on:
   workflow_dispatch:
     inputs:
       vllm_version:
-        description: 'vLLM version (e.g., 0.11.2) - leave empty for latest'
+        description: 'vLLM version (optional, e.g., 0.12.0) - leave empty for latest from PyPI'
+        required: false
+        type: string
+        default: ''
+      python_version:
+        description: 'Python version (optional, e.g., 3.12) - leave empty for auto-detect'
         required: false
         type: string
         default: ''
       variants:
-        description: 'Variants to build (comma-separated or "all")'
+        description: 'Variants to build (comma-separated: noavx512,avx512,avx512vnni,avx512bf16,amxbf16 or "all")'
         required: false
         type: string
         default: 'all'
       platforms:
-        description: 'Platforms to build'
+        description: 'Target platforms'
         required: false
         type: choice
         options:
@@ -22,38 +27,42 @@ on:
           - 'linux/amd64'
           - 'linux/arm64'
         default: 'all'
-      push:
-        description: 'Push images to registries'
-        required: false
-        type: boolean
-        default: true
       use_github_release:
         description: 'Use GitHub release wheels instead of PyPI'
         required: false
         type: boolean
         default: true
-      build_profile:
-        description: 'Build profile (affects compression and speed)'
+      push:
+        description: 'Push images to registries'
         required: false
-        type: choice
-        options:
-          - 'production'
-          - 'size-optimized'
-          - 'ci'
-          - 'development'
-        default: 'production'
+        type: boolean
+        default: true
       skip_dockerhub:
-        description: 'Skip publishing to Docker Hub'
+        description: 'Skip Docker Hub publishing'
         required: false
         type: boolean
         default: false
       skip_ghcr:
-        description: 'Skip publishing to GitHub Container Registry'
+        description: 'Skip GitHub Container Registry publishing'
         required: false
         type: boolean
         default: false
       skip_latest_tag:
-        description: 'Skip updating <variant>-latest tags (only create version tags)'
+        description: 'Skip updating latest tags (only create version-specific tags)'
+        required: false
+        type: boolean
+        default: false
+      build_profile:
+        description: 'Build profile'
+        required: false
+        type: choice
+        options:
+          - 'production'
+          - 'ci'
+          - 'development'
+        default: 'production'
+      dry_run:
+        description: 'Dry run - build locally without pushing'
         required: false
         type: boolean
         default: false
@@ -253,9 +262,11 @@ jobs:
           VLLM_VERSION: ${{ needs.prepare.outputs.vllm_version }}
           VARIANT: ${{ matrix.variant }}
           PLATFORMS: ${{ matrix.platforms }}
-          USE_GITHUB_RELEASE: ${{ github.event.inputs.use_github_release || 'false' }}
+          USE_GITHUB_RELEASE: ${{ github.event.inputs.use_github_release || 'true' }}
+          PYTHON_VERSION: ${{ github.event.inputs.python_version || '' }}
+          DRY_RUN: ${{ github.event.inputs.dry_run || 'false' }}
           # For release triggers, inputs are null, so default to 'true' for push
-          PUSH_IMAGE: ${{ (github.event.inputs.push || 'true') != 'false' }}
+          PUSH_IMAGE: ${{ (github.event.inputs.dry_run == 'true' && 'false') || (github.event.inputs.push || 'true') != 'false' }}
           SKIP_DOCKERHUB: ${{ github.event.inputs.skip_dockerhub || 'false' }}
           SKIP_GHCR: ${{ github.event.inputs.skip_ghcr || 'false' }}
           SKIP_LATEST_TAG: ${{ github.event.inputs.skip_latest_tag || 'false' }}
@@ -266,10 +277,13 @@ jobs:
           echo "Building vLLM CPU Docker Image"
           echo "=========================================="
           echo "Version: ${VLLM_VERSION}"
+          echo "Python: ${PYTHON_VERSION:-auto-detect}"
           echo "Variant: ${VARIANT}"
           echo "Platforms: ${PLATFORMS}"
+          echo "Use GitHub Release: ${USE_GITHUB_RELEASE}"
           echo "Compression: ${COMPRESSION_TYPE} level ${COMPRESSION_LEVEL}"
           echo "Push: ${PUSH_IMAGE}"
+          echo "Dry Run: ${DRY_RUN}"
           echo "Skip Docker Hub: ${SKIP_DOCKERHUB}"
           echo "Skip GHCR: ${SKIP_GHCR}"
           echo "Skip Latest Tag: ${SKIP_LATEST_TAG}"
@@ -334,6 +348,12 @@ jobs:
           # Execute docker buildx build
           # --pull ensures we always get latest base image
           # --progress=plain provides detailed logs for CI
+          # Add Python version arg if specified
+          PYTHON_ARG=""
+          if [[ -n "${PYTHON_VERSION}" ]]; then
+            PYTHON_ARG="--build-arg PYTHON_VERSION=${PYTHON_VERSION}"
+          fi
+
           docker buildx build \
             --file ./docker/Dockerfile \
             --platform "${PLATFORMS}" \
@@ -342,6 +362,7 @@ jobs:
             --build-arg VLLM_VERSION="${VLLM_VERSION}" \
             --build-arg VARIANT="${VARIANT}" \
             --build-arg USE_GITHUB_RELEASE="${USE_GITHUB_RELEASE}" \
+            ${PYTHON_ARG} \
             --build-arg BUILDKIT_INLINE_CACHE=1 \
             --build-arg BUILDKIT_MULTI_PLATFORM=1 \
             --label "org.opencontainers.image.title=vLLM CPU (${VARIANT})" \

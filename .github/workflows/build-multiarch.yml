@@ -4,27 +4,27 @@ on:
   workflow_dispatch:
     inputs:
       vllm_version:
-        description: 'vLLM version to build (e.g., 0.11.2)'
+        description: 'vLLM version (required, e.g., 0.12.0)'
         required: true
         type: string
       python_versions:
-        description: 'Python versions: "auto" to detect from vLLM, or specify (e.g., 3.10-3.13, 3.12)'
+        description: 'Python versions (optional, e.g., 3.12 or 3.10-3.13) - leave empty for auto-detect'
         required: false
         type: string
         default: 'auto'
       variants:
-        description: 'Variants to build (noavx512, avx512, avx512vnni, avx512bf16, amxbf16, all)'
+        description: 'Variants to build (comma-separated: noavx512,avx512,avx512vnni,avx512bf16,amxbf16 or "all")'
         required: false
         type: string
-        default: 'noavx512'
+        default: 'all'
       platforms:
-        description: 'Platforms to build'
-        required: true
+        description: 'Target platforms'
+        required: false
         type: choice
         options:
+          - 'all'
           - 'linux/amd64'
           - 'linux/arm64'
-          - 'all'
         default: 'all'
       skip_pypi:
         description: 'Skip PyPI publishing'
@@ -37,7 +37,7 @@ on:
         type: boolean
         default: false
       dry_run:
-        description: 'Dry run (no actual publish)'
+        description: 'Dry run - build and verify only, no publishing'
         required: false
         type: boolean
         default: false
