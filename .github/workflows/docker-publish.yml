@@ -14,9 +14,16 @@ on:
         type: string
         default: ''
       variants:
-        description: 'Variants to build (comma-separated: noavx512,avx512,avx512vnni,avx512bf16,amxbf16 or "all")'
+        description: 'Variants to build'
         required: false
-        type: string
+        type: choice
+        options:
+          - 'all'
+          - 'noavx512'
+          - 'avx512'
+          - 'avx512vnni'
+          - 'avx512bf16'
+          - 'amxbf16'
         default: 'all'
       platforms:
         description: 'Target platforms'
