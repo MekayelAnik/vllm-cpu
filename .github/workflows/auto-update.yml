@@ -37,13 +37,13 @@ jobs:
         run: |
           echo "Fetching vLLM releases from GitHub..."
 
-          # Fetch all releases >= 0.8.4 (no older versions needed)
+          # Fetch all releases >= 0.8.5 (no older versions needed)
           GITHUB_VERSIONS=$(curl -s "https://api.github.com/repos/vllm-project/vllm/releases?per_page=100" | \
             jq -r '.[].tag_name' | \
             grep -E '^v[0-9]+\.[0-9]+\.[0-9]+(\.[0-9]+)?$' | \
             sed 's/^v//' | \
             sort -V | \
-            awk -F. '$1 > 0 || ($1 == 0 && ($2 > 8 || ($2 == 8 && $3 >= 4)))')
+            awk -F. '$1 > 0 || ($1 == 0 && ($2 > 8 || ($2 == 8 && $3 >= 5)))')
 
           echo "GitHub versions (stable only):"
           echo "$GITHUB_VERSIONS"
