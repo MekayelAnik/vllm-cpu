@@ -91,9 +91,11 @@ jobs:
             jq -r '.results[].name' 2>/dev/null || echo "")
 
           if [ -n "$DOCKERHUB_TAGS" ]; then
-            # Extract version numbers from tags (format: X.Y.Z-variant or X.Y.Z)
+            # Extract version numbers from tags
+            # Tags can be: <version>-<variant> (0.11.2-noavx512) or <variant>-<version> (noavx512-0.11.2)
+            # Extract any version pattern X.Y.Z or X.Y.Z.W from anywhere in the tag
             EXISTING_VERSIONS=$(echo "$DOCKERHUB_TAGS" | \
-              grep -oE '^[0-9]+\.[0-9]+\.[0-9]+(\.[0-9]+)?' | \
+              grep -oE '[0-9]+\.[0-9]+\.[0-9]+(\.[0-9]+)?' | \
               sort -V -u)
             echo "Existing Docker Hub image versions:"
             echo "$EXISTING_VERSIONS"
