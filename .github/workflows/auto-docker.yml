@@ -37,6 +37,7 @@ jobs:
       new_versions: ${{ steps.compare.outputs.new_versions }}
       has_new_versions: ${{ steps.compare.outputs.has_new_versions }}
       latest_version: ${{ steps.compare.outputs.latest_version }}
+      needs_latest_update: ${{ steps.check_latest.outputs.needs_update }}
 
     steps:
       - name: Fetch vLLM releases from GitHub
@@ -150,6 +151,30 @@ jobs:
 
           echo "latest_version=$LATEST_VERSION" >> "$GITHUB_OUTPUT"
 
+      - name: Check if latest tags need updating
+        id: check_latest
+        run: |
+          LATEST_VERSION=$(cat /tmp/latest_version.txt)
+          echo "Checking if latest tags point to $LATEST_VERSION..."
+
+          # Check if noavx512-latest exists and what version it points to
+          # We check by looking for the latest version in existing tags
+          CURRENT_LATEST=""
+          if [ -f /tmp/docker_versions.txt ]; then
+            CURRENT_LATEST=$(cat /tmp/docker_versions.txt | sort -V | tail -1)
+          fi
+
+          echo "Current latest in Docker Hub: $CURRENT_LATEST"
+          echo "PyPI latest: $LATEST_VERSION"
+
+          if [ "$CURRENT_LATEST" != "$LATEST_VERSION" ]; then
+            echo "Latest tags need updating!"
+            echo "needs_update=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "Latest tags are up to date"
+            echo "needs_update=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Summary
         run: |
           echo "=========================================="
@@ -158,6 +183,7 @@ jobs:
           echo "New versions: ${{ steps.compare.outputs.new_versions }}"
           echo "Has new versions: ${{ steps.compare.outputs.has_new_versions }}"
           echo "Latest version: ${{ steps.compare.outputs.latest_version }}"
+          echo "Needs latest update: ${{ steps.check_latest.outputs.needs_update }}"
           echo "=========================================="
 
   # Build Docker images for each variant and platform
@@ -248,10 +274,85 @@ jobs:
           docker run --rm ${{ env.DOCKERHUB_IMAGE }}:${{ matrix.version }}-${{ matrix.variant }} \
             python -c "import vllm; print(f'vLLM version: {vllm.__version__}')"
 
+  # Update <variant>-latest tags to point to the latest PyPI version
+  update-latest-tags:
+    name: Update ${{ matrix.variant }}-latest tag
+    needs: [check-versions, build-images]
+    if: |
+      always() &&
+      github.event.inputs.dry_run != 'true' &&
+      needs.check-versions.outputs.needs_latest_update == 'true' &&
+      (needs.build-images.result == 'success' || needs.build-images.result == 'skipped')
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        variant: [noavx512, avx512, avx512vnni, avx512bf16, amxbf16]
+
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Determine platforms
+        id: platforms
+        run: |
+          if [[ "${{ matrix.variant }}" == "noavx512" ]]; then
+            echo "platforms=linux/amd64,linux/arm64" >> "$GITHUB_OUTPUT"
+          else
+            echo "platforms=linux/amd64" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build and push latest tag
+        uses: docker/build-push-action@v6
+        with:
+          context: ./docker
+          file: ./docker/Dockerfile
+          platforms: ${{ steps.platforms.outputs.platforms }}
+          push: true
+          tags: |
+            ${{ env.DOCKERHUB_IMAGE }}:${{ matrix.variant }}-latest
+            ${{ env.GHCR_IMAGE }}:${{ matrix.variant }}-latest
+          build-args: |
+            VLLM_VERSION=${{ needs.check-versions.outputs.latest_version }}
+            VARIANT=${{ matrix.variant }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Verify latest image
+        run: |
+          echo "Verifying ${{ matrix.variant }}-latest -> ${{ needs.check-versions.outputs.latest_version }}..."
+          docker pull ${{ env.DOCKERHUB_IMAGE }}:${{ matrix.variant }}-latest
+          docker run --rm ${{ env.DOCKERHUB_IMAGE }}:${{ matrix.variant }}-latest \
+            python -c "import vllm; print(f'vLLM version: {vllm.__version__}')"
+
   # Summary
   summary:
     name: Build Summary
-    needs: [check-versions, build-images]
+    needs: [check-versions, build-images, update-latest-tags]
     if: always()
     runs-on: ubuntu-latest
 
@@ -263,21 +364,28 @@ jobs:
           echo "=========================================="
           echo ""
           echo "New versions found: ${{ needs.check-versions.outputs.new_versions }}"
-          echo "Latest version: ${{ needs.check-versions.outputs.latest_version }}"
+          echo "Latest version (PyPI): ${{ needs.check-versions.outputs.latest_version }}"
+          echo "Needs latest update: ${{ needs.check-versions.outputs.needs_latest_update }}"
           echo ""
-          echo "Build Results: ${{ needs.build-images.result }}"
+          echo "Build Results:"
+          echo "  New images: ${{ needs.build-images.result }}"
+          echo "  Latest tags: ${{ needs.update-latest-tags.result }}"
           echo "=========================================="
 
-          if [[ "${{ needs.check-versions.outputs.has_new_versions }}" != "true" ]]; then
-            echo "No new versions to build - all Docker images up to date!"
-          elif [[ "${{ needs.build-images.result }}" == "success" ]]; then
-            echo "Successfully built and pushed new Docker images!"
+          if [[ "${{ needs.check-versions.outputs.has_new_versions }}" != "true" ]] && \
+             [[ "${{ needs.check-versions.outputs.needs_latest_update }}" != "true" ]]; then
+            echo "No updates needed - all Docker images up to date!"
+          else
+            if [[ "${{ needs.build-images.result }}" == "success" ]]; then
+              echo "Successfully built new version images!"
+            fi
+            if [[ "${{ needs.update-latest-tags.result }}" == "success" ]]; then
+              echo "Successfully updated latest tags!"
+            fi
             echo ""
             echo "Docker Hub (primary):"
-            echo "  docker pull ${{ env.DOCKERHUB_IMAGE }}:latest"
+            echo "  docker pull ${{ env.DOCKERHUB_IMAGE }}:noavx512-latest"
             echo ""
             echo "GHCR (secondary):"
-            echo "  docker pull ${{ env.GHCR_IMAGE }}:latest"
-          else
-            echo "::warning::Some builds failed - check logs for details"
+            echo "  docker pull ${{ env.GHCR_IMAGE }}:noavx512-latest"
           fi
