@@ -31,7 +31,7 @@ on:
         description: 'Use GitHub release wheels instead of PyPI'
         required: false
         type: boolean
-        default: false
+        default: true
       build_profile:
         description: 'Build profile (affects compression and speed)'
         required: false
