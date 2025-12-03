@@ -253,7 +253,7 @@ jobs:
   build-images:
     name: Build ${{ matrix.variant }} (${{ matrix.version }})
     needs: check-versions
-    if: needs.check-versions.outputs.has_new_versions == 'true' && github.event.inputs.dry_run != 'true'
+    if: needs.check-versions.outputs.has_new_versions == 'true' && (github.event.inputs.dry_run || 'false') != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 60
     strategy:
@@ -342,7 +342,7 @@ jobs:
     needs: [check-versions, build-images]
     if: |
       always() &&
-      github.event.inputs.dry_run != 'true' &&
+      (github.event.inputs.dry_run || 'false') != 'true' &&
       needs.check-versions.outputs.needs_latest_update == 'true' &&
       (needs.build-images.result == 'success' || needs.build-images.result == 'skipped')
     runs-on: ubuntu-latest
