@@ -52,6 +52,11 @@ on:
         required: false
         type: boolean
         default: false
+      skip_latest_tag:
+        description: 'Skip updating <variant>-latest tags (only create version tags)'
+        required: false
+        type: boolean
+        default: false
 
   # Also trigger on release creation
   release:
@@ -190,37 +195,19 @@ jobs:
               mirrors = ["mirror.gcr.io"]
 
       - name: Login to Docker Hub
-        if: github.event.inputs.push != 'false' && github.event.inputs.skip_dockerhub != 'true'
+        if: (github.event.inputs.push || 'true') != 'false' && (github.event.inputs.skip_dockerhub || 'false') != 'true'
         uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
       - name: Login to GitHub Container Registry
-        if: github.event.inputs.push != 'false' && github.event.inputs.skip_ghcr != 'true'
+        if: (github.event.inputs.push || 'true') != 'false' && (github.event.inputs.skip_ghcr || 'false') != 'true'
         uses: docker/login-action@v3
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Extract metadata
-        id: meta
-        uses: docker/metadata-action@v5
-        with:
-          images: |
-            ${{ env.DOCKERHUB_REPO }}
-            ${{ env.GHCR_REPO }}
-          tags: |
-            # Tag pattern: <variant>-<version> (e.g., noavx512-0.11.2)
-            type=raw,value=${{ matrix.tag }}-${{ needs.prepare.outputs.vllm_version }}
-            # Latest tag per variant (e.g., noavx512-latest)
-            type=raw,value=${{ matrix.tag }}-latest
-          labels: |
-            org.opencontainers.image.title=vLLM CPU (${{ matrix.variant }})
-            org.opencontainers.image.description=vLLM CPU inference engine - ${{ matrix.variant }} variant
-            org.opencontainers.image.version=${{ needs.prepare.outputs.vllm_version }}
-            vllm.variant=${{ matrix.variant }}
 
       - name: Configure build profile
         id: profile
@@ -267,9 +254,11 @@ jobs:
           VARIANT: ${{ matrix.variant }}
           PLATFORMS: ${{ matrix.platforms }}
           USE_GITHUB_RELEASE: ${{ github.event.inputs.use_github_release || 'false' }}
-          PUSH_IMAGE: ${{ github.event.inputs.push != 'false' }}
+          # For release triggers, inputs are null, so default to 'true' for push
+          PUSH_IMAGE: ${{ (github.event.inputs.push || 'true') != 'false' }}
           SKIP_DOCKERHUB: ${{ github.event.inputs.skip_dockerhub || 'false' }}
           SKIP_GHCR: ${{ github.event.inputs.skip_ghcr || 'false' }}
+          SKIP_LATEST_TAG: ${{ github.event.inputs.skip_latest_tag || 'false' }}
           COMPRESSION_TYPE: ${{ steps.profile.outputs.compression_type }}
           COMPRESSION_LEVEL: ${{ steps.profile.outputs.compression_level }}
         run: |
@@ -283,6 +272,7 @@ jobs:
           echo "Push: ${PUSH_IMAGE}"
           echo "Skip Docker Hub: ${SKIP_DOCKERHUB}"
           echo "Skip GHCR: ${SKIP_GHCR}"
+          echo "Skip Latest Tag: ${SKIP_LATEST_TAG}"
           echo "=========================================="
 
           # Build tags based on which registries are enabled
@@ -291,17 +281,27 @@ jobs:
           # Docker Hub tags
           if [[ "${SKIP_DOCKERHUB}" != "true" ]]; then
             VERSION_TAG="${{ env.DOCKERHUB_REPO }}:${{ matrix.tag }}-${VLLM_VERSION}"
-            LATEST_TAG="${{ env.DOCKERHUB_REPO }}:${{ matrix.tag }}-latest"
-            TAGS="${TAGS} --tag ${VERSION_TAG} --tag ${LATEST_TAG}"
-            echo "Docker Hub tags: ${VERSION_TAG}, ${LATEST_TAG}"
+            TAGS="${TAGS} --tag ${VERSION_TAG}"
+            echo "Docker Hub version tag: ${VERSION_TAG}"
+
+            if [[ "${SKIP_LATEST_TAG}" != "true" ]]; then
+              LATEST_TAG="${{ env.DOCKERHUB_REPO }}:${{ matrix.tag }}-latest"
+              TAGS="${TAGS} --tag ${LATEST_TAG}"
+              echo "Docker Hub latest tag: ${LATEST_TAG}"
+            fi
           fi
 
           # GHCR tags
           if [[ "${SKIP_GHCR}" != "true" ]]; then
             GHCR_VERSION_TAG="${{ env.GHCR_REPO }}:${{ matrix.tag }}-${VLLM_VERSION}"
-            GHCR_LATEST_TAG="${{ env.GHCR_REPO }}:${{ matrix.tag }}-latest"
-            TAGS="${TAGS} --tag ${GHCR_VERSION_TAG} --tag ${GHCR_LATEST_TAG}"
-            echo "GHCR tags: ${GHCR_VERSION_TAG}, ${GHCR_LATEST_TAG}"
+            TAGS="${TAGS} --tag ${GHCR_VERSION_TAG}"
+            echo "GHCR version tag: ${GHCR_VERSION_TAG}"
+
+            if [[ "${SKIP_LATEST_TAG}" != "true" ]]; then
+              GHCR_LATEST_TAG="${{ env.GHCR_REPO }}:${{ matrix.tag }}-latest"
+              TAGS="${TAGS} --tag ${GHCR_LATEST_TAG}"
+              echo "GHCR latest tag: ${GHCR_LATEST_TAG}"
+            fi
           fi
 
           # Ensure at least one registry is enabled
@@ -362,7 +362,7 @@ jobs:
           echo "=========================================="
 
       - name: Test amd64 image
-        if: github.event.inputs.push != 'false' && contains(matrix.platforms, 'linux/amd64')
+        if: (github.event.inputs.push || 'true') != 'false' && contains(matrix.platforms, 'linux/amd64')
         env:
           SKIP_DOCKERHUB: ${{ github.event.inputs.skip_dockerhub || 'false' }}
         run: |
@@ -378,7 +378,7 @@ jobs:
           echo "amd64 test passed!"
 
       - name: Test arm64 image
-        if: github.event.inputs.push != 'false' && contains(matrix.platforms, 'linux/arm64')
+        if: (github.event.inputs.push || 'true') != 'false' && contains(matrix.platforms, 'linux/arm64')
         env:
           SKIP_DOCKERHUB: ${{ github.event.inputs.skip_dockerhub || 'false' }}
         run: |
@@ -402,6 +402,8 @@ jobs:
 
     steps:
       - name: Summary
+        env:
+          SKIP_LATEST: ${{ github.event.inputs.skip_latest_tag || 'false' }}
         run: |
           echo "# Docker Image Build Summary" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
@@ -412,29 +414,46 @@ jobs:
           echo "- **Build Profile:** ${{ github.event.inputs.build_profile || 'production' }}" >> $GITHUB_STEP_SUMMARY
           echo "- **Compression:** zstd level 22 (production) / zstd level 10 (ci) / gzip level 1 (development)" >> $GITHUB_STEP_SUMMARY
           echo "- **Push:** ${{ github.event.inputs.push || 'true' }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Skip Latest Tags:** ${SKIP_LATEST}" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "## Images Published" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "### Docker Hub" >> $GITHUB_STEP_SUMMARY
           echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
           echo "docker pull ${{ env.DOCKERHUB_REPO }}:<variant>-${{ needs.prepare.outputs.vllm_version }}" >> $GITHUB_STEP_SUMMARY
-          echo "docker pull ${{ env.DOCKERHUB_REPO }}:<variant>-latest" >> $GITHUB_STEP_SUMMARY
+          if [[ "${SKIP_LATEST}" != "true" ]]; then
+            echo "docker pull ${{ env.DOCKERHUB_REPO }}:<variant>-latest" >> $GITHUB_STEP_SUMMARY
+          fi
           echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "### GitHub Container Registry" >> $GITHUB_STEP_SUMMARY
           echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
           echo "docker pull ${{ env.GHCR_REPO }}:<variant>-${{ needs.prepare.outputs.vllm_version }}" >> $GITHUB_STEP_SUMMARY
-          echo "docker pull ${{ env.GHCR_REPO }}:<variant>-latest" >> $GITHUB_STEP_SUMMARY
+          if [[ "${SKIP_LATEST}" != "true" ]]; then
+            echo "docker pull ${{ env.GHCR_REPO }}:<variant>-latest" >> $GITHUB_STEP_SUMMARY
+          fi
           echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "### Available Tags (Multi-Arch Manifests)" >> $GITHUB_STEP_SUMMARY
-          echo "| Variant | Version Tag | Latest Tag | Platforms |" >> $GITHUB_STEP_SUMMARY
-          echo "|---------|-------------|------------|-----------|" >> $GITHUB_STEP_SUMMARY
-          echo "| noavx512 | noavx512-${{ needs.prepare.outputs.vllm_version }} | noavx512-latest | amd64, arm64 |" >> $GITHUB_STEP_SUMMARY
-          echo "| avx512 | avx512-${{ needs.prepare.outputs.vllm_version }} | avx512-latest | amd64 |" >> $GITHUB_STEP_SUMMARY
-          echo "| avx512vnni | avx512vnni-${{ needs.prepare.outputs.vllm_version }} | avx512vnni-latest | amd64 |" >> $GITHUB_STEP_SUMMARY
-          echo "| avx512bf16 | avx512bf16-${{ needs.prepare.outputs.vllm_version }} | avx512bf16-latest | amd64 |" >> $GITHUB_STEP_SUMMARY
-          echo "| amxbf16 | amxbf16-${{ needs.prepare.outputs.vllm_version }} | amxbf16-latest | amd64 |" >> $GITHUB_STEP_SUMMARY
+          if [[ "${SKIP_LATEST}" != "true" ]]; then
+            echo "| Variant | Version Tag | Latest Tag | Platforms |" >> $GITHUB_STEP_SUMMARY
+            echo "|---------|-------------|------------|-----------|" >> $GITHUB_STEP_SUMMARY
+            echo "| noavx512 | noavx512-${{ needs.prepare.outputs.vllm_version }} | noavx512-latest | amd64, arm64 |" >> $GITHUB_STEP_SUMMARY
+            echo "| avx512 | avx512-${{ needs.prepare.outputs.vllm_version }} | avx512-latest | amd64 |" >> $GITHUB_STEP_SUMMARY
+            echo "| avx512vnni | avx512vnni-${{ needs.prepare.outputs.vllm_version }} | avx512vnni-latest | amd64 |" >> $GITHUB_STEP_SUMMARY
+            echo "| avx512bf16 | avx512bf16-${{ needs.prepare.outputs.vllm_version }} | avx512bf16-latest | amd64 |" >> $GITHUB_STEP_SUMMARY
+            echo "| amxbf16 | amxbf16-${{ needs.prepare.outputs.vllm_version }} | amxbf16-latest | amd64 |" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "| Variant | Version Tag | Platforms |" >> $GITHUB_STEP_SUMMARY
+            echo "|---------|-------------|-----------|" >> $GITHUB_STEP_SUMMARY
+            echo "| noavx512 | noavx512-${{ needs.prepare.outputs.vllm_version }} | amd64, arm64 |" >> $GITHUB_STEP_SUMMARY
+            echo "| avx512 | avx512-${{ needs.prepare.outputs.vllm_version }} | amd64 |" >> $GITHUB_STEP_SUMMARY
+            echo "| avx512vnni | avx512vnni-${{ needs.prepare.outputs.vllm_version }} | amd64 |" >> $GITHUB_STEP_SUMMARY
+            echo "| avx512bf16 | avx512bf16-${{ needs.prepare.outputs.vllm_version }} | amd64 |" >> $GITHUB_STEP_SUMMARY
+            echo "| amxbf16 | amxbf16-${{ needs.prepare.outputs.vllm_version }} | amd64 |" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "> **Note:** Latest tags were skipped for this build." >> $GITHUB_STEP_SUMMARY
+          fi
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "> **Note:** The noavx512 variant is a multi-arch manifest containing both amd64 and arm64 images under the same tag." >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
@@ -442,7 +461,7 @@ jobs:
           echo "\`\`\`bash" >> $GITHUB_STEP_SUMMARY
           echo "# Run vLLM with a model" >> $GITHUB_STEP_SUMMARY
           echo "docker run -p 8000:8000 -v \$HOME/.cache/huggingface:/models \\" >> $GITHUB_STEP_SUMMARY
-          echo "  ${{ env.DOCKERHUB_REPO }}:noavx512-latest \\" >> $GITHUB_STEP_SUMMARY
+          echo "  ${{ env.DOCKERHUB_REPO }}:noavx512-${{ needs.prepare.outputs.vllm_version }} \\" >> $GITHUB_STEP_SUMMARY
           echo "  --model facebook/opt-125m" >> $GITHUB_STEP_SUMMARY
           echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
 
