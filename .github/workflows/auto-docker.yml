@@ -9,7 +9,7 @@ name: Auto-Build Docker Images
 on:
   # Run once a day at 00:00 UTC (temporary - will change back to every 30 minutes)
   schedule:
-    - cron: '30 7 * * *'
+    - cron: '0 12 * * *'
 
   # Allow manual trigger
   workflow_dispatch:
