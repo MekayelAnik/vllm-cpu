@@ -238,8 +238,7 @@ jobs:
             type=raw,value=${{ matrix.version }}-${{ matrix.variant }}
             # Variant-version tag: noavx512-0.11.2
             type=raw,value=${{ matrix.variant }}-${{ matrix.version }}
-            # Variant latest tag: noavx512-latest, avx512bf16-latest
-            type=raw,value=${{ matrix.variant }}-latest,enable=${{ matrix.version == needs.check-versions.outputs.latest_version }}
+            # NOTE: <variant>-latest tags are handled by update-latest-tags job
 
       - name: Determine platforms
         id: platforms
