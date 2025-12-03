@@ -14,10 +14,11 @@ on:
   # Allow manual trigger
   workflow_dispatch:
     inputs:
-      force_version:
-        description: 'Force build specific version (optional, e.g., 0.12.0)'
+      vllm_versions:
+        description: 'vLLM versions (e.g., 0.12.0 or 0.11.2,0.12.0 or 0.11.0-0.12.0) - leave empty for auto-detect'
         required: false
         type: string
+        default: ''
       python_version:
         description: 'Python version (optional, e.g., 3.12) - leave empty for auto-detect'
         required: false
@@ -159,17 +160,59 @@ jobs:
         run: |
           echo "Comparing versions..."
 
-          # Handle force version input
-          if [[ -n "${{ github.event.inputs.force_version }}" ]]; then
-            echo "Force building version: ${{ github.event.inputs.force_version }}"
-            NEW_VERSIONS="${{ github.event.inputs.force_version }}"
-            echo "new_versions=[\"$NEW_VERSIONS\"]" >> "$GITHUB_OUTPUT"
+          LATEST_VERSION=$(cat /tmp/latest_version.txt)
+
+          # Handle vllm_versions input (supports: single, comma-separated, or range)
+          INPUT_VERSIONS="${{ github.event.inputs.vllm_versions }}"
+          if [[ -n "$INPUT_VERSIONS" ]]; then
+            echo "Manual version input: $INPUT_VERSIONS"
+
+            # Parse the input - could be single, comma-separated, or range
+            PARSED_VERSIONS=""
+
+            # Check if it's a range (e.g., "0.11.0-0.12.0")
+            if [[ "$INPUT_VERSIONS" =~ ^([0-9]+\.[0-9]+\.[0-9]+)-([0-9]+\.[0-9]+\.[0-9]+)$ ]]; then
+              START_VER="${BASH_REMATCH[1]}"
+              END_VER="${BASH_REMATCH[2]}"
+              echo "Parsing version range: $START_VER to $END_VER"
+
+              # Get all versions from GitHub that fall within the range
+              while IFS= read -r ver; do
+                if [[ -n "$ver" ]]; then
+                  # Compare versions using sort -V
+                  if [[ $(echo -e "$START_VER\n$ver" | sort -V | head -1) == "$START_VER" ]] && \
+                     [[ $(echo -e "$ver\n$END_VER" | sort -V | head -1) == "$ver" ]]; then
+                    if [[ -n "$PARSED_VERSIONS" ]]; then
+                      PARSED_VERSIONS="$PARSED_VERSIONS,$ver"
+                    else
+                      PARSED_VERSIONS="$ver"
+                    fi
+                  fi
+                fi
+              done < /tmp/github_versions.txt
+
+              if [[ -z "$PARSED_VERSIONS" ]]; then
+                echo "No versions found in range $START_VER to $END_VER"
+                echo "new_versions=[]" >> "$GITHUB_OUTPUT"
+                echo "has_new_versions=false" >> "$GITHUB_OUTPUT"
+                echo "latest_version=$LATEST_VERSION" >> "$GITHUB_OUTPUT"
+                exit 0
+              fi
+              echo "Versions in range: $PARSED_VERSIONS"
+            else
+              # Single version or comma-separated list - use as-is
+              PARSED_VERSIONS="$INPUT_VERSIONS"
+            fi
+
+            # Convert to JSON array
+            JSON_ARRAY=$(echo "$PARSED_VERSIONS" | tr ',' '\n' | jq -R . | jq -s -c .)
+            echo "new_versions=$JSON_ARRAY" >> "$GITHUB_OUTPUT"
             echo "has_new_versions=true" >> "$GITHUB_OUTPUT"
-            echo "latest_version=$(cat /tmp/latest_version.txt)" >> "$GITHUB_OUTPUT"
+            echo "latest_version=$LATEST_VERSION" >> "$GITHUB_OUTPUT"
             exit 0
           fi
 
-          # Find versions in GitHub but not in Docker registry
+          # Auto-detect: Find versions in GitHub but not in Docker registry
           NEW_VERSIONS=""
           while IFS= read -r version; do
             if [[ -n "$version" ]] && ! grep -qx "$version" /tmp/docker_versions.txt; then
@@ -181,8 +224,6 @@ jobs:
               fi
             fi
           done < /tmp/github_versions.txt
-
-          LATEST_VERSION=$(cat /tmp/latest_version.txt)
 
           if [[ -z "$NEW_VERSIONS" ]]; then
             echo "No new versions found"
