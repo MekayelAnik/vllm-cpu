@@ -15,11 +15,14 @@ NC='\033[0m'
 # Print ASCII art banner
 print_banner() {
     printf "${CYAN}"
-    printf "        _     _     __  __        ____ ____  _   _\n"
-    printf " __   _| |   | |   |  \/  |      / ___|  _ \| | | |\n"
-    printf " \ \ / / |   | |   | |\/| |_____| |   | |_) | | | |\n"
-    printf "  \ V /| |___| |___| |  | |_____| |___|  __/| |_| |\n"
-    printf "   \_/ |_____|_____|_|  |_|      \____|_|    \___/\n"
+    printf "             /SS       /SS       /SS      /SS            /SSSSSS  /SSSSSSS  /SS   /SS   \n"
+    printf "            | SS      | SS      | SSS    /SSS           /SS__  SS| SS__  SS| SS  | SS   \n"
+    printf "  /SS    /SS| SS      | SS      | SSSS  /SSSS          | SS  \__/| SS  \ SS| SS  | SS   \n"
+    printf " |  SS  /SS/| SS      | SS      | SS SS/SS SS  /SSSSSS | SS      | SSSSSSS/| SS  | SS   \n"
+    printf "  \  SS/SS/ | SS      | SS      | SS  SSS| SS |______/ | SS      | SS____/ | SS  | SS   \n"
+    printf "   \  SSS/  | SS      | SS      | SS\  S | SS          | SS    SS| SS      | SS  | SS   \n"
+    printf "    \  S/   | SSSSSSSS| SSSSSSSS| SS \/  | SS          |  SSSSSS/| SS      |  SSSSSS/   \n"
+    printf "     \_/    |________/|________/|__/     |__/           \______/ |__/       \______/    \n"
     printf "${NC}\n"
 }
 
@@ -32,9 +35,9 @@ print_info() {
     local host="${VLLM_HOST:-0.0.0.0}"
     local port="${VLLM_PORT:-8000}"
 
-    printf "${GRAY}══════════════════════════════════════════════════════════════════${NC}\n"
+    printf "${GRAY}══════════════════════════════════════════════════════════════════════════════${NC}\n"
     printf "${BLUE}  vLLM CPU Inference Engine${NC}\n"
-    printf "${GRAY}══════════════════════════════════════════════════════════════════${NC}\n"
+    printf "${GRAY}══════════════════════════════════════════════════════════════════════════════${NC}\n"
     printf "\n"
     printf "${GREEN}  Variant:${NC}        %s\n" "$variant"
     printf "${GREEN}  vLLM Version:${NC}   %s\n" "$vllm_version"
@@ -45,10 +48,10 @@ print_info() {
     printf "${ORANGE}  Health Check:${NC}   http://%s:%s/health\n" "$container_ip" "$port"
     printf "${ORANGE}  OpenAI API:${NC}     http://%s:%s/v1\n" "$container_ip" "$port"
     printf "\n"
-    printf "${GRAY}══════════════════════════════════════════════════════════════════${NC}\n"
+    printf "${GRAY}══════════════════════════════════════════════════════════════════════════════${NC}\n"
     printf "${GRAY}  GitHub: https://github.com/MekayelAnik/vllm-cpu${NC}\n"
     printf "${GRAY}  Docs:   https://docs.vllm.ai/en/stable/getting_started/installation/cpu/${NC}\n"
-    printf "${GRAY}══════════════════════════════════════════════════════════════════${NC}\n"
+    printf "${GRAY}══════════════════════════════════════════════════════════════════════════════${NC}\n"
     printf "\n"
 }
 
