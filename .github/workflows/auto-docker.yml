@@ -7,9 +7,9 @@ name: Auto-Build Docker Images
 # - Tags: version-specific and 'latest' for newest version
 
 on:
-  # Run every 30 minutes
+  # Run once a day at 00:00 UTC (temporary - will change back to every 30 minutes)
   schedule:
-    - cron: '*/30 * * * *'
+    - cron: '0 0 * * *'
 
   # Allow manual trigger
   workflow_dispatch:

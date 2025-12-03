@@ -5,9 +5,9 @@ name: Auto-Update vLLM CPU Wheels
 # - avx512, avx512vnni, avx512bf16, amxbf16: Built for AMD64 only
 
 on:
-  # Run every 30 minutes
+  # Run once a day at 00:00 UTC (temporary - will change back to every 30 minutes)
   schedule:
-    - cron: '*/30 * * * *'
+    - cron: '0 0 * * *'
 
   # Allow manual trigger
   workflow_dispatch:
