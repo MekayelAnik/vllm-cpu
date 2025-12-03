@@ -1,4 +1,4 @@
-name: Auto-Update vLLM CPU Wheels
+name: Auto-Build vLLM CPU Wheels
 
 # Automatically checks for new vLLM releases and builds wheels for them
 # - noavx512 (vllm-cpu): Built for both AMD64 and ARM64
@@ -70,6 +70,8 @@ jobs:
       build_noavx512: ${{ steps.variants.outputs.build_noavx512 }}
       build_avx512_variants: ${{ steps.variants.outputs.build_avx512_variants }}
       avx512_matrix: ${{ steps.variants.outputs.avx512_matrix }}
+      build_amd64: ${{ steps.platforms.outputs.build_amd64 }}
+      build_arm64: ${{ steps.platforms.outputs.build_arm64 }}
 
     steps:
       - name: Fetch vLLM releases from GitHub
@@ -174,6 +176,24 @@ jobs:
             echo "avx512_matrix=[\"$SELECTED\"]" >> "$GITHUB_OUTPUT"
           fi
 
+      - name: Determine platforms to build
+        id: platforms
+        run: |
+          SELECTED_PLATFORM="${{ github.event.inputs.platforms || 'all' }}"
+          echo "Selected platform: $SELECTED_PLATFORM"
+
+          if [[ "$SELECTED_PLATFORM" == "all" || "$SELECTED_PLATFORM" == "linux/amd64" ]]; then
+            echo "build_amd64=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "build_amd64=false" >> "$GITHUB_OUTPUT"
+          fi
+
+          if [[ "$SELECTED_PLATFORM" == "all" || "$SELECTED_PLATFORM" == "linux/arm64" ]]; then
+            echo "build_arm64=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "build_arm64=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Summary
         run: |
           echo "=========================================="
@@ -185,6 +205,8 @@ jobs:
           echo "Build noavx512: ${{ steps.variants.outputs.build_noavx512 }}"
           echo "Build AVX512 variants: ${{ steps.variants.outputs.build_avx512_variants }}"
           echo "AVX512 matrix: ${{ steps.variants.outputs.avx512_matrix }}"
+          echo "Build AMD64: ${{ steps.platforms.outputs.build_amd64 }}"
+          echo "Build ARM64: ${{ steps.platforms.outputs.build_arm64 }}"
           echo "=========================================="
 
   # Build noavx512 (vllm-cpu) for AMD64 + ARM64
@@ -194,6 +216,7 @@ jobs:
     if: |
       needs.check-versions.outputs.has_new_versions == 'true' &&
       needs.check-versions.outputs.build_noavx512 == 'true' &&
+      needs.check-versions.outputs.build_amd64 == 'true' &&
       github.event.inputs.dry_run != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 240
@@ -259,6 +282,7 @@ jobs:
     if: |
       needs.check-versions.outputs.has_new_versions == 'true' &&
       needs.check-versions.outputs.build_noavx512 == 'true' &&
+      needs.check-versions.outputs.build_arm64 == 'true' &&
       github.event.inputs.dry_run != 'true'
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 300
@@ -325,6 +349,7 @@ jobs:
     if: |
       needs.check-versions.outputs.has_new_versions == 'true' &&
       needs.check-versions.outputs.build_avx512_variants == 'true' &&
+      needs.check-versions.outputs.build_amd64 == 'true' &&
       github.event.inputs.dry_run != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 240
@@ -393,6 +418,7 @@ jobs:
       always() &&
       needs.check-versions.outputs.has_new_versions == 'true' &&
       github.event.inputs.dry_run != 'true' &&
+      github.event.inputs.skip_pypi != 'true' &&
       (needs.build-noavx512-amd64.result == 'success' || needs.build-noavx512-amd64.result == 'skipped') &&
       (needs.build-noavx512-arm64.result == 'success' || needs.build-noavx512-arm64.result == 'skipped') &&
       (needs.build-avx512-variants.result == 'success' || needs.build-avx512-variants.result == 'skipped')
@@ -435,7 +461,7 @@ jobs:
           WHEEL_PY_VERSIONS=$(find dist -name "*.whl" -type f | sed -n 's/.*-cp\([0-9]*\)-cp.*/\1/p' | sort -u | while read v; do echo "3.${v#3}"; done | tr '\n' ',' | sed 's/,$//')
           echo "Detected Python versions: $WHEEL_PY_VERSIONS"
 
-          ./test_and_publish.sh \
+          ./build_and_verify.sh \
             --skip-build \
             --skip-github \
             --variant=all \
@@ -459,7 +485,8 @@ jobs:
       always() &&
       needs.check-versions.outputs.has_new_versions == 'true' &&
       github.event.inputs.dry_run != 'true' &&
-      needs.publish.result == 'success'
+      github.event.inputs.skip_github_release != 'true' &&
+      (needs.publish.result == 'success' || needs.publish.result == 'skipped')
     runs-on: ubuntu-latest
     permissions:
       contents: write

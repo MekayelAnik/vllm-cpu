@@ -1,4 +1,4 @@
-name: Auto-Build Docker Images
+name: Auto-Build vLLM CPU Docker Images
 
 # Automatically checks for new vLLM releases and builds Docker images
 # - Builds for both AMD64 and ARM64

@@ -10,7 +10,7 @@
 # 5. Create GitHub release (only if PyPI publish succeeds)
 #
 # Usage:
-#   ./test_and_publish.sh [OPTIONS]
+#   ./build_and_verify.sh [OPTIONS]
 #
 # Options:
 #   --variant=NAME           Variant to build
