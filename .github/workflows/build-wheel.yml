@@ -153,12 +153,43 @@ jobs:
               fi
               echo "Versions in range: $PARSED_VERSIONS"
             else
-              # Single version or comma-separated list - use as-is
-              PARSED_VERSIONS="$INPUT_VERSIONS"
+              # Single version or comma-separated list - validate against available versions
+              PARSED_VERSIONS=""
+              SKIPPED_VERSIONS=""
+              IFS=',' read -ra INPUT_ARRAY <<< "$INPUT_VERSIONS"
+              for ver in "${INPUT_ARRAY[@]}"; do
+                ver=$(echo "$ver" | tr -d ' ')  # Trim whitespace
+                if grep -qx "$ver" /tmp/github_versions.txt; then
+                  if [[ -n "$PARSED_VERSIONS" ]]; then
+                    PARSED_VERSIONS="$PARSED_VERSIONS,$ver"
+                  else
+                    PARSED_VERSIONS="$ver"
+                  fi
+                else
+                  echo "::warning::vLLM version $ver not found in GitHub releases - skipping"
+                  if [[ -n "$SKIPPED_VERSIONS" ]]; then
+                    SKIPPED_VERSIONS="$SKIPPED_VERSIONS,$ver"
+                  else
+                    SKIPPED_VERSIONS="$ver"
+                  fi
+                fi
+              done
+
+              if [[ -n "$SKIPPED_VERSIONS" ]]; then
+                echo "Skipped unavailable versions: $SKIPPED_VERSIONS"
+              fi
+
+              if [[ -z "$PARSED_VERSIONS" ]]; then
+                echo "::error::No valid vLLM versions found. Requested: $INPUT_VERSIONS"
+                echo "new_versions=[]" >> "$GITHUB_OUTPUT"
+                echo "has_new_versions=false" >> "$GITHUB_OUTPUT"
+                exit 0
+              fi
             fi
 
             # Convert to JSON array
             JSON_ARRAY=$(echo "$PARSED_VERSIONS" | tr ',' '\n' | jq -R . | jq -s -c .)
+            echo "Valid versions to build: $PARSED_VERSIONS"
             echo "new_versions=$JSON_ARRAY" >> "$GITHUB_OUTPUT"
             echo "has_new_versions=true" >> "$GITHUB_OUTPUT"
             exit 0
