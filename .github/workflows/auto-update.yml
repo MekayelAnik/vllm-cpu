@@ -16,6 +16,35 @@ on:
         description: 'Force build specific version (optional, e.g., 0.12.0)'
         required: false
         type: string
+      python_versions:
+        description: 'Python versions (optional, e.g., 3.12 or 3.10-3.13) - leave empty for auto-detect'
+        required: false
+        type: string
+        default: 'auto'
+      variants:
+        description: 'Variants to build (comma-separated: noavx512,avx512,avx512vnni,avx512bf16,amxbf16 or "all")'
+        required: false
+        type: string
+        default: 'all'
+      platforms:
+        description: 'Target platforms'
+        required: false
+        type: choice
+        options:
+          - 'all'
+          - 'linux/amd64'
+          - 'linux/arm64'
+        default: 'all'
+      skip_pypi:
+        description: 'Skip PyPI publishing'
+        required: false
+        type: boolean
+        default: false
+      skip_github_release:
+        description: 'Skip GitHub release creation'
+        required: false
+        type: boolean
+        default: false
       dry_run:
         description: 'Dry run - check versions only, no build'
         required: false
