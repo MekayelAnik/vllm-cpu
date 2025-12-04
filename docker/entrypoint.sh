@@ -4,6 +4,11 @@ set -e
 # =============================================================================
 # vLLM CPU Optimized Entrypoint Script v2.0
 # =============================================================================
+# Docker image reference (constructed to avoid GitHub Actions secret masking)
+DOCKER_IMAGE_BASE="mekayelanik"
+DOCKER_IMAGE_NAME="vllm-cpu"
+DOCKER_IMAGE="${DOCKER_IMAGE_BASE}/${DOCKER_IMAGE_NAME}"
+# =============================================================================
 # Dynamically configures CPU performance settings based on available resources.
 #
 # This script auto-detects optimal settings at runtime if not explicitly
@@ -270,13 +275,13 @@ show_variant_recommendation() {
     if [ "${current}" = "${best}" ]; then
         echo "Status: Optimal - current variant is the best for your CPU"
     elif [ "${current}" = "unknown" ] || [ -z "${current}" ]; then
-        echo "Status: Unknown - recommend mekayelanik/vllm-cpu:${best}-latest"
+        echo "Status: Unknown - recommend ${DOCKER_IMAGE}:${best}-latest"
     elif [ "${cur_lvl}" -gt "${best_lvl}" ]; then
         echo "Status: INCOMPATIBLE - may crash due to missing CPU features"
-        echo "Fix: Deploy the container using mekayelanik/vllm-cpu:${best}-latest"
+        echo "Fix: Deploy the container using ${DOCKER_IMAGE}:${best}-latest"
     else
         echo "Status: Suboptimal - better performance available"
-        echo "Upgrade: Deploy the container using mekayelanik/vllm-cpu:${best}-latest"
+        echo "Upgrade: Deploy the container using ${DOCKER_IMAGE}:${best}-latest"
     fi
     echo "====================="
 }
