@@ -219,6 +219,83 @@ check_cpu_features() {
     echo "${features}"
 }
 
+get_recommended_variant() {
+    # Recommend the best vllm-cpu variant based on detected CPU features
+    # Returns: variant name (noavx512, avx512, avx512vnni, avx512bf16, amxbf16)
+    local arch="$1"
+    local features="$2"
+
+    # ARM64 only supports noavx512 (base build)
+    if [ "${arch}" = "aarch64" ]; then
+        echo "noavx512"
+        return
+    fi
+
+    # x86_64: Check features from highest to lowest capability
+    if echo "${features}" | grep -q "AMX_BF16"; then
+        echo "amxbf16"
+    elif echo "${features}" | grep -q "AVX512_BF16"; then
+        echo "avx512bf16"
+    elif echo "${features}" | grep -q "AVX512_VNNI"; then
+        echo "avx512vnni"
+    elif echo "${features}" | grep -q "AVX512"; then
+        echo "avx512"
+    else
+        echo "noavx512"
+    fi
+}
+
+show_variant_recommendation() {
+    # Display variant recommendation at startup
+    local current_variant="${VLLM_CPU_VARIANT:-unknown}"
+    local recommended_variant="$1"
+    local features="$2"
+
+    echo ""
+    echo "=== CPU Variant Recommendation ==="
+    echo "Detected CPU features:${features:- (none detected)}"
+    echo "Recommended variant: ${recommended_variant}"
+    echo "Current variant:     ${current_variant}"
+
+    if [ "${current_variant}" = "${recommended_variant}" ]; then
+        echo "✓ You are using the optimal variant for your CPU!"
+    elif [ "${current_variant}" = "unknown" ] || [ -z "${current_variant}" ]; then
+        echo "⚠ Could not determine current variant."
+        echo "  For best performance, use: vllm-cpu-${recommended_variant}"
+    else
+        # Determine if current variant is suboptimal or incompatible
+        local current_level=0
+        local recommended_level=0
+
+        case "${current_variant}" in
+            noavx512) current_level=0 ;;
+            avx512) current_level=1 ;;
+            avx512vnni) current_level=2 ;;
+            avx512bf16) current_level=3 ;;
+            amxbf16) current_level=4 ;;
+        esac
+
+        case "${recommended_variant}" in
+            noavx512) recommended_level=0 ;;
+            avx512) recommended_level=1 ;;
+            avx512vnni) recommended_level=2 ;;
+            avx512bf16) recommended_level=3 ;;
+            amxbf16) recommended_level=4 ;;
+        esac
+
+        if [ "${current_level}" -gt "${recommended_level}" ]; then
+            echo "⚠ WARNING: Current variant requires CPU features not available!"
+            echo "  Your CPU supports up to: ${recommended_variant}"
+            echo "  This may cause illegal instruction errors or crashes."
+            echo "  Recommended: docker pull mekayelanik/vllm-cpu:${recommended_variant}-latest"
+        else
+            echo "ℹ You could get better performance with: vllm-cpu-${recommended_variant}"
+            echo "  Upgrade: docker pull mekayelanik/vllm-cpu:${recommended_variant}-latest"
+        fi
+    fi
+    echo "==================================="
+}
+
 # =============================================================================
 # Resource Detection
 # =============================================================================
@@ -258,6 +335,13 @@ if [ "${NUMA_NODES}" -gt 1 ]; then
     echo "Memory per NUMA node: ~$((TOTAL_MEM_GB / NUMA_NODES)) GiB"
 fi
 echo "========================="
+
+# =============================================================================
+# Variant Recommendation
+# =============================================================================
+# Show recommended variant based on detected CPU features
+RECOMMENDED_VARIANT=$(get_recommended_variant "${ARCH}" "${CPU_FEATURES}")
+show_variant_recommendation "${RECOMMENDED_VARIANT}" "${CPU_FEATURES}"
 
 # =============================================================================
 # Dynamic CPU Configuration
