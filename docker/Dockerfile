@@ -549,8 +549,10 @@ RUN --mount=type=cache,target=/root/.cache/uv \
     echo "Installing ${PACKAGE_NAME} version ${VLLM_VERSION}..." && \
     \
     # Configure index URLs for CPU-only PyTorch
-    # Primary: PyTorch CPU-only wheels (torch, torchvision, torchaudio)
-    # Extra: PyPI for all other packages
+    # - Primary index: PyTorch CPU-only wheels (torch, torchvision, torchaudio)
+    # - Extra index: PyPI for vllm-cpu and other packages
+    # - unsafe-best-match: Allow uv to pick best version across all indexes
+    #   (required so vllm-cpu comes from PyPI while torch comes from PyTorch index)
     PYTORCH_INDEX="https://download.pytorch.org/whl/cpu" && \
     PYPI_INDEX="https://pypi.org/simple" && \
     \
@@ -562,7 +564,8 @@ RUN --mount=type=cache,target=/root/.cache/uv \
         echo "Attempting PyPI installation with CPU-only PyTorch..." && \
         if uv pip install "${PACKAGE_NAME}==${VLLM_VERSION}" \
             --index-url "${PYTORCH_INDEX}" \
-            --extra-index-url "${PYPI_INDEX}" 2>/dev/null; then \
+            --extra-index-url "${PYPI_INDEX}" \
+            --index-strategy unsafe-best-match 2>/dev/null; then \
             echo "Successfully installed from PyPI with CPU-only PyTorch" && \
             PYPI_SUCCESS=true; \
         else \
@@ -592,7 +595,8 @@ RUN --mount=type=cache,target=/root/.cache/uv \
         # Install with CPU-only PyTorch index for dependencies
         uv pip install "/tmp/${WHEEL_NAME}" \
             --index-url "${PYTORCH_INDEX}" \
-            --extra-index-url "${PYPI_INDEX}" && \
+            --extra-index-url "${PYPI_INDEX}" \
+            --index-strategy unsafe-best-match && \
         rm -f "/tmp/${WHEEL_NAME}" && \
         echo "Successfully installed from GitHub release with CPU-only PyTorch"; \
     fi && \
