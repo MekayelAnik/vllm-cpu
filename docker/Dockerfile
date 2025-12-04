@@ -229,11 +229,12 @@ ENV UV_LINK_MODE=copy \
 COPY setup_vllm.sh /setup_vllm.sh
 RUN --mount=type=cache,target=/root/.cache/uv \
     chmod +x /setup_vllm.sh && \
-    /setup_vllm.sh "${VARIANT}" "${VLLM_VERSION}" "${USE_GITHUB_RELEASE}"
+    /setup_vllm.sh "${VARIANT}" "${VLLM_VERSION}" "${USE_GITHUB_RELEASE}" && \
+    rm -f /setup_vllm.sh
 
 # Cleanup to minimize image size
 COPY cleanup.sh /cleanup.sh
-RUN chmod +x /cleanup.sh && /cleanup.sh
+RUN chmod +x /cleanup.sh && /cleanup.sh && rm -f /cleanup.sh
 
 # Store Python version
 RUN echo "VLLM_PYTHON_VERSION=$(cat /vllm/python_version.txt)" >> /etc/environment
