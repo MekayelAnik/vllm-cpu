@@ -265,11 +265,20 @@ RUN set -ex && \
                 # Otherwise .* regex matches across multiple wheel filenames!
                 # NOTE: grep -c always outputs a count (even 0), but returns exit code 1 on no match
                 # Use "|| true" to prevent shell exit, NOT "|| echo 0" which corrupts the output
+                # Check 1: Python-version-specific wheels (cpXX-cpXX-manylinux*_arch)
                 HAS_WHEEL=$(echo "${DEP_WHEEL_LIST}" | tr ' ' '\n' | grep -c "cp3${PYTHON_MINOR}.*manylinux.*${WHEEL_ARCH}" || true) && \
-                # Also check for universal wheels (py3-none-any)
+                # Check 2: Universal pure-Python wheels (py3-none-any or py2.py3-none-any)
                 if [ "${HAS_WHEEL}" = "0" ]; then \
-                    HAS_UNIVERSAL=$(echo "${DEP_WHEEL_LIST}" | tr ' ' '\n' | grep -c "py3-none-any" || true) && \
+                    HAS_UNIVERSAL=$(echo "${DEP_WHEEL_LIST}" | tr ' ' '\n' | grep -c "py.*-none-any" || true) && \
                     if [ "${HAS_UNIVERSAL}" != "0" ]; then \
+                        HAS_WHEEL="1"; \
+                    fi; \
+                fi && \
+                # Check 3: Universal wheels with platform-specific binaries (py2.py3-none-manylinux*_arch)
+                # Examples: intel-openmp has py2.py3-none-manylinux1_x86_64
+                if [ "${HAS_WHEEL}" = "0" ]; then \
+                    HAS_PLATFORM_UNIVERSAL=$(echo "${DEP_WHEEL_LIST}" | tr ' ' '\n' | grep -c "py.*-none-manylinux.*${WHEEL_ARCH}" || true) && \
+                    if [ "${HAS_PLATFORM_UNIVERSAL}" != "0" ]; then \
                         HAS_WHEEL="1"; \
                     fi; \
                 fi && \
