@@ -611,6 +611,14 @@ jobs:
               docker push ${{ env.DOCKERHUB_IMAGE }}:${LATEST_TAG}
               echo "✅ Updated Docker Hub ${LATEST_TAG} -> ${LATEST_VERSION}"
               SUCCESS=true
+
+              # Also tag noavx512 as the default "latest" (most compatible variant)
+              if [[ "$VARIANT" == "noavx512" ]]; then
+                docker tag ${{ env.DOCKERHUB_IMAGE }}:${SOURCE_TAG} \
+                           ${{ env.DOCKERHUB_IMAGE }}:latest
+                docker push ${{ env.DOCKERHUB_IMAGE }}:latest
+                echo "✅ Updated Docker Hub 'latest' tag -> noavx512-${LATEST_VERSION}"
+              fi
             else
               echo "::warning::Image ${SOURCE_TAG} not found on Docker Hub"
             fi
@@ -625,12 +633,28 @@ jobs:
               docker push ${{ env.GHCR_IMAGE }}:${LATEST_TAG}
               echo "✅ Updated GHCR ${LATEST_TAG} -> ${LATEST_VERSION}"
               SUCCESS=true
+
+              # Also tag noavx512 as the default "latest" (most compatible variant)
+              if [[ "$VARIANT" == "noavx512" ]]; then
+                docker tag ${{ env.GHCR_IMAGE }}:${SOURCE_TAG} \
+                           ${{ env.GHCR_IMAGE }}:latest
+                docker push ${{ env.GHCR_IMAGE }}:latest
+                echo "✅ Updated GHCR 'latest' tag -> noavx512-${LATEST_VERSION}"
+              fi
             elif [[ "$SUCCESS" == "true" ]]; then
               # Try to use Docker Hub image for GHCR
               docker tag ${{ env.DOCKERHUB_IMAGE }}:${SOURCE_TAG} \
                          ${{ env.GHCR_IMAGE }}:${LATEST_TAG}
               docker push ${{ env.GHCR_IMAGE }}:${LATEST_TAG}
               echo "✅ Updated GHCR ${LATEST_TAG} from Docker Hub source"
+
+              # Also tag noavx512 as the default "latest"
+              if [[ "$VARIANT" == "noavx512" ]]; then
+                docker tag ${{ env.DOCKERHUB_IMAGE }}:${SOURCE_TAG} \
+                           ${{ env.GHCR_IMAGE }}:latest
+                docker push ${{ env.GHCR_IMAGE }}:latest
+                echo "✅ Updated GHCR 'latest' tag from Docker Hub source"
+              fi
             else
               echo "::warning::Image ${SOURCE_TAG} not found on GHCR"
             fi
@@ -699,14 +723,21 @@ jobs:
               echo ""
               echo "## Pull Commands"
               echo ""
-              echo "**Docker Hub (primary):**"
+              echo "**Quick start (universal, works on all CPUs):**"
+              echo "\`\`\`bash"
+              echo "docker pull ${{ env.DOCKERHUB_IMAGE }}"
+              echo "\`\`\`"
+              echo ""
+              echo "**Docker Hub:**"
               echo "\`\`\`bash"
               echo "docker pull ${{ env.DOCKERHUB_IMAGE }}:noavx512-latest"
               echo "\`\`\`"
               echo ""
-              echo "**GHCR (secondary):**"
+              echo "**GHCR:**"
               echo "\`\`\`bash"
               echo "docker pull ${{ env.GHCR_IMAGE }}:noavx512-latest"
               echo "\`\`\`"
+              echo ""
+              echo "> **Tip:** The container will recommend the best variant for your CPU at startup."
             fi
           } >> "$GITHUB_STEP_SUMMARY"
