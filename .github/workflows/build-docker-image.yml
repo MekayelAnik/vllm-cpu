@@ -90,7 +90,7 @@ permissions:
 
 env:
   DOCKERHUB_IMAGE: mekayelanik/vllm-cpu
-  GHCR_IMAGE: ghcr.io/${{ github.repository }}
+  GHCR_IMAGE: ghcr.io/mekayelanik/vllm-cpu
 
 jobs:
   # ==========================================================================
