@@ -125,7 +125,7 @@ try_install_vllm() {
             INSTALL_VERSION="${VLLM_VERSION}${VERSION_SUFFIX}"
             echo "Trying ${PACKAGE_NAME}==${INSTALL_VERSION}..."
 
-            if uv pip install "${PACKAGE_NAME}==${INSTALL_VERSION}" \
+            if uv pip install --no-progress "${PACKAGE_NAME}==${INSTALL_VERSION}" \
                 --index-url "${PYTORCH_INDEX}" \
                 --extra-index-url "${PYPI_INDEX}" \
                 --index-strategy unsafe-best-match 2>/dev/null; then
@@ -155,7 +155,7 @@ try_install_vllm() {
                 echo "Downloaded: ${WHEEL_NAME}"
 
                 # Install with CPU-only PyTorch index for dependencies
-                if uv pip install "/tmp/${WHEEL_NAME}" \
+                if uv pip install --no-progress "/tmp/${WHEEL_NAME}" \
                     --index-url "${PYTORCH_INDEX}" \
                     --extra-index-url "${PYPI_INDEX}" \
                     --index-strategy unsafe-best-match 2>/dev/null; then

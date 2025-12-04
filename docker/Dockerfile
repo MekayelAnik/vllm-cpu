@@ -69,7 +69,6 @@ LABEL org.opencontainers.image.title="vLLM CPU (${VARIANT})" \
 
 # Python settings
 ENV PYTHONUNBUFFERED=1 \
-    PYTHONDONTWRITEBYTECODE=1 \
     PIP_NO_CACHE_DIR=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1
 
@@ -227,7 +226,7 @@ ENV UV_LINK_MODE=copy \
 
 # Install Python, vLLM, and cleanup in single layer to minimize image size
 COPY setup_vllm.sh cleanup.sh /tmp/
-RUN --mount=type=cache,target=/root/.cache/uv \
+RUN --mount=type=cache,id=uv-${VARIANT},target=/root/.cache/uv,sharing=locked \
     chmod +x /tmp/setup_vllm.sh /tmp/cleanup.sh && \
     /tmp/setup_vllm.sh "${VARIANT}" "${VLLM_VERSION}" "${USE_GITHUB_RELEASE}" && \
     /tmp/cleanup.sh && \
@@ -237,8 +236,7 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 RUN echo "VLLM_PYTHON_VERSION=$(cat /vllm/python_version.txt)" >> /etc/environment
 
 # Copy entrypoint scripts
-COPY entrypoint.sh /vllm/entrypoint.sh
-COPY banner.sh /vllm/banner.sh
+COPY entrypoint.sh banner.sh /vllm/
 RUN chmod +x /vllm/entrypoint.sh /vllm/banner.sh
 
 HEALTHCHECK --interval=30s --timeout=10s --start-period=120s --retries=3 \

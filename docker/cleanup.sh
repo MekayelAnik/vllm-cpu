@@ -35,16 +35,16 @@ echo ""
 echo "Step 1: Cleaning uv and pip cache..."
 # Note: uv cache may be mounted, so we also manually remove cached files
 uv cache clean 2>/dev/null || true
-rm -rvf /root/.cache/uv/* 2>/dev/null || true
-rm -rvf /root/.cache/pip/* 2>/dev/null || true
-rm -rvf /vllm/venv/pip-selfcheck.json 2>/dev/null || true
+rm -vrf /root/.cache/uv/* 2>/dev/null || true
+rm -vrf /root/.cache/pip/* 2>/dev/null || true
+rm -vrf /vllm/venv/pip-selfcheck.json 2>/dev/null || true
 
 # =============================================================================
 # 2. Remove pip/wheel (NOT setuptools - needed for distutils-precedence.pth)
 # =============================================================================
 echo "Step 2: Removing pip and wheel..."
-rm -rvf /vllm/venv/lib/*/site-packages/pip* || true
-rm -rvf /vllm/venv/lib/*/site-packages/wheel* || true
+rm -vrf /vllm/venv/lib/*/site-packages/pip* || true
+rm -vrf /vllm/venv/lib/*/site-packages/wheel* || true
 
 # =============================================================================
 # 3. Remove GPU-specific packages
@@ -53,36 +53,36 @@ echo "Step 3: Removing GPU-specific packages..."
 
 # Triton (GPU compiler - not needed for CPU inference)
 # Saves ~100-200 MB
-rm -rvf /vllm/venv/lib/*/site-packages/triton* || true
+rm -vrf /vllm/venv/lib/*/site-packages/triton* || true
 
 # xformers (GPU-specific memory optimization)
-rm -rvf /vllm/venv/lib/*/site-packages/xformers* || true
+rm -vrf /vllm/venv/lib/*/site-packages/xformers* || true
 
 # flash_attn (GPU-specific flash attention)
-rm -rvf /vllm/venv/lib/*/site-packages/flash_attn* || true
+rm -vrf /vllm/venv/lib/*/site-packages/flash_attn* || true
 
 # bitsandbytes (GPU quantization library)
-rm -rvf /vllm/venv/lib/*/site-packages/bitsandbytes* || true
+rm -vrf /vllm/venv/lib/*/site-packages/bitsandbytes* || true
 
 # onnx/onnxruntime (not needed for vLLM inference)
-rm -rvf /vllm/venv/lib/*/site-packages/onnx* || true
-rm -rvf /vllm/venv/lib/*/site-packages/onnxruntime* || true
+rm -vrf /vllm/venv/lib/*/site-packages/onnx* || true
+rm -vrf /vllm/venv/lib/*/site-packages/onnxruntime* || true
 
 # =============================================================================
 # 4. Remove NVIDIA/CUDA stubs from torch (not needed for CPU)
 # =============================================================================
 echo "Step 4: Removing CUDA/NVIDIA libraries from PyTorch..."
-rm -rvf /vllm/venv/lib/*/site-packages/torch/lib/*cuda* || true
-rm -rvf /vllm/venv/lib/*/site-packages/torch/lib/*cudnn* || true
-rm -rvf /vllm/venv/lib/*/site-packages/torch/lib/*nvrtc* || true
-rm -rvf /vllm/venv/lib/*/site-packages/torch/lib/*nccl* || true
-rm -rvf /vllm/venv/lib/*/site-packages/torch/lib/*cupti* || true
-rm -rvf /vllm/venv/lib/*/site-packages/torch/lib/*cufft* || true
-rm -rvf /vllm/venv/lib/*/site-packages/torch/lib/*cusparse* || true
-rm -rvf /vllm/venv/lib/*/site-packages/torch/lib/*cusolver* || true
-rm -rvf /vllm/venv/lib/*/site-packages/torch/lib/*cublas* || true
-rm -rvf /vllm/venv/lib/*/site-packages/torch/lib/*curand* || true
-rm -rvf /vllm/venv/lib/*/site-packages/nvidia* || true
+rm -vrf /vllm/venv/lib/*/site-packages/torch/lib/*cuda* || true
+rm -vrf /vllm/venv/lib/*/site-packages/torch/lib/*cudnn* || true
+rm -vrf /vllm/venv/lib/*/site-packages/torch/lib/*nvrtc* || true
+rm -vrf /vllm/venv/lib/*/site-packages/torch/lib/*nccl* || true
+rm -vrf /vllm/venv/lib/*/site-packages/torch/lib/*cupti* || true
+rm -vrf /vllm/venv/lib/*/site-packages/torch/lib/*cufft* || true
+rm -vrf /vllm/venv/lib/*/site-packages/torch/lib/*cusparse* || true
+rm -vrf /vllm/venv/lib/*/site-packages/torch/lib/*cusolver* || true
+rm -vrf /vllm/venv/lib/*/site-packages/torch/lib/*cublas* || true
+rm -vrf /vllm/venv/lib/*/site-packages/torch/lib/*curand* || true
+rm -vrf /vllm/venv/lib/*/site-packages/nvidia* || true
 
 # =============================================================================
 # 5. Remove unused PyTorch components
@@ -90,31 +90,41 @@ rm -rvf /vllm/venv/lib/*/site-packages/nvidia* || true
 echo "Step 5: Removing unused PyTorch components..."
 
 # caffe2 (legacy, deprecated since PyTorch 1.8, dead in PyTorch 2.x)
-rm -rvf /vllm/venv/lib/*/site-packages/caffe2* || true
-rm -rvf /vllm/venv/lib/*/site-packages/torch/lib/libcaffe2* || true
+rm -vrf /vllm/venv/lib/*/site-packages/caffe2* || true
+rm -vrf /vllm/venv/lib/*/site-packages/torch/lib/libcaffe2* || true
 
 # functorch (legacy compatibility shim, merged into torch.func in PyTorch 2.0)
-rm -rvf /vllm/venv/lib/*/site-packages/functorch* || true
+rm -vrf /vllm/venv/lib/*/site-packages/functorch* || true
 
 # torch native libraries not needed for CPU (vulkan, mps, metal)
 # NOTE: Keep ALL torch/backends/* Python modules intact!
-rm -rvf /vllm/venv/lib/*/site-packages/torch/lib/*vulkan* || true
-rm -rvf /vllm/venv/lib/*/site-packages/torch/lib/*mps* || true
-rm -rvf /vllm/venv/lib/*/site-packages/torch/lib/*metal* || true
-rm -rvf /vllm/venv/lib/*/site-packages/torch/_inductor/codegen/cuda* || true
-rm -rvf /vllm/venv/lib/*/site-packages/torch/_inductor/codegen/triton* || true
+rm -vrf /vllm/venv/lib/*/site-packages/torch/lib/*vulkan* || true
+rm -vrf /vllm/venv/lib/*/site-packages/torch/lib/*mps* || true
+rm -vrf /vllm/venv/lib/*/site-packages/torch/lib/*metal* || true
+rm -vrf /vllm/venv/lib/*/site-packages/torch/_inductor/codegen/cuda* || true
+rm -vrf /vllm/venv/lib/*/site-packages/torch/_inductor/codegen/triton* || true
 
 # tensorboard integration (not needed at runtime)
 # NOTE: Keep torch/profiler - it's imported at torch startup!
-rm -rvf /vllm/venv/lib/*/site-packages/tensorboard* || true
-rm -rvf /vllm/venv/lib/*/site-packages/torch/utils/tensorboard* || true
+rm -vrf /vllm/venv/lib/*/site-packages/tensorboard* || true
+rm -vrf /vllm/venv/lib/*/site-packages/torch/utils/tensorboard* || true
+
+# Torch C++ frontend headers (not needed at runtime)
+rm -vrf /vllm/venv/lib/*/site-packages/torch/include || true
+
+# Torch share data (example scripts)
+rm -vrf /vllm/venv/lib/*/site-packages/torch/share || true
+
+# Torch distributed extras (not needed for single-node CPU)
+rm -vrf /vllm/venv/lib/*/site-packages/torch/distributed/elastic/rendezvous/etcd* || true
+rm -vrf /vllm/venv/lib/*/site-packages/torch/distributed/rpc || true
 
 # =============================================================================
 # 6. Remove safetensors rust source files
 # =============================================================================
 echo "Step 6: Removing source files..."
-rm -rvf /vllm/venv/lib/*/site-packages/safetensors/*.rs || true
-rm -rvf /vllm/venv/lib/*/site-packages/safetensors/src || true
+rm -vrf /vllm/venv/lib/*/site-packages/safetensors/*.rs || true
+rm -vrf /vllm/venv/lib/*/site-packages/safetensors/src || true
 
 # =============================================================================
 # 7. Remove test directories and documentation
@@ -124,7 +134,7 @@ echo "Step 7: Removing test directories and documentation..."
 find /vllm/venv/lib/*/site-packages -depth -type d \( \
     -name "tests" -o -name "test" -o -name "*_tests" -o \
     -name "docs" -o -name "doc" -o -name "examples" -o -name "benchmarks" \
-    \) ! -path "*/torch/*" -exec rm -rvf {} \; 2>/dev/null || true
+    \) ! -path "*/torch/*" -exec rm -vrf {} \; 2>/dev/null || true
 
 # =============================================================================
 # 8. Remove unnecessary files by extension
@@ -134,12 +144,9 @@ find /vllm/venv -type f \( \
     -name "*.md" -o -name "*.rst" -o -name "*.pyi" -o \
     -name "LICENSE*" -o -name "COPYING*" -o -name "CHANGELOG*" -o \
     -name "HISTORY*" -o -name "AUTHORS*" -o -name "CONTRIBUTORS*" -o \
-    -name "*.h" -o -name "*.hpp" -o -name "*.a" \
+    -name "*.h" -o -name "*.hpp" -o -name "*.a" -o \
+    \( -name "*.txt" ! -name "requirements*.txt" ! -name "top_level.txt" \) \
     \) -delete 2>/dev/null || true
-
-find /vllm/venv -type f -name "*.txt" \
-    ! -name "requirements*.txt" ! -name "top_level.txt" \
-    -delete 2>/dev/null || true
 
 # =============================================================================
 # 9. Remove .dist-info files except essential ones
@@ -155,51 +162,66 @@ find /vllm/venv -path "*/.dist-info/*" -type f \
 # =============================================================================
 echo "Step 10: Removing __pycache__ and include directories..."
 find /vllm/venv -depth -type d \( -name "__pycache__" -o -name "include" \) \
-    -exec rm -rvf {} \; 2>/dev/null || true
+    -exec rm -vrf {} \; 2>/dev/null || true
 
 # =============================================================================
 # 11. Strip debug symbols from shared libraries
 # =============================================================================
 echo "Step 11: Stripping debug symbols from shared libraries..."
 find /vllm/venv /root/.local/share/uv -type f -name "*.so*" \
-    -exec strip --strip-unneeded {} \; 2>/dev/null || true
+    -exec strip --strip-all {} \; 2>/dev/null || true
 
 # =============================================================================
 # 12. Clean up uv-managed Python installation
 # =============================================================================
 echo "Step 12: Cleaning uv-managed Python installation..."
 find /root/.local/share/uv/python -type f -name "*.a" -delete 2>/dev/null || true
+find /root/.local/share/uv/python -type f -name "*.pyo" -delete 2>/dev/null || true
 find /root/.local/share/uv/python -depth -type d \( \
     -name "test" -o -name "tests" -o -name "idle_test" -o -name "__pycache__" -o \
-    -name "tkinter" -o -name "idlelib" -o -name "turtledemo" \
-    \) -exec rm -rvf {} \; 2>/dev/null || true
-rm -rvf /root/.local/share/uv/python/*/share/man 2>/dev/null || true
-rm -rvf /root/.local/share/uv/python/*/share/doc 2>/dev/null || true
-rm -rvf /root/.local/share/uv/python/*/lib/*/lib-tk 2>/dev/null || true
-rm -rvf /root/.local/share/uv/python/*/lib/*/tkinter 2>/dev/null || true
+    -name "tkinter" -o -name "idlelib" -o -name "turtledemo" -o \
+    -name "ensurepip" -o -name "lib2to3" \
+    \) -exec rm -vrf {} \; 2>/dev/null || true
+rm -vrf /root/.local/share/uv/python/*/share/man 2>/dev/null || true
+rm -vrf /root/.local/share/uv/python/*/share/doc 2>/dev/null || true
+rm -vrf /root/.local/share/uv/python/*/lib/*/lib-tk 2>/dev/null || true
+rm -vrf /root/.local/share/uv/python/*/lib/*/tkinter 2>/dev/null || true
+rm -vrf /root/.local/share/uv/python/*/lib/*/config-* 2>/dev/null || true
+rm -vrf /root/.local/share/uv/python/*/include 2>/dev/null || true
 
 # =============================================================================
 # 13. Remove locale data (keep only en_US)
 # =============================================================================
 echo "Step 13: Removing unused locale data..."
 find /usr/share/locale -mindepth 1 -maxdepth 1 ! -name 'en*' \
-    -exec rm -rvf {} \; 2>/dev/null || true
-rm -rvf /usr/share/doc /usr/share/man /usr/share/info 2>/dev/null || true
+    -exec rm -vrf {} \; 2>/dev/null || true
+rm -vrf /usr/share/doc /usr/share/man /usr/share/info 2>/dev/null || true
 
 # =============================================================================
 # 14. Remove uv binary and build tools
 # =============================================================================
 echo "Step 14: Removing build tools..."
-rm -f /usr/local/bin/uv
+rm -vf /usr/local/bin/uv
 apt-get purge -y --auto-remove binutils wget 2>/dev/null || true
-rm -rvf /var/lib/apt/lists/* /var/cache/apt/archives/* /var/log/apt/* /var/log/dpkg.log 2>/dev/null || true
+rm -vrf /var/lib/apt/lists/* /var/cache/apt/archives/* /var/log/apt/* /var/log/dpkg.log 2>/dev/null || true
 
 # =============================================================================
 # 15. Clean temp files and apt cache
 # =============================================================================
 echo "Step 15: Cleaning temporary files..."
-rm -rvf /tmp/* /var/tmp/* /var/lib/apt/lists/* /var/cache/apt/archives/* \
+rm -vrf /tmp/* /var/tmp/* /var/lib/apt/lists/* /var/cache/apt/archives/* \
     /var/log/* /root/.cache/* 2>/dev/null || true
+
+# =============================================================================
+# 16. Remove additional unused packages
+# =============================================================================
+echo "Step 16: Removing additional unused packages..."
+
+# Remove .egg-info directories (not needed at runtime)
+find /vllm/venv -type d -name "*.egg-info" -exec rm -vrf {} \; 2>/dev/null || true
+
+# Remove empty directories
+find /vllm/venv -type d -empty -delete 2>/dev/null || true
 
 # =============================================================================
 # Report results
