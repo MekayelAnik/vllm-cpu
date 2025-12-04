@@ -534,6 +534,7 @@ ENV UV_LINK_MODE=copy \
 
 # Install vLLM from PyPI or GitHub release
 # Use cache mount for uv to speed up repeated builds and layer changes
+# IMPORTANT: Use CPU-only PyTorch index to avoid CUDA bloat
 RUN --mount=type=cache,target=/root/.cache/uv \
     set -ex && \
     # Map variant to package name
@@ -547,14 +548,22 @@ RUN --mount=type=cache,target=/root/.cache/uv \
     esac && \
     echo "Installing ${PACKAGE_NAME} version ${VLLM_VERSION}..." && \
     \
+    # Configure index URLs for CPU-only PyTorch
+    # Primary: PyTorch CPU-only wheels (torch, torchvision, torchaudio)
+    # Extra: PyPI for all other packages
+    PYTORCH_INDEX="https://download.pytorch.org/whl/cpu" && \
+    PYPI_INDEX="https://pypi.org/simple" && \
+    \
     # Try PyPI first unless explicitly requesting GitHub
     if [ "${USE_GITHUB_RELEASE}" = "true" ]; then \
         echo "Using GitHub release as requested..." && \
         PYPI_SUCCESS=false; \
     else \
-        echo "Attempting PyPI installation..." && \
-        if uv pip install "${PACKAGE_NAME}==${VLLM_VERSION}" 2>/dev/null; then \
-            echo "Successfully installed from PyPI" && \
+        echo "Attempting PyPI installation with CPU-only PyTorch..." && \
+        if uv pip install "${PACKAGE_NAME}==${VLLM_VERSION}" \
+            --index-url "${PYTORCH_INDEX}" \
+            --extra-index-url "${PYPI_INDEX}" 2>/dev/null; then \
+            echo "Successfully installed from PyPI with CPU-only PyTorch" && \
             PYPI_SUCCESS=true; \
         else \
             echo "PyPI installation failed, falling back to GitHub release..." && \
@@ -580,9 +589,12 @@ RUN --mount=type=cache,target=/root/.cache/uv \
         WHEEL_URL="https://github.com/MekayelAnik/vllm-cpu/releases/download/v${VLLM_VERSION}/${WHEEL_NAME}" && \
         echo "Downloading wheel: ${WHEEL_URL}" && \
         wget -q "${WHEEL_URL}" -O "/tmp/${WHEEL_NAME}" && \
-        uv pip install "/tmp/${WHEEL_NAME}" && \
+        # Install with CPU-only PyTorch index for dependencies
+        uv pip install "/tmp/${WHEEL_NAME}" \
+            --index-url "${PYTORCH_INDEX}" \
+            --extra-index-url "${PYPI_INDEX}" && \
         rm -f "/tmp/${WHEEL_NAME}" && \
-        echo "Successfully installed from GitHub release"; \
+        echo "Successfully installed from GitHub release with CPU-only PyTorch"; \
     fi && \
     \
     # Verify installation
