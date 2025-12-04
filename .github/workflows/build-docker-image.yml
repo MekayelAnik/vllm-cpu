@@ -32,18 +32,31 @@ on:
         required: false
         type: string
         default: ''
-      variants:
-        description: 'Variants to build'
+      build_noavx512:
+        description: 'Build noavx512 (universal, AMD64+ARM64)'
         required: false
-        type: choice
-        options:
-          - 'all'
-          - 'noavx512'
-          - 'avx512'
-          - 'avx512vnni'
-          - 'avx512bf16'
-          - 'amxbf16'
-        default: 'all'
+        type: boolean
+        default: true
+      build_avx512:
+        description: 'Build avx512 (AMD64 only)'
+        required: false
+        type: boolean
+        default: true
+      build_avx512vnni:
+        description: 'Build avx512vnni (AMD64 only)'
+        required: false
+        type: boolean
+        default: true
+      build_avx512bf16:
+        description: 'Build avx512bf16 (AMD64 only)'
+        required: false
+        type: boolean
+        default: true
+      build_amxbf16:
+        description: 'Build amxbf16 (AMD64 only)'
+        required: false
+        type: boolean
+        default: true
       platforms:
         description: 'Target platforms'
         required: false
@@ -385,13 +398,33 @@ jobs:
       - name: Determine variants to build
         id: variants
         run: |
-          SELECTED_VARIANT="${{ github.event.inputs.variants || 'all' }}"
-          echo "Selected variant input: $SELECTED_VARIANT"
+          # Build matrix from individual checkbox inputs
+          # For scheduled runs, default to all variants
+          VARIANTS=""
 
-          if [[ "$SELECTED_VARIANT" == "all" ]]; then
-            MATRIX='["noavx512", "avx512", "avx512vnni", "avx512bf16", "amxbf16"]'
+          # Check each variant checkbox (default to true for scheduled runs)
+          if [[ "${{ github.event.inputs.build_noavx512 || 'true' }}" == "true" ]]; then
+            VARIANTS="${VARIANTS:+$VARIANTS,}noavx512"
+          fi
+          if [[ "${{ github.event.inputs.build_avx512 || 'true' }}" == "true" ]]; then
+            VARIANTS="${VARIANTS:+$VARIANTS,}avx512"
+          fi
+          if [[ "${{ github.event.inputs.build_avx512vnni || 'true' }}" == "true" ]]; then
+            VARIANTS="${VARIANTS:+$VARIANTS,}avx512vnni"
+          fi
+          if [[ "${{ github.event.inputs.build_avx512bf16 || 'true' }}" == "true" ]]; then
+            VARIANTS="${VARIANTS:+$VARIANTS,}avx512bf16"
+          fi
+          if [[ "${{ github.event.inputs.build_amxbf16 || 'true' }}" == "true" ]]; then
+            VARIANTS="${VARIANTS:+$VARIANTS,}amxbf16"
+          fi
+
+          if [[ -z "$VARIANTS" ]]; then
+            echo "::error::No variants selected for build"
+            MATRIX='[]'
           else
-            MATRIX="[\"$SELECTED_VARIANT\"]"
+            echo "Selected variants: $VARIANTS"
+            MATRIX=$(echo "$VARIANTS" | tr ',' '\n' | jq -R . | jq -s -c .)
           fi
 
           echo "Variants matrix: $MATRIX"

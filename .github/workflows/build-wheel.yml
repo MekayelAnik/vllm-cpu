@@ -33,18 +33,31 @@ on:
         required: false
         type: string
         default: 'auto'
-      variants:
-        description: 'Variants to build'
+      build_noavx512:
+        description: 'Build noavx512 (universal, AMD64+ARM64)'
         required: false
-        type: choice
-        options:
-          - 'all'
-          - 'noavx512'
-          - 'avx512'
-          - 'avx512vnni'
-          - 'avx512bf16'
-          - 'amxbf16'
-        default: 'all'
+        type: boolean
+        default: true
+      build_avx512:
+        description: 'Build avx512 (AMD64 only)'
+        required: false
+        type: boolean
+        default: true
+      build_avx512vnni:
+        description: 'Build avx512vnni (AMD64 only)'
+        required: false
+        type: boolean
+        default: true
+      build_avx512bf16:
+        description: 'Build avx512bf16 (AMD64 only)'
+        required: false
+        type: boolean
+        default: true
+      build_amxbf16:
+        description: 'Build amxbf16 (AMD64 only)'
+        required: false
+        type: boolean
+        default: true
       platforms:
         description: 'Target platforms'
         required: false
@@ -268,29 +281,53 @@ jobs:
       - name: Determine variants to build
         id: variants
         run: |
-          SELECTED="${{ github.event.inputs.variants || 'all' }}"
-          echo "Selected variant: $SELECTED"
-          echo "selected=$SELECTED" >> "$GITHUB_OUTPUT"
+          # Build from individual checkbox inputs
+          # For scheduled runs, default to all variants (true)
+          BUILD_NOAVX512="${{ github.event.inputs.build_noavx512 || 'true' }}"
+          BUILD_AVX512="${{ github.event.inputs.build_avx512 || 'true' }}"
+          BUILD_AVX512VNNI="${{ github.event.inputs.build_avx512vnni || 'true' }}"
+          BUILD_AVX512BF16="${{ github.event.inputs.build_avx512bf16 || 'true' }}"
+          BUILD_AMXBF16="${{ github.event.inputs.build_amxbf16 || 'true' }}"
 
-          # Determine which jobs to run
-          if [[ "$SELECTED" == "all" || "$SELECTED" == "noavx512" ]]; then
-            echo "build_noavx512=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "build_noavx512=false" >> "$GITHUB_OUTPUT"
+          echo "Variant selection:"
+          echo "  noavx512: $BUILD_NOAVX512"
+          echo "  avx512: $BUILD_AVX512"
+          echo "  avx512vnni: $BUILD_AVX512VNNI"
+          echo "  avx512bf16: $BUILD_AVX512BF16"
+          echo "  amxbf16: $BUILD_AMXBF16"
+
+          # Set noavx512 build flag
+          echo "build_noavx512=$BUILD_NOAVX512" >> "$GITHUB_OUTPUT"
+
+          # Build AVX512 variants matrix from selected checkboxes
+          AVX512_VARIANTS=""
+          if [[ "$BUILD_AVX512" == "true" ]]; then
+            AVX512_VARIANTS="${AVX512_VARIANTS:+$AVX512_VARIANTS,}avx512"
+          fi
+          if [[ "$BUILD_AVX512VNNI" == "true" ]]; then
+            AVX512_VARIANTS="${AVX512_VARIANTS:+$AVX512_VARIANTS,}avx512vnni"
+          fi
+          if [[ "$BUILD_AVX512BF16" == "true" ]]; then
+            AVX512_VARIANTS="${AVX512_VARIANTS:+$AVX512_VARIANTS,}avx512bf16"
+          fi
+          if [[ "$BUILD_AMXBF16" == "true" ]]; then
+            AVX512_VARIANTS="${AVX512_VARIANTS:+$AVX512_VARIANTS,}amxbf16"
           fi
 
-          # Build AVX512 variants matrix
-          if [[ "$SELECTED" == "all" ]]; then
-            echo "build_avx512_variants=true" >> "$GITHUB_OUTPUT"
-            echo 'avx512_matrix=["avx512", "avx512vnni", "avx512bf16", "amxbf16"]' >> "$GITHUB_OUTPUT"
-          elif [[ "$SELECTED" == "noavx512" ]]; then
+          if [[ -z "$AVX512_VARIANTS" ]]; then
             echo "build_avx512_variants=false" >> "$GITHUB_OUTPUT"
             echo 'avx512_matrix=[]' >> "$GITHUB_OUTPUT"
           else
-            # Single AVX512 variant selected
             echo "build_avx512_variants=true" >> "$GITHUB_OUTPUT"
-            echo "avx512_matrix=[\"$SELECTED\"]" >> "$GITHUB_OUTPUT"
+            MATRIX=$(echo "$AVX512_VARIANTS" | tr ',' '\n' | jq -R . | jq -s -c .)
+            echo "avx512_matrix=$MATRIX" >> "$GITHUB_OUTPUT"
           fi
+
+          # Generate selected summary for display
+          SELECTED=""
+          [[ "$BUILD_NOAVX512" == "true" ]] && SELECTED="${SELECTED:+$SELECTED,}noavx512"
+          [[ -n "$AVX512_VARIANTS" ]] && SELECTED="${SELECTED:+$SELECTED,}$AVX512_VARIANTS"
+          echo "selected=${SELECTED:-none}" >> "$GITHUB_OUTPUT"
 
       - name: Determine platforms to build
         id: platforms
