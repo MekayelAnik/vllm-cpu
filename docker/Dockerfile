@@ -689,62 +689,91 @@ RUN --mount=type=cache,target=/root/.cache/uv \
     rm -rf /vllm/venv/lib/*/site-packages/caffe2* || true && \
     rm -rf /vllm/venv/lib/*/site-packages/torch/lib/libcaffe2* || true && \
     \
-    # 7. Remove test directories from installed packages
+    # 7. Remove flash_attn (GPU-specific flash attention)
+    rm -rf /vllm/venv/lib/*/site-packages/flash_attn* || true && \
+    \
+    # 8. Remove bitsandbytes (GPU quantization library)
+    rm -rf /vllm/venv/lib/*/site-packages/bitsandbytes* || true && \
+    \
+    # 9. Remove onnx/onnxruntime (not needed for vLLM inference)
+    rm -rf /vllm/venv/lib/*/site-packages/onnx* || true && \
+    rm -rf /vllm/venv/lib/*/site-packages/onnxruntime* || true && \
+    \
+    # 10. Remove torch backends not needed for CPU (vulkan, mps, metal)
+    rm -rf /vllm/venv/lib/*/site-packages/torch/lib/*vulkan* || true && \
+    rm -rf /vllm/venv/lib/*/site-packages/torch/lib/*mps* || true && \
+    rm -rf /vllm/venv/lib/*/site-packages/torch/lib/*metal* || true && \
+    rm -rf /vllm/venv/lib/*/site-packages/torch/_inductor/codegen/cuda* || true && \
+    rm -rf /vllm/venv/lib/*/site-packages/torch/_inductor/codegen/triton* || true && \
+    rm -rf /vllm/venv/lib/*/site-packages/torch/backends/cuda* || true && \
+    rm -rf /vllm/venv/lib/*/site-packages/torch/backends/cudnn* || true && \
+    rm -rf /vllm/venv/lib/*/site-packages/torch/backends/mps* || true && \
+    \
+    # 11. Remove torch profiler/tensorboard integration (not needed at runtime)
+    rm -rf /vllm/venv/lib/*/site-packages/torch/profiler* || true && \
+    rm -rf /vllm/venv/lib/*/site-packages/tensorboard* || true && \
+    rm -rf /vllm/venv/lib/*/site-packages/torch/utils/tensorboard* || true && \
+    \
+    # 12. Remove safetensors rust source files
+    rm -rf /vllm/venv/lib/*/site-packages/safetensors/*.rs || true && \
+    rm -rf /vllm/venv/lib/*/site-packages/safetensors/src || true && \
+    \
+    # 13. Remove test directories from installed packages
     # IMPORTANT: Skip torch entirely - torch/testing is a required module
     find /vllm/venv/lib/*/site-packages -depth -type d \( -name "tests" -o -name "test" -o -name "*_tests" \) \
         ! -path "*/torch/*" -exec rm -rf {} \; 2>/dev/null || true && \
     \
-    # 8. Remove documentation and examples from packages
+    # 14. Remove documentation and examples from packages
     find /vllm/venv/lib/*/site-packages -depth -type d \( -name "docs" -o -name "doc" -o -name "examples" -o -name "benchmarks" \) \
         -exec rm -rf {} \; 2>/dev/null || true && \
     \
-    # 9. Remove unnecessary files by extension
+    # 15. Remove unnecessary files by extension
     find /vllm/venv -type f \( -name "*.md" -o -name "*.rst" \) -delete 2>/dev/null || true && \
     find /vllm/venv -type f -name "*.txt" ! -name "requirements*.txt" ! -name "top_level.txt" -delete 2>/dev/null || true && \
     find /vllm/venv -type f \( -name "LICENSE*" -o -name "COPYING*" -o -name "CHANGELOG*" -o -name "HISTORY*" -o -name "AUTHORS*" -o -name "CONTRIBUTORS*" \) \
         -delete 2>/dev/null || true && \
     \
-    # 10. Remove .pyi stub files (type hints not needed at runtime)
+    # 16. Remove .pyi stub files (type hints not needed at runtime)
     find /vllm/venv -type f -name "*.pyi" -delete 2>/dev/null || true && \
     \
-    # 11. Remove .dist-info files except essential ones
+    # 17. Remove .dist-info files except essential ones
     find /vllm/venv -path "*/.dist-info/*" -type f \
         ! -name "METADATA" ! -name "RECORD" ! -name "WHEEL" ! -name "top_level.txt" ! -name "entry_points.txt" \
         -delete 2>/dev/null || true && \
     \
-    # 12. Remove static libraries (.a files) - not needed for runtime
+    # 18. Remove static libraries (.a files) - not needed for runtime
     find /vllm/venv -type f -name "*.a" -delete 2>/dev/null || true && \
     \
-    # 13. Remove Python bytecode cache (will be regenerated on first run)
+    # 19. Remove Python bytecode cache (will be regenerated on first run)
     find /vllm/venv -depth -type d -name "__pycache__" -exec rm -rf {} \; 2>/dev/null || true && \
     \
-    # 14. Remove C/C++ header files (not needed at runtime)
+    # 20. Remove C/C++ header files (not needed at runtime)
     find /vllm/venv -type f \( -name "*.h" -o -name "*.hpp" \) -delete 2>/dev/null || true && \
     find /vllm/venv -depth -type d -name "include" -exec rm -rf {} \; 2>/dev/null || true && \
     \
-    # 15. Strip debug symbols from shared libraries (significant size reduction)
+    # 21. Strip debug symbols from shared libraries (significant size reduction)
     find /vllm/venv -type f -name "*.so*" -exec strip --strip-unneeded {} \; 2>/dev/null || true && \
     find /root/.local/share/uv -type f -name "*.so*" -exec strip --strip-unneeded {} \; 2>/dev/null || true && \
     \
-    # 16. Clean up uv-managed Python installation
+    # 22. Clean up uv-managed Python installation
     find /root/.local/share/uv/python -type f -name "*.a" -delete 2>/dev/null || true && \
     find /root/.local/share/uv/python -depth -type d \( -name "test" -o -name "tests" -o -name "idle_test" -o -name "__pycache__" \) \
         -exec rm -rf {} \; 2>/dev/null || true && \
     rm -rf /root/.local/share/uv/python/*/share/man /root/.local/share/uv/python/*/share/doc 2>/dev/null || true && \
     \
-    # 17. Remove locale data (keep only en_US)
+    # 23. Remove locale data (keep only en_US)
     find /usr/share/locale -mindepth 1 -maxdepth 1 ! -name 'en*' -exec rm -rf {} \; 2>/dev/null || true && \
     rm -rf /usr/share/doc /usr/share/man /usr/share/info 2>/dev/null || true && \
     \
-    # 18. Remove uv binary and wget (not needed at runtime)
+    # 24. Remove uv binary and wget (not needed at runtime)
     rm -f /usr/local/bin/uv && \
     apt-get purge -y --auto-remove binutils wget && \
     apt-get clean && \
     \
-    # 19. Clean temp files and apt cache
+    # 25. Clean temp files and apt cache
     rm -rf /tmp/* /var/tmp/* /var/lib/apt/lists/* /var/cache/apt/archives/* /var/log/* /root/.cache/* && \
     \
-    # 20. Report cleanup results
+    # 26. Report cleanup results
     echo "=== Cleanup complete ===" && \
     du -sh /vllm/venv || true && \
     du -sh /root/.local/share/uv/python 2>/dev/null || true && \
