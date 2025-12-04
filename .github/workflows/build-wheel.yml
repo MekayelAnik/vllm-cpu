@@ -405,8 +405,9 @@ jobs:
         uses: astral-sh/setup-uv@1e862dfacbd1d6d858c55d9b792c756523627244 # v7.1.4
         with:
           version: ${{ env.UV_VERSION }}
-          enable-cache: true
-          cache-suffix: amd64-noavx512-${{ matrix.version }}
+          # Disable uv's built-in cache to avoid "cache path does not exist" errors
+          # when builds don't use uv extensively. We rely on ccache for build caching.
+          enable-cache: false
 
       - name: Cache ccache
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
@@ -489,8 +490,9 @@ jobs:
         uses: astral-sh/setup-uv@1e862dfacbd1d6d858c55d9b792c756523627244 # v7.1.4
         with:
           version: ${{ env.UV_VERSION }}
-          enable-cache: true
-          cache-suffix: arm64-noavx512-${{ matrix.version }}
+          # Disable uv's built-in cache to avoid "cache path does not exist" errors
+          # when builds don't use uv extensively. We rely on ccache for build caching.
+          enable-cache: false
 
       - name: Cache ccache
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
@@ -574,8 +576,9 @@ jobs:
         uses: astral-sh/setup-uv@1e862dfacbd1d6d858c55d9b792c756523627244 # v7.1.4
         with:
           version: ${{ env.UV_VERSION }}
-          enable-cache: true
-          cache-suffix: amd64-${{ matrix.variant }}-${{ matrix.version }}
+          # Disable uv's built-in cache to avoid "cache path does not exist" errors
+          # when builds don't use uv extensively. We rely on ccache for build caching.
+          enable-cache: false
 
       - name: Cache ccache
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
