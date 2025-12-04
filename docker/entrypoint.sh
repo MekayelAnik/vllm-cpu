@@ -247,53 +247,38 @@ get_recommended_variant() {
 
 show_variant_recommendation() {
     # Display variant recommendation at startup
-    local current_variant="${VLLM_CPU_VARIANT:-unknown}"
-    local recommended_variant="$1"
+    local current="${VLLM_CPU_VARIANT:-unknown}"
+    local best="$1"
     local features="$2"
 
+    # Get numeric levels for comparison
+    local cur_lvl=0 best_lvl=0
+    case "${current}" in
+        noavx512) cur_lvl=0 ;; avx512) cur_lvl=1 ;; avx512vnni) cur_lvl=2 ;;
+        avx512bf16) cur_lvl=3 ;; amxbf16) cur_lvl=4 ;;
+    esac
+    case "${best}" in
+        noavx512) best_lvl=0 ;; avx512) best_lvl=1 ;; avx512vnni) best_lvl=2 ;;
+        avx512bf16) best_lvl=3 ;; amxbf16) best_lvl=4 ;;
+    esac
+
     echo ""
-    echo "=== CPU Variant Recommendation ==="
-    echo "Detected CPU features:${features:- (none detected)}"
-    echo "Recommended variant: ${recommended_variant}"
-    echo "Current variant:     ${current_variant}"
+    echo "=== Variant Check ==="
+    echo "CPU features:${features:- none}"
+    echo "Current: ${current} | Best: ${best}"
 
-    if [ "${current_variant}" = "${recommended_variant}" ]; then
-        echo "✓ You are using the optimal variant for your CPU!"
-    elif [ "${current_variant}" = "unknown" ] || [ -z "${current_variant}" ]; then
-        echo "⚠ Could not determine current variant."
-        echo "  For best performance, use: vllm-cpu-${recommended_variant}"
+    if [ "${current}" = "${best}" ]; then
+        echo "Status: Optimal - current variant is the best for your CPU"
+    elif [ "${current}" = "unknown" ] || [ -z "${current}" ]; then
+        echo "Status: Unknown - recommend vllm-cpu-${best}"
+    elif [ "${cur_lvl}" -gt "${best_lvl}" ]; then
+        echo "Status: INCOMPATIBLE - may crash due to missing CPU features"
+        echo "Fix: docker pull mekayelanik/vllm-cpu:${best}-latest"
     else
-        # Determine if current variant is suboptimal or incompatible
-        local current_level=0
-        local recommended_level=0
-
-        case "${current_variant}" in
-            noavx512) current_level=0 ;;
-            avx512) current_level=1 ;;
-            avx512vnni) current_level=2 ;;
-            avx512bf16) current_level=3 ;;
-            amxbf16) current_level=4 ;;
-        esac
-
-        case "${recommended_variant}" in
-            noavx512) recommended_level=0 ;;
-            avx512) recommended_level=1 ;;
-            avx512vnni) recommended_level=2 ;;
-            avx512bf16) recommended_level=3 ;;
-            amxbf16) recommended_level=4 ;;
-        esac
-
-        if [ "${current_level}" -gt "${recommended_level}" ]; then
-            echo "⚠ WARNING: Current variant requires CPU features not available!"
-            echo "  Your CPU supports up to: ${recommended_variant}"
-            echo "  This may cause illegal instruction errors or crashes."
-            echo "  Recommended: docker pull mekayelanik/vllm-cpu:${recommended_variant}-latest"
-        else
-            echo "ℹ You could get better performance with: vllm-cpu-${recommended_variant}"
-            echo "  Upgrade: docker pull mekayelanik/vllm-cpu:${recommended_variant}-latest"
-        fi
+        echo "Status: Suboptimal - better performance available"
+        echo "Upgrade: docker pull mekayelanik/vllm-cpu:${best}-latest"
     fi
-    echo "==================================="
+    echo "====================="
 }
 
 # =============================================================================
