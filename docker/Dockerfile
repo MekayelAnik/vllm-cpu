@@ -169,16 +169,15 @@ RUN set -ex && \
     # List of critical dependencies to check (space-separated)
     CRITICAL_DEPS="xgrammar msgspec compressed-tensors lm-format-enforcer" && \
     echo "Checking ${WHEEL_ARCH} wheel availability for: ${CRITICAL_DEPS}" && \
-    # Fetch wheel lists for all critical dependencies
+    # Fetch wheel lists for all critical dependencies (use | as record separator)
     DEP_WHEELS="" && \
     for DEP in ${CRITICAL_DEPS}; do \
         DEP_VERSION=$(curl -sfL --max-time 10 "https://pypi.org/pypi/${DEP}/json" 2>/dev/null | \
             jq -r '.releases | keys[]' 2>/dev/null | sort -V | tail -1) && \
         if [ -n "${DEP_VERSION}" ]; then \
             DEP_WHEEL_LIST=$(curl -sfL --max-time 10 "https://pypi.org/pypi/${DEP}/${DEP_VERSION}/json" 2>/dev/null | \
-                jq -r '.urls[].filename' 2>/dev/null) && \
-            DEP_WHEELS="${DEP_WHEELS}${DEP}:${DEP_WHEEL_LIST}
-"; \
+                jq -r '.urls[].filename' 2>/dev/null | tr '\n' ' ') && \
+            DEP_WHEELS="${DEP_WHEELS}${DEP}:${DEP_WHEEL_LIST}|"; \
         fi; \
     done && \
     # Try current version, then fall back: 3.13 -> 3.12 -> 3.11 -> 3.10 -> 3.9
@@ -186,7 +185,7 @@ RUN set -ex && \
         ALL_DEPS_OK=true && \
         MISSING_DEPS="" && \
         for DEP in ${CRITICAL_DEPS}; do \
-            DEP_WHEEL_LIST=$(echo "${DEP_WHEELS}" | grep "^${DEP}:" | cut -d: -f2-) && \
+            DEP_WHEEL_LIST=$(echo "${DEP_WHEELS}" | tr '|' '\n' | grep "^${DEP}:" | cut -d: -f2-) && \
             if [ -n "${DEP_WHEEL_LIST}" ]; then \
                 HAS_WHEEL=$(echo "${DEP_WHEEL_LIST}" | grep -c "cp3${PYTHON_MINOR}.*manylinux.*${WHEEL_ARCH}" || echo "0") && \
                 # Also check for universal wheels (py3-none-any)
