@@ -672,14 +672,52 @@ jobs:
           WHEEL_PY_VERSIONS=$(find dist -name "*.whl" -type f | sed -n 's/.*-cp\([0-9]*\)-cp.*/\1/p' | sort -u | while read v; do echo "3.${v#3}"; done | tr '\n' ',' | sed 's/,$//')
           echo "Detected Python versions: $WHEEL_PY_VERSIONS"
 
-          ./build_and_verify.sh \
-            --skip-build \
-            --skip-github \
-            --variant=all \
-            --vllm-versions="${{ matrix.version }}" \
-            --python-versions="${WHEEL_PY_VERSIONS:-auto}" \
-            --platform=all \
-            --dist-dir=dist
+          # Detect which variants actually have wheels (only publish what exists)
+          AVAILABLE_VARIANTS=""
+          for variant in noavx512 avx512 avx512vnni avx512bf16 amxbf16; do
+            # Map variant name to wheel pattern
+            if [[ "$variant" == "noavx512" ]]; then
+              pattern="vllm_cpu-"
+            else
+              pattern="vllm_cpu_${variant}-"
+            fi
+            if find dist -name "${pattern}*.whl" 2>/dev/null | grep -q .; then
+              if [[ -n "$AVAILABLE_VARIANTS" ]]; then
+                AVAILABLE_VARIANTS="$AVAILABLE_VARIANTS,$variant"
+              else
+                AVAILABLE_VARIANTS="$variant"
+              fi
+            fi
+          done
+
+          if [[ -z "$AVAILABLE_VARIANTS" ]]; then
+            echo "::error::No wheels found to publish!"
+            exit 1
+          fi
+
+          echo "Variants with wheels: $AVAILABLE_VARIANTS"
+
+          # Publish each variant separately to handle partial builds
+          IFS=',' read -ra VARIANTS <<< "$AVAILABLE_VARIANTS"
+          FAILED=0
+          for variant in "${VARIANTS[@]}"; do
+            echo "Publishing variant: $variant"
+            if ! ./build_and_verify.sh \
+              --skip-build \
+              --skip-github \
+              --variant="$variant" \
+              --vllm-versions="${{ matrix.version }}" \
+              --python-versions="${WHEEL_PY_VERSIONS:-auto}" \
+              --platform=all \
+              --dist-dir=dist; then
+              echo "::warning::Failed to publish $variant"
+              FAILED=$((FAILED + 1))
+            fi
+          done
+
+          if [[ $FAILED -gt 0 ]]; then
+            echo "::warning::$FAILED variant(s) failed to publish"
+          fi
         env:
           PYPI_TOKEN_CPU: ${{ secrets.PYPI_TOKEN_CPU }}
           PYPI_TOKEN_AVX512: ${{ secrets.PYPI_TOKEN_AVX512 }}
