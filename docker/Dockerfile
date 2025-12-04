@@ -624,6 +624,9 @@ RUN --mount=type=cache,target=/root/.cache/uv \
     # Try PyPI first unless explicitly requesting GitHub
     # Also try .post1, .post2, etc. suffixes if base version fails
     PYPI_SUCCESS=false && \
+    PYPI_LAST_ERROR="" && \
+    DETECTED_PY=$(cat /vllm/python_version.txt) && \
+    echo "Using Python ${DETECTED_PY} for installation..." && \
     if [ "${USE_GITHUB_RELEASE}" = "true" ]; then \
         echo "Using GitHub release as requested..."; \
     else \
@@ -632,17 +635,21 @@ RUN --mount=type=cache,target=/root/.cache/uv \
         for VERSION_SUFFIX in "" ".post1" ".post2" ".post3"; do \
             INSTALL_VERSION="${VLLM_VERSION}${VERSION_SUFFIX}" && \
             echo "Trying ${PACKAGE_NAME}==${INSTALL_VERSION}..." && \
-            if uv pip install "${PACKAGE_NAME}==${INSTALL_VERSION}" \
+            if PYPI_LAST_ERROR=$(uv pip install "${PACKAGE_NAME}==${INSTALL_VERSION}" \
                 --index-url "${PYTORCH_INDEX}" \
                 --extra-index-url "${PYPI_INDEX}" \
-                --index-strategy unsafe-best-match 2>/dev/null; then \
+                --index-strategy unsafe-best-match 2>&1); then \
                 echo "Successfully installed ${PACKAGE_NAME}==${INSTALL_VERSION} from PyPI" && \
                 PYPI_SUCCESS=true && \
                 break; \
+            else \
+                echo "Failed: ${INSTALL_VERSION}"; \
             fi; \
         done; \
         if [ "${PYPI_SUCCESS}" = "false" ]; then \
-            echo "PyPI installation failed for all version variants, falling back to GitHub release..."; \
+            echo "PyPI installation failed for all version variants." && \
+            echo "Last error: ${PYPI_LAST_ERROR}" && \
+            echo "Falling back to GitHub release..."; \
         fi; \
     fi && \
     \
@@ -656,9 +663,8 @@ RUN --mount=type=cache,target=/root/.cache/uv \
             aarch64) WHEEL_ARCH="aarch64" ;; \
             *) echo "Unsupported architecture: ${ARCH}" && exit 1 ;; \
         esac && \
-        # Get detected Python version (stored earlier in /vllm/python_version.txt)
-        DETECTED_PY=$(cat /vllm/python_version.txt) && \
         PYTHON_TAG="cp${DETECTED_PY//./}" && \
+        echo "Looking for wheel: Python ${DETECTED_PY} (${PYTHON_TAG}), Arch: ${WHEEL_ARCH}" && \
         # Try base version first, then .post1, .post2, .post3
         WHEEL_DOWNLOADED=false && \
         for VERSION_SUFFIX in "" ".post1" ".post2" ".post3"; do \
@@ -673,7 +679,21 @@ RUN --mount=type=cache,target=/root/.cache/uv \
             fi; \
         done && \
         if [ "${WHEEL_DOWNLOADED}" = "false" ]; then \
-            echo "ERROR: Could not find wheel for ${PACKAGE_NAME} ${VLLM_VERSION} on GitHub" && \
+            echo "============================================================" && \
+            echo "ERROR: Could not install ${PACKAGE_NAME} ${VLLM_VERSION}" && \
+            echo "============================================================" && \
+            echo "Python version: ${DETECTED_PY}" && \
+            echo "Architecture: ${WHEEL_ARCH}" && \
+            echo "" && \
+            echo "Tried:" && \
+            echo "  1. PyPI: ${PACKAGE_NAME}==${VLLM_VERSION} (and .post1/.post2/.post3)" && \
+            echo "  2. GitHub: v${VLLM_VERSION} release wheels" && \
+            echo "" && \
+            echo "Possible causes:" && \
+            echo "  - No wheel exists for Python ${DETECTED_PY} on ${WHEEL_ARCH}" && \
+            echo "  - Package not yet published to PyPI" && \
+            echo "  - No GitHub release exists for this version" && \
+            echo "============================================================" && \
             exit 1; \
         fi && \
         # Install with CPU-only PyTorch index for dependencies
