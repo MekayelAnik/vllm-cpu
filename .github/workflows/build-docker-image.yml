@@ -317,18 +317,37 @@ jobs:
         id: check_latest
         run: |
           LATEST_VERSION=$(cat /tmp/latest_version.txt)
-          echo "Checking if latest tags point to $LATEST_VERSION..."
+          echo "Checking if latest tags need updating..."
 
-          # Check if noavx512-latest exists and what version it points to
+          # Get current highest version in Docker Hub
           CURRENT_LATEST=""
           if [[ -f /tmp/docker_versions.txt ]]; then
             CURRENT_LATEST=$(cat /tmp/docker_versions.txt | sort -V | tail -1)
           fi
 
-          echo "Current latest in Docker Hub: $CURRENT_LATEST"
+          echo "Current latest in Docker Hub: ${CURRENT_LATEST:-none}"
           echo "PyPI latest: $LATEST_VERSION"
 
-          if [[ "$CURRENT_LATEST" != "$LATEST_VERSION" ]]; then
+          # Check if any version being built is the latest version
+          # This handles manual builds where user specifies the latest version
+          INPUT_VERSIONS="${{ github.event.inputs.vllm_versions }}"
+          BUILDING_LATEST=false
+
+          if [[ -n "$INPUT_VERSIONS" ]]; then
+            # Check if input versions contain the latest version
+            IFS=',' read -ra VER_ARRAY <<< "$INPUT_VERSIONS"
+            for ver in "${VER_ARRAY[@]}"; do
+              ver=$(echo "$ver" | tr -d ' ')
+              if [[ "$ver" == "$LATEST_VERSION" ]]; then
+                BUILDING_LATEST=true
+                echo "Building the latest version ($LATEST_VERSION) - latest tags will be updated"
+                break
+              fi
+            done
+          fi
+
+          # Need update if: current Docker latest != PyPI latest, OR we're building the latest version
+          if [[ "$CURRENT_LATEST" != "$LATEST_VERSION" ]] || [[ "$BUILDING_LATEST" == "true" ]]; then
             echo "Latest tags need updating!"
             echo "needs_update=true" >> "$GITHUB_OUTPUT"
           else
