@@ -660,61 +660,86 @@ RUN --mount=type=cache,target=/root/.cache/uv \
     uv cache clean || true && \
     \
     # 2. Remove pip/wheel (NOT setuptools - needed for distutils-precedence.pth)
-    # Note: We keep setuptools, _distutils_hack, and pkg_resources because:
-    # - distutils-precedence.pth references _distutils_hack at Python startup
-    # - Removing them causes "ModuleNotFoundError: No module named '_distutils_hack'"
     rm -rf /vllm/venv/lib/*/site-packages/pip* || true && \
     rm -rf /vllm/venv/lib/*/site-packages/wheel* || true && \
     \
-    # 3. Remove test directories from installed packages
-    # IMPORTANT: Skip torch entirely - torch/testing is a required module, not tests
-    # torch.testing is imported by torch.autograd.gradcheck which is needed at runtime
-    # Use -depth to process children before parents (prevents "directory not found" errors)
+    # 3. Remove triton (GPU compiler - not needed for CPU inference)
+    # Saves ~100-200 MB
+    rm -rf /vllm/venv/lib/*/site-packages/triton* || true && \
+    \
+    # 4. Remove NVIDIA/CUDA stubs from torch (not needed for CPU)
+    # These are placeholder libraries for GPU that bloat CPU images
+    rm -rf /vllm/venv/lib/*/site-packages/torch/lib/*cuda* || true && \
+    rm -rf /vllm/venv/lib/*/site-packages/torch/lib/*cudnn* || true && \
+    rm -rf /vllm/venv/lib/*/site-packages/torch/lib/*nvrtc* || true && \
+    rm -rf /vllm/venv/lib/*/site-packages/torch/lib/*nccl* || true && \
+    rm -rf /vllm/venv/lib/*/site-packages/torch/lib/*cupti* || true && \
+    rm -rf /vllm/venv/lib/*/site-packages/torch/lib/*cufft* || true && \
+    rm -rf /vllm/venv/lib/*/site-packages/torch/lib/*cusparse* || true && \
+    rm -rf /vllm/venv/lib/*/site-packages/torch/lib/*cusolver* || true && \
+    rm -rf /vllm/venv/lib/*/site-packages/torch/lib/*cublas* || true && \
+    rm -rf /vllm/venv/lib/*/site-packages/torch/lib/*curand* || true && \
+    rm -rf /vllm/venv/lib/*/site-packages/nvidia* || true && \
+    \
+    # 5. Remove xformers if present (GPU-specific memory optimization)
+    rm -rf /vllm/venv/lib/*/site-packages/xformers* || true && \
+    \
+    # 6. Remove test directories from installed packages
+    # IMPORTANT: Skip torch entirely - torch/testing is a required module
     find /vllm/venv/lib/*/site-packages -depth -type d \( -name "tests" -o -name "test" -o -name "*_tests" \) \
         ! -path "*/torch/*" -exec rm -rf {} \; 2>/dev/null || true && \
     \
-    # 4. Remove documentation and examples from packages
+    # 7. Remove documentation and examples from packages
     find /vllm/venv/lib/*/site-packages -depth -type d \( -name "docs" -o -name "doc" -o -name "examples" -o -name "benchmarks" \) \
         -exec rm -rf {} \; 2>/dev/null || true && \
     \
-    # 5. Remove unnecessary files by extension (excluding critical files)
+    # 8. Remove unnecessary files by extension
     find /vllm/venv -type f \( -name "*.md" -o -name "*.rst" \) -delete 2>/dev/null || true && \
     find /vllm/venv -type f -name "*.txt" ! -name "requirements*.txt" ! -name "top_level.txt" -delete 2>/dev/null || true && \
     find /vllm/venv -type f \( -name "LICENSE*" -o -name "COPYING*" -o -name "CHANGELOG*" -o -name "HISTORY*" -o -name "AUTHORS*" -o -name "CONTRIBUTORS*" \) \
         -delete 2>/dev/null || true && \
     \
-    # 6. Remove .dist-info files except essential ones
+    # 9. Remove .pyi stub files (type hints not needed at runtime)
+    find /vllm/venv -type f -name "*.pyi" -delete 2>/dev/null || true && \
+    \
+    # 10. Remove .dist-info files except essential ones
     find /vllm/venv -path "*/.dist-info/*" -type f \
         ! -name "METADATA" ! -name "RECORD" ! -name "WHEEL" ! -name "top_level.txt" ! -name "entry_points.txt" \
         -delete 2>/dev/null || true && \
     \
-    # 7. Remove static libraries (.a files) - not needed for runtime
+    # 11. Remove static libraries (.a files) - not needed for runtime
     find /vllm/venv -type f -name "*.a" -delete 2>/dev/null || true && \
     \
-    # 8. Remove Python bytecode cache (will be regenerated on first run)
+    # 12. Remove Python bytecode cache (will be regenerated on first run)
     find /vllm/venv -depth -type d -name "__pycache__" -exec rm -rf {} \; 2>/dev/null || true && \
     \
-    # 9. Strip debug symbols from shared libraries (significant size reduction)
+    # 13. Remove C/C++ header files (not needed at runtime)
+    find /vllm/venv -type f \( -name "*.h" -o -name "*.hpp" \) -delete 2>/dev/null || true && \
+    find /vllm/venv -depth -type d -name "include" -exec rm -rf {} \; 2>/dev/null || true && \
+    \
+    # 14. Strip debug symbols from shared libraries (significant size reduction)
     find /vllm/venv -type f -name "*.so*" -exec strip --strip-unneeded {} \; 2>/dev/null || true && \
     find /root/.local/share/uv -type f -name "*.so*" -exec strip --strip-unneeded {} \; 2>/dev/null || true && \
     \
-    # 10. Clean up uv-managed Python installation
+    # 15. Clean up uv-managed Python installation
     find /root/.local/share/uv/python -type f -name "*.a" -delete 2>/dev/null || true && \
     find /root/.local/share/uv/python -depth -type d \( -name "test" -o -name "tests" -o -name "idle_test" -o -name "__pycache__" \) \
         -exec rm -rf {} \; 2>/dev/null || true && \
     rm -rf /root/.local/share/uv/python/*/share/man /root/.local/share/uv/python/*/share/doc 2>/dev/null || true && \
     \
-    # 11. Remove uv binary (not needed at runtime - packages already installed)
-    rm -f /usr/local/bin/uv && \
+    # 16. Remove locale data (keep only en_US)
+    find /usr/share/locale -mindepth 1 -maxdepth 1 ! -name 'en*' -exec rm -rf {} \; 2>/dev/null || true && \
+    rm -rf /usr/share/doc /usr/share/man /usr/share/info 2>/dev/null || true && \
     \
-    # 12. Remove binutils (only needed for stripping, not at runtime)
-    apt-get purge -y --auto-remove binutils && \
+    # 17. Remove uv binary and wget (not needed at runtime)
+    rm -f /usr/local/bin/uv && \
+    apt-get purge -y --auto-remove binutils wget && \
     apt-get clean && \
     \
-    # 13. Clean temp files and apt cache
+    # 18. Clean temp files and apt cache
     rm -rf /tmp/* /var/tmp/* /var/lib/apt/lists/* /var/cache/apt/archives/* /var/log/* /root/.cache/* && \
     \
-    # 14. Report cleanup results
+    # 19. Report cleanup results
     echo "=== Cleanup complete ===" && \
     du -sh /vllm/venv || true && \
     du -sh /root/.local/share/uv/python 2>/dev/null || true && \
