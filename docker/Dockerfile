@@ -155,10 +155,11 @@ RUN set -ex && \
         fi; \
     fi && \
     \
-    # Method 5: Verify key dependencies have wheels for detected/specified Python version
+    # Method 5: Verify the vllm-cpu package AND key dependencies have wheels
     # Some dependencies may lack wheels for newer Python versions
-    # Gradually fall back through Python versions until ALL critical deps have wheels
-    # Critical dependencies that often lack wheels for newest Python:
+    # Gradually fall back through Python versions until ALL have wheels
+    # Packages to check:
+    #   - The vllm-cpu package itself (MUST have wheel for selected Python+arch)
     #   - xgrammar: Grammar/constrained decoding (C++ extension)
     #   - msgspec: Fast serialization (C extension)
     #   - compressed-tensors: Tensor compression (may have C extensions)
@@ -167,13 +168,19 @@ RUN set -ex && \
     ORIGINAL_PY="${PYTHON_VER}" && \
     PYTHON_MINOR=$(echo "${PYTHON_VER}" | cut -d. -f2) && \
     # List of critical dependencies to check (space-separated)
-    CRITICAL_DEPS="xgrammar msgspec compressed-tensors lm-format-enforcer" && \
+    # Include the vllm-cpu package itself first!
+    CRITICAL_DEPS="${PACKAGE_NAME} xgrammar msgspec compressed-tensors lm-format-enforcer" && \
     echo "Checking ${WHEEL_ARCH} wheel availability for: ${CRITICAL_DEPS}" && \
     # Fetch wheel lists for all critical dependencies (use | as record separator)
     DEP_WHEELS="" && \
     for DEP in ${CRITICAL_DEPS}; do \
-        DEP_VERSION=$(curl -sfL --max-time 10 "https://pypi.org/pypi/${DEP}/json" 2>/dev/null | \
-            jq -r '.releases | keys[]' 2>/dev/null | sort -V | tail -1) && \
+        # For vllm-cpu packages, use the specific version; for others, use latest
+        if [ "${DEP}" = "${PACKAGE_NAME}" ]; then \
+            DEP_VERSION="${VLLM_VERSION}"; \
+        else \
+            DEP_VERSION=$(curl -sfL --max-time 10 "https://pypi.org/pypi/${DEP}/json" 2>/dev/null | \
+                jq -r '.releases | keys[]' 2>/dev/null | sort -V | tail -1); \
+        fi && \
         if [ -n "${DEP_VERSION}" ]; then \
             DEP_WHEEL_LIST=$(curl -sfL --max-time 10 "https://pypi.org/pypi/${DEP}/${DEP_VERSION}/json" 2>/dev/null | \
                 jq -r '.urls[].filename' 2>/dev/null | tr '\n' ' ') && \
