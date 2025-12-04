@@ -68,6 +68,16 @@ on:
         required: false
         type: boolean
         default: false
+      force_rebuild_dockerhub:
+        description: 'Force rebuild and push to Docker Hub (even if image exists)'
+        required: false
+        type: boolean
+        default: false
+      force_rebuild_ghcr:
+        description: 'Force rebuild and push to GHCR (even if image exists)'
+        required: false
+        type: boolean
+        default: false
       skip_latest_tag:
         description: 'Skip updating latest tags'
         required: false
@@ -170,6 +180,16 @@ jobs:
       - name: Check existing Docker Hub images
         id: dockerhub
         run: |
+          # Check if force rebuild is enabled for both registries
+          FORCE_DOCKERHUB="${{ github.event.inputs.force_rebuild_dockerhub }}"
+          FORCE_GHCR="${{ github.event.inputs.force_rebuild_ghcr }}"
+
+          if [[ "$FORCE_DOCKERHUB" == "true" && "$FORCE_GHCR" == "true" ]]; then
+            echo "Force rebuild enabled for both registries - skipping existing image check"
+            echo "" > /tmp/docker_versions.txt
+            exit 0
+          fi
+
           echo "Checking existing Docker Hub images..."
 
           # Fetch existing tags from Docker Hub API with retry
@@ -194,8 +214,13 @@ jobs:
             echo "::warning::No existing Docker Hub images found or unable to fetch"
           fi
 
-          # Save to file
-          echo "$EXISTING_VERSIONS" > /tmp/docker_versions.txt
+          # Save to file (empty if force rebuild is enabled)
+          if [[ "$FORCE_DOCKERHUB" == "true" ]]; then
+            echo "Force rebuild enabled for Docker Hub - treating as no existing images"
+            echo "" > /tmp/docker_versions.txt
+          else
+            echo "$EXISTING_VERSIONS" > /tmp/docker_versions.txt
+          fi
 
       - name: Compare versions
         id: compare
@@ -382,6 +407,8 @@ jobs:
             echo "| Latest version | ${{ steps.compare.outputs.latest_version }} |"
             echo "| Needs latest update | ${{ steps.check_latest.outputs.needs_update }} |"
             echo "| Variants to build | \`${{ steps.variants.outputs.matrix }}\` |"
+            echo "| Force rebuild Docker Hub | ${{ github.event.inputs.force_rebuild_dockerhub || 'false' }} |"
+            echo "| Force rebuild GHCR | ${{ github.event.inputs.force_rebuild_ghcr || 'false' }} |"
             echo "| Dry run | ${{ github.event.inputs.dry_run || 'false' }} |"
           } >> "$GITHUB_STEP_SUMMARY"
 
