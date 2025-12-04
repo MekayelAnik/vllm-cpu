@@ -192,10 +192,7 @@ rm -rf /usr/share/doc /usr/share/man /usr/share/info 2>/dev/null || true
 echo "Step 14: Removing build tools..."
 rm -f /usr/local/bin/uv
 apt-get purge -y --auto-remove binutils wget 2>/dev/null || true
-apt-get autoremove -y 2>/dev/null || true
-apt-get autoclean 2>/dev/null || true
-apt-get clean 2>/dev/null || true
-rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/* 2>/dev/null || true
+rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/* /var/log/apt/* /var/log/dpkg.log 2>/dev/null || true
 
 # =============================================================================
 # 15. Clean temp files and apt cache
