@@ -15,6 +15,30 @@
 #   VARIANT - CPU variant (noavx512, avx512, avx512vnni, avx512bf16, amxbf16)
 #   USE_GITHUB_RELEASE - Set to "true" to use GitHub release wheels instead of PyPI
 #
+# Runtime args (set via -e):
+#   PUID - User ID to run as (unset = root)
+#   PGID - Group ID to run as (unset = root)
+#   DATA_DIR - Data directory for models/cache (default: /data)
+#   VLLM_SERVER_HOST - Server bind address (default: 0.0.0.0)
+#   VLLM_SERVER_PORT - Server port (default: 8000)
+#
+# RECOMMENDED DOCKER RUN OPTIONS for optimal performance:
+#   docker run \
+#     --cap-add SYS_NICE \
+#     --security-opt seccomp=unconfined \
+#     --shm-size 4g \
+#     -v /path/to/models:/data/models \
+#     -e VLLM_CPU_KVCACHE_SPACE=8 \
+#     -e VLLM_MODEL=meta-llama/Llama-3.2-1B-Instruct \
+#     -p 8000:8000 \
+#     mekayelanik/vllm-cpu:noavx512-latest
+#
+#   --cap-add SYS_NICE: Enables NUMA syscalls for memory binding
+#   --security-opt seccomp=unconfined: Allows get_mempolicy for NUMA optimization
+#   --shm-size 4g: Shared memory for tensor operations (increase for larger models)
+#
+# Reference: https://docs.vllm.ai/en/latest/getting_started/installation/cpu/
+#
 # Build Optimization Features:
 #   - Multi-stage build for Python version detection
 #   - BuildKit cache mounts for apt and uv packages
@@ -167,53 +191,65 @@ ENV VLLM_TARGET_DEVICE=cpu
 ENV VLLM_CPU_VARIANT=${VARIANT}
 
 # -----------------------------------------------------------------------------
-# Cache and Storage Paths
+# User/Group Configuration (for running as non-root)
 # -----------------------------------------------------------------------------
+# PUID/PGID - User/Group ID for the vllm process
+# If set, container runs as specified user; if unset, runs as root
+# Set these to match your host user to avoid permission issues with mounted volumes
+# Example: docker run -e PUID=1000 -e PGID=1000 ...
+ENV PUID=""
+ENV PGID=""
+
+# Data directory (models, cache, config) - can be mounted as volume
+# This is the primary directory users should mount for persistent storage
+ENV DATA_DIR=/data
+
 # Root directory for vLLM cache files
-ENV VLLM_CACHE_ROOT=/root/.cache/vllm
+ENV VLLM_CACHE_ROOT=/data/cache/vllm
 
 # Root directory for vLLM configuration files
-ENV VLLM_CONFIG_ROOT=/root/.config/vllm
+ENV VLLM_CONFIG_ROOT=/data/config/vllm
 
 # Path for storing downloaded assets (models, etc.)
-ENV VLLM_ASSETS_CACHE=/root/.cache/vllm/assets
+ENV VLLM_ASSETS_CACHE=/data/cache/vllm/assets
 
 # -----------------------------------------------------------------------------
 # CPU Backend Specific Settings (vLLM CPU Optimization)
-# Reference: https://docs.vllm.ai/en/stable/getting_started/installation/cpu/
+# Reference: https://docs.vllm.ai/en/latest/getting_started/installation/cpu/
+# Reference: https://docs.vllm.ai/en/latest/configuration/env_vars/
 # -----------------------------------------------------------------------------
-# -----------------------------------------------------------------------------
-# CPU Performance Settings (Auto-configured by entrypoint if not set)
-# -----------------------------------------------------------------------------
-# These settings are dynamically configured at runtime based on available
-# resources. Set them explicitly to override auto-detection.
+# These settings are dynamically configured at runtime by the entrypoint script
+# based on available resources. Set them explicitly to override auto-detection.
 #
 # VLLM_CPU_KVCACHE_SPACE: KV cache size in GiB
 #   - Auto: 25% of available memory, clamped to 1-64 GiB
+#   - For multi-NUMA: calculated per-node to avoid cross-NUMA access
 #   - Larger values = more concurrent requests and longer contexts
+#   - IMPORTANT: Ensure KV cache + model weights fit in single NUMA node
 #   - Example: docker run -e VLLM_CPU_KVCACHE_SPACE=16 ...
 #
 # VLLM_CPU_OMP_THREADS_BIND: CPU core binding for OpenMP threads
 #   - Auto: "auto" (NUMA-aware binding by vLLM)
 #   - Options: "auto", "nobind", "0-31", "0-15|16-31" (for tensor parallel)
+#   - For TP/PP: cores for different ranks separated by '|'
 #   - Example: docker run -e VLLM_CPU_OMP_THREADS_BIND=0-15 ...
 #
 # VLLM_CPU_NUM_OF_RESERVED_CPU: Reserved cores for vLLM frontend
-#   - Auto: 1 for <=16 cores, 2 for >16 cores
+#   - Auto: 1 for <=16 cores, 2 for 17-32 cores, 4 for >32 cores
+#   - These cores handle async tasks, tokenization, and API requests
 #   - Example: docker run -e VLLM_CPU_NUM_OF_RESERVED_CPU=2 ...
 #
-# VLLM_CPU_SGL_KERNEL: Small-batch optimized kernels (x86_64 + AMX only)
-#   - Auto: 1 for amxbf16 variant, 0 otherwise
+# VLLM_CPU_SGL_KERNEL: SGL kernels optimized for small batch sizes
+#   - Auto: 1 for AMX-enabled CPUs, 0 otherwise
+#   - Best for: Sapphire Rapids+, BF16 weights, shapes divisible by 32
 #   - Example: docker run -e VLLM_CPU_SGL_KERNEL=1 ...
+#
+# VLLM_CPU_MOE_PREPACK: Enable MoE layer prepacking optimization
+#   - Auto: 1 (enabled) on supported CPUs
+#   - Passed to ipex.llm.modules.GatedMLPMOE
+#   - Set to 0 on unsupported CPUs if you encounter issues
+#   - Example: docker run -e VLLM_CPU_MOE_PREPACK=0 ...
 # -----------------------------------------------------------------------------
-
-# -----------------------------------------------------------------------------
-# Variant/Platform-Specific Settings
-# These are configured at runtime by entrypoint based on variant and platform
-# -----------------------------------------------------------------------------
-# VLLM_CPU_SGL_KERNEL: Set to 1 only for amxbf16 variant on x86_64
-#   - Requires: AMX instruction set, BF16 weights, shapes divisible by 32
-#   - Provides better performance for MoE models and small-batch scenarios
 
 # -----------------------------------------------------------------------------
 # OpenMP Threading Settings
@@ -255,11 +291,13 @@ ENV VLLM_LOGGING_COLOR=auto
 ENV VLLM_LOG_STATS_INTERVAL=10
 
 # -----------------------------------------------------------------------------
-# API Server Settings
+# API Server Settings (Docker entrypoint configuration)
 # -----------------------------------------------------------------------------
-# Server host and port (used by entrypoint)
-ENV VLLM_HOST="0.0.0.0"
-ENV VLLM_PORT="8000"
+# Server host and port (used by our entrypoint script)
+# Note: These are our custom env vars for the API server, distinct from
+# vLLM's internal VLLM_PORT/VLLM_HOST_IP used for distributed communication.
+ENV VLLM_SERVER_HOST="0.0.0.0"
+ENV VLLM_SERVER_PORT="8000"
 
 # API key for authentication (optional)
 ENV VLLM_API_KEY=""
@@ -295,9 +333,9 @@ ENV VLLM_MODEL_REDIRECT_PATH=""
 ENV HF_TOKEN=""
 ENV HUGGING_FACE_HUB_TOKEN=""
 
-# HuggingFace cache directory
-ENV HF_HOME=/root/.cache/huggingface
-ENV TRANSFORMERS_CACHE=/root/.cache/huggingface
+# HuggingFace cache directory (inside DATA_DIR for unified storage)
+ENV HF_HOME=/data/models
+ENV TRANSFORMERS_CACHE=/data/models
 
 # Offline mode
 ENV HF_HUB_OFFLINE=""
@@ -499,15 +537,19 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     # Required for uv to install Python
     ca-certificates \
     # For stripping debug symbols (removed after build)
-    binutils
+    binutils \
+    # For PUID/PGID user switching at runtime
+    gosu
 
 # Install uv - fast Python package manager
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
 
-# Create directories
-RUN mkdir -p /app /models /root/.cache/huggingface /root/.cache/vllm
+# Create directories for app and data
+# /data is the main volume mount point for persistent storage
+# Ownership will be set at runtime based on PUID/PGID
+RUN mkdir -p /vllm /data/models /data/cache/vllm /data/config/vllm
 
-WORKDIR /app
+WORKDIR /vllm
 
 # Install Python via uv and create virtual environment
 # Uses auto-detected version from python-detector stage, or explicit PYTHON_VERSION if provided
@@ -516,14 +558,14 @@ RUN set -ex && \
     DETECTED_PY=$(cat /tmp/python_version.txt) && \
     echo "Installing Python ${DETECTED_PY}..." && \
     uv python install "${DETECTED_PY}" && \
-    uv venv /app/venv --python "${DETECTED_PY}" && \
+    uv venv /vllm/venv --python "${DETECTED_PY}" && \
     # Store version for later reference
-    echo "${DETECTED_PY}" > /app/python_version.txt && \
+    echo "${DETECTED_PY}" > /vllm/python_version.txt && \
     echo "Python ${DETECTED_PY} installed successfully"
 
 # Set up environment for uv-managed Python
-ENV VIRTUAL_ENV=/app/venv
-ENV PATH="/app/venv/bin:$PATH"
+ENV VIRTUAL_ENV=/vllm/venv
+ENV PATH="/vllm/venv/bin:$PATH"
 # uv optimization settings for container builds
 # UV_LINK_MODE=copy required when using cache mounts (different filesystems)
 # UV_COMPILE_BYTECODE=1 improves container startup time (pre-compiles .pyc files)
@@ -584,8 +626,8 @@ RUN --mount=type=cache,target=/root/.cache/uv \
             aarch64) WHEEL_ARCH="aarch64" ;; \
             *) echo "Unsupported architecture: ${ARCH}" && exit 1 ;; \
         esac && \
-        # Get detected Python version (stored earlier in /app/python_version.txt)
-        DETECTED_PY=$(cat /app/python_version.txt) && \
+        # Get detected Python version (stored earlier in /vllm/python_version.txt)
+        DETECTED_PY=$(cat /vllm/python_version.txt) && \
         PYTHON_TAG="cp${DETECTED_PY//./}" && \
         # Construct wheel filename
         WHEEL_NAME="${PACKAGE_NAME//-/_}-${VLLM_VERSION}-${PYTHON_TAG}-${PYTHON_TAG}-manylinux_2_17_${WHEEL_ARCH}.manylinux2014_${WHEEL_ARCH}.whl" && \
@@ -614,49 +656,49 @@ RUN --mount=type=cache,target=/root/.cache/uv \
     \
     # 2. Remove Python bytecode cache (will be regenerated on first run if needed)
     #    Note: We compiled bytecode during install, but remove .pyc source caches
-    find /app/venv -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null || true && \
-    find /app/venv -type f -name "*.py[co]" -delete 2>/dev/null || true && \
+    find /vllm/venv -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null || true && \
+    find /vllm/venv -type f -name "*.py[co]" -delete 2>/dev/null || true && \
     \
     # 3. Remove pip/setuptools cache and metadata not needed at runtime
-    rm -rf /app/venv/lib/*/site-packages/pip* 2>/dev/null || true && \
-    rm -rf /app/venv/lib/*/site-packages/setuptools* 2>/dev/null || true && \
-    rm -rf /app/venv/lib/*/site-packages/wheel* 2>/dev/null || true && \
-    rm -rf /app/venv/lib/*/site-packages/_distutils_hack* 2>/dev/null || true && \
-    rm -rf /app/venv/lib/*/site-packages/pkg_resources* 2>/dev/null || true && \
+    rm -rf /vllm/venv/lib/*/site-packages/pip* 2>/dev/null || true && \
+    rm -rf /vllm/venv/lib/*/site-packages/setuptools* 2>/dev/null || true && \
+    rm -rf /vllm/venv/lib/*/site-packages/wheel* 2>/dev/null || true && \
+    rm -rf /vllm/venv/lib/*/site-packages/_distutils_hack* 2>/dev/null || true && \
+    rm -rf /vllm/venv/lib/*/site-packages/pkg_resources* 2>/dev/null || true && \
     \
     # 4. Remove test directories from installed packages
-    find /app/venv -type d -name "tests" -exec rm -rf {} + 2>/dev/null || true && \
-    find /app/venv -type d -name "test" -exec rm -rf {} + 2>/dev/null || true && \
-    find /app/venv -type d -name "testing" -exec rm -rf {} + 2>/dev/null || true && \
-    find /app/venv -type d -name "*_tests" -exec rm -rf {} + 2>/dev/null || true && \
+    find /vllm/venv -type d -name "tests" -exec rm -rf {} + 2>/dev/null || true && \
+    find /vllm/venv -type d -name "test" -exec rm -rf {} + 2>/dev/null || true && \
+    find /vllm/venv -type d -name "testing" -exec rm -rf {} + 2>/dev/null || true && \
+    find /vllm/venv -type d -name "*_tests" -exec rm -rf {} + 2>/dev/null || true && \
     \
     # 5. Remove documentation and examples from packages
-    find /app/venv -type d -name "docs" -exec rm -rf {} + 2>/dev/null || true && \
-    find /app/venv -type d -name "doc" -exec rm -rf {} + 2>/dev/null || true && \
-    find /app/venv -type d -name "examples" -exec rm -rf {} + 2>/dev/null || true && \
-    find /app/venv -type d -name "benchmarks" -exec rm -rf {} + 2>/dev/null || true && \
+    find /vllm/venv -type d -name "docs" -exec rm -rf {} + 2>/dev/null || true && \
+    find /vllm/venv -type d -name "doc" -exec rm -rf {} + 2>/dev/null || true && \
+    find /vllm/venv -type d -name "examples" -exec rm -rf {} + 2>/dev/null || true && \
+    find /vllm/venv -type d -name "benchmarks" -exec rm -rf {} + 2>/dev/null || true && \
     \
     # 6. Remove unnecessary files by extension
-    find /app/venv -type f -name "*.md" -delete 2>/dev/null || true && \
-    find /app/venv -type f -name "*.rst" -delete 2>/dev/null || true && \
-    find /app/venv -type f -name "*.txt" ! -name "requirements*.txt" -delete 2>/dev/null || true && \
-    find /app/venv -type f -name "LICENSE*" -delete 2>/dev/null || true && \
-    find /app/venv -type f -name "COPYING*" -delete 2>/dev/null || true && \
-    find /app/venv -type f -name "CHANGELOG*" -delete 2>/dev/null || true && \
-    find /app/venv -type f -name "HISTORY*" -delete 2>/dev/null || true && \
-    find /app/venv -type f -name "AUTHORS*" -delete 2>/dev/null || true && \
-    find /app/venv -type f -name "CONTRIBUTORS*" -delete 2>/dev/null || true && \
+    find /vllm/venv -type f -name "*.md" -delete 2>/dev/null || true && \
+    find /vllm/venv -type f -name "*.rst" -delete 2>/dev/null || true && \
+    find /vllm/venv -type f -name "*.txt" ! -name "requirements*.txt" -delete 2>/dev/null || true && \
+    find /vllm/venv -type f -name "LICENSE*" -delete 2>/dev/null || true && \
+    find /vllm/venv -type f -name "COPYING*" -delete 2>/dev/null || true && \
+    find /vllm/venv -type f -name "CHANGELOG*" -delete 2>/dev/null || true && \
+    find /vllm/venv -type f -name "HISTORY*" -delete 2>/dev/null || true && \
+    find /vllm/venv -type f -name "AUTHORS*" -delete 2>/dev/null || true && \
+    find /vllm/venv -type f -name "CONTRIBUTORS*" -delete 2>/dev/null || true && \
     \
     # 7. Remove .dist-info directories except METADATA and RECORD (needed for uninstall info)
-    find /app/venv -path "*/.dist-info/*" -type f \
+    find /vllm/venv -path "*/.dist-info/*" -type f \
         ! -name "METADATA" ! -name "RECORD" ! -name "WHEEL" ! -name "top_level.txt" ! -name "entry_points.txt" \
         -delete 2>/dev/null || true && \
     \
     # 8. Remove static libraries (.a files) - not needed for runtime
-    find /app/venv -type f -name "*.a" -delete 2>/dev/null || true && \
+    find /vllm/venv -type f -name "*.a" -delete 2>/dev/null || true && \
     \
     # 9. Strip debug symbols from shared libraries (significant size reduction)
-    find /app/venv -type f -name "*.so*" -exec strip --strip-unneeded {} \; 2>/dev/null || true && \
+    find /vllm/venv -type f -name "*.so*" -exec strip --strip-unneeded {} \; 2>/dev/null || true && \
     \
     # 10. Also strip system libraries that were installed
     find /root/.local/share/uv -type f -name "*.so*" -exec strip --strip-unneeded {} \; 2>/dev/null || true && \
@@ -688,24 +730,24 @@ RUN --mount=type=cache,target=/root/.cache/uv \
     # Report cleanup results
     echo "=== Cleanup complete ===" && \
     echo "Virtual environment size:" && \
-    du -sh /app/venv || true && \
+    du -sh /vllm/venv || true && \
     echo "Python installation size:" && \
     du -sh /root/.local/share/uv/python 2>/dev/null || true && \
-    echo "Total /app size:" && \
-    du -sh /app || true
+    echo "Total /vllm size:" && \
+    du -sh /vllm || true
 
 # Store detected Python version as environment variable for runtime reference
 # This allows querying the Python version without running python --version
-RUN echo "VLLM_PYTHON_VERSION=$(cat /app/python_version.txt)" >> /etc/environment
+RUN echo "VLLM_PYTHON_VERSION=$(cat /vllm/python_version.txt)" >> /etc/environment
 
 # Copy entrypoint and banner scripts
-COPY entrypoint.sh /app/entrypoint.sh
-COPY banner.sh /app/banner.sh
-RUN chmod +x /app/entrypoint.sh /app/banner.sh
+COPY entrypoint.sh /vllm/entrypoint.sh
+COPY banner.sh /vllm/banner.sh
+RUN chmod +x /vllm/entrypoint.sh /vllm/banner.sh
 
 # Health check using environment variable for port
 HEALTHCHECK --interval=30s --timeout=10s --start-period=120s --retries=3 \
-    CMD curl -f http://localhost:${VLLM_PORT:-8000}/health || exit 1
+    CMD curl -f http://localhost:${VLLM_SERVER_PORT:-8000}/health || exit 1
 
 # Use entrypoint script
-ENTRYPOINT ["/app/entrypoint.sh"]
+ENTRYPOINT ["/vllm/entrypoint.sh"]

@@ -1,15 +1,23 @@
-name: Auto-Build vLLM CPU Docker Images
-
+# ==============================================================================
+# Auto-Build vLLM CPU Docker Images
+# ==============================================================================
 # Automatically checks for new vLLM releases and builds Docker images
-# - Builds for both AMD64 and ARM64
+# - Builds for both AMD64 and ARM64 (noavx512 variant only)
 # - All 5 variants: noavx512, avx512, avx512vnni, avx512bf16, amxbf16
 # - Pushes to Docker Hub (primary) and GHCR (secondary)
 # - Tags: version-specific and 'latest' for newest version
+#
+# Security: All actions pinned to SHA hashes for supply chain security
+# Performance: GitHub Actions cache, concurrency control, parallel builds
+# ==============================================================================
+
+name: Auto-Build vLLM CPU Docker Images
 
 on:
-  # Run once a day at 00:00 UTC (temporary - will change back to every 30 minutes)
+  # Run every hour to check for new vLLM releases
+  # Note: Actual builds only run when new versions are detected
   schedule:
-    - cron: '0 12 * * *'
+    - cron: '30 * * * *'
 
   # Allow manual trigger
   workflow_dispatch:
@@ -71,15 +79,28 @@ on:
         type: boolean
         default: false
 
+# Prevent duplicate runs - cancel in-progress runs on same ref
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+# Minimal permissions by default (principle of least privilege)
+permissions:
+  contents: read
+
 env:
   DOCKERHUB_IMAGE: mekayelanik/vllm-cpu
   GHCR_IMAGE: ghcr.io/${{ github.repository }}
 
 jobs:
+  # ==========================================================================
   # Check for new vLLM versions that need Docker images
+  # ==========================================================================
   check-versions:
     name: Check for New Versions
     runs-on: ubuntu-latest
+    timeout-minutes: 10
+
     outputs:
       new_versions: ${{ steps.compare.outputs.new_versions }}
       has_new_versions: ${{ steps.compare.outputs.has_new_versions }}
@@ -93,13 +114,27 @@ jobs:
         run: |
           echo "Fetching vLLM releases from GitHub..."
 
-          # Fetch all releases >= 0.8.5 (no older versions needed)
-          GITHUB_VERSIONS=$(curl -s "https://api.github.com/repos/vllm-project/vllm/releases?per_page=100" | \
-            jq -r '.[].tag_name' | \
-            grep -E '^v[0-9]+\.[0-9]+\.[0-9]+(\.[0-9]+)?$' | \
-            sed 's/^v//' | \
-            sort -V | \
-            awk -F. '$1 > 0 || ($1 == 0 && ($2 > 8 || ($2 == 8 && $3 >= 5)))')
+          # Use GitHub token for higher rate limits (5000/hour vs 60/hour)
+          # This is essential for hourly checks
+          for attempt in 1 2 3; do
+            GITHUB_VERSIONS=$(curl -sS --retry 3 --retry-delay 5 \
+              -H "Accept: application/vnd.github.v3+json" \
+              -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              "https://api.github.com/repos/vllm-project/vllm/releases?per_page=100" | \
+              jq -r '.[].tag_name' | \
+              grep -E '^v[0-9]+\.[0-9]+\.[0-9]+(\.[0-9]+)?$' | \
+              sed 's/^v//' | \
+              sort -V | \
+              awk -F. '$1 > 0 || ($1 == 0 && ($2 > 8 || ($2 == 8 && $3 >= 5)))') && break
+            echo "Attempt $attempt failed, retrying..."
+            sleep 5
+          done
+
+          if [[ -z "$GITHUB_VERSIONS" ]]; then
+            echo "::error::Failed to fetch vLLM releases from GitHub (possible rate limit)"
+            exit 1
+          fi
 
           echo "GitHub versions (stable only, >= 0.8.5):"
           echo "$GITHUB_VERSIONS"
@@ -112,17 +147,22 @@ jobs:
         run: |
           echo "Fetching latest version from PyPI..."
 
-          # Get the latest version from PyPI (what users can pip install)
-          PYPI_LATEST=$(curl -s "https://pypi.org/pypi/vllm-cpu/json" | \
-            jq -r '.info.version' | \
-            grep -oE '^[0-9]+\.[0-9]+\.[0-9]+(\.[0-9]+)?' || echo "")
+          # Retry logic for PyPI API
+          for attempt in 1 2 3; do
+            PYPI_LATEST=$(curl -sS --retry 3 --retry-delay 5 \
+              "https://pypi.org/pypi/vllm-cpu/json" | \
+              jq -r '.info.version' | \
+              grep -oE '^[0-9]+\.[0-9]+\.[0-9]+(\.[0-9]+)?' || echo "") && break
+            echo "Attempt $attempt failed, retrying..."
+            sleep 5
+          done
 
-          if [ -n "$PYPI_LATEST" ]; then
+          if [[ -n "$PYPI_LATEST" ]]; then
             echo "Latest version on PyPI: $PYPI_LATEST"
           else
             # Fallback to latest from GitHub if PyPI fails
             PYPI_LATEST=$(cat /tmp/github_versions.txt | tail -1)
-            echo "PyPI fetch failed, using GitHub latest: $PYPI_LATEST"
+            echo "::warning::PyPI fetch failed, using GitHub latest: $PYPI_LATEST"
           fi
 
           echo "$PYPI_LATEST" > /tmp/latest_version.txt
@@ -132,24 +172,26 @@ jobs:
         run: |
           echo "Checking existing Docker Hub images..."
 
-          # Get list of existing tags from Docker Hub
+          # Fetch existing tags from Docker Hub API with retry
+          DOCKERHUB_TAGS=""
+          for attempt in 1 2 3; do
+            DOCKERHUB_TAGS=$(curl -sS --retry 3 --retry-delay 5 \
+              "https://hub.docker.com/v2/repositories/${{ env.DOCKERHUB_IMAGE }}/tags?page_size=100" | \
+              jq -r '.results[].name' 2>/dev/null || echo "") && break
+            echo "Attempt $attempt failed, retrying..."
+            sleep 5
+          done
+
           EXISTING_VERSIONS=""
-
-          # Fetch existing tags from Docker Hub API
-          DOCKERHUB_TAGS=$(curl -s "https://hub.docker.com/v2/repositories/${{ env.DOCKERHUB_IMAGE }}/tags?page_size=100" 2>/dev/null | \
-            jq -r '.results[].name' 2>/dev/null || echo "")
-
-          if [ -n "$DOCKERHUB_TAGS" ]; then
+          if [[ -n "$DOCKERHUB_TAGS" ]]; then
             # Extract version numbers from tags
-            # Tags can be: <version>-<variant> (0.11.2-noavx512) or <variant>-<version> (noavx512-0.11.2)
-            # Extract any version pattern X.Y.Z or X.Y.Z.W from anywhere in the tag
             EXISTING_VERSIONS=$(echo "$DOCKERHUB_TAGS" | \
               grep -oE '[0-9]+\.[0-9]+\.[0-9]+(\.[0-9]+)?' | \
               sort -V -u)
             echo "Existing Docker Hub image versions:"
             echo "$EXISTING_VERSIONS"
           else
-            echo "No existing Docker Hub images found or unable to fetch"
+            echo "::warning::No existing Docker Hub images found or unable to fetch"
           fi
 
           # Save to file
@@ -192,7 +234,7 @@ jobs:
               done < /tmp/github_versions.txt
 
               if [[ -z "$PARSED_VERSIONS" ]]; then
-                echo "No versions found in range $START_VER to $END_VER"
+                echo "::warning::No versions found in range $START_VER to $END_VER"
                 echo "new_versions=[]" >> "$GITHUB_OUTPUT"
                 echo "has_new_versions=false" >> "$GITHUB_OUTPUT"
                 echo "latest_version=$LATEST_VERSION" >> "$GITHUB_OUTPUT"
@@ -278,16 +320,15 @@ jobs:
           echo "Checking if latest tags point to $LATEST_VERSION..."
 
           # Check if noavx512-latest exists and what version it points to
-          # We check by looking for the latest version in existing tags
           CURRENT_LATEST=""
-          if [ -f /tmp/docker_versions.txt ]; then
+          if [[ -f /tmp/docker_versions.txt ]]; then
             CURRENT_LATEST=$(cat /tmp/docker_versions.txt | sort -V | tail -1)
           fi
 
           echo "Current latest in Docker Hub: $CURRENT_LATEST"
           echo "PyPI latest: $LATEST_VERSION"
 
-          if [ "$CURRENT_LATEST" != "$LATEST_VERSION" ]; then
+          if [[ "$CURRENT_LATEST" != "$LATEST_VERSION" ]]; then
             echo "Latest tags need updating!"
             echo "needs_update=true" >> "$GITHUB_OUTPUT"
           else
@@ -310,25 +351,31 @@ jobs:
           echo "Variants matrix: $MATRIX"
           echo "matrix=$MATRIX" >> "$GITHUB_OUTPUT"
 
-      - name: Summary
+      - name: Generate summary
         run: |
-          echo "=========================================="
-          echo "Docker Image Version Check Summary"
-          echo "=========================================="
-          echo "New versions: ${{ steps.compare.outputs.new_versions }}"
-          echo "Has new versions: ${{ steps.compare.outputs.has_new_versions }}"
-          echo "Latest version: ${{ steps.compare.outputs.latest_version }}"
-          echo "Needs latest update: ${{ steps.check_latest.outputs.needs_update }}"
-          echo "Variants to build: ${{ steps.variants.outputs.matrix }}"
-          echo "=========================================="
+          {
+            echo "## 🐳 Docker Image Version Check"
+            echo ""
+            echo "| Property | Value |"
+            echo "|----------|-------|"
+            echo "| New versions | \`${{ steps.compare.outputs.new_versions }}\` |"
+            echo "| Has new versions | ${{ steps.compare.outputs.has_new_versions }} |"
+            echo "| Latest version | ${{ steps.compare.outputs.latest_version }} |"
+            echo "| Needs latest update | ${{ steps.check_latest.outputs.needs_update }} |"
+            echo "| Variants to build | \`${{ steps.variants.outputs.matrix }}\` |"
+            echo "| Dry run | ${{ github.event.inputs.dry_run || 'false' }} |"
+          } >> "$GITHUB_STEP_SUMMARY"
 
+  # ==========================================================================
   # Build Docker images for each variant and platform
+  # ==========================================================================
   build-images:
     name: Build ${{ matrix.variant }} (${{ matrix.version }})
     needs: check-versions
     if: needs.check-versions.outputs.has_new_versions == 'true' && (github.event.inputs.dry_run || 'false') != 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 90
+
     strategy:
       fail-fast: false
       matrix:
@@ -341,25 +388,42 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
-      - name: Ensure scripts are executable
-        run: chmod +x *.sh 2>/dev/null || true
+      - name: Setup environment
+        run: |
+          # Ensure all shell scripts are executable (recursively)
+          find . -name "*.sh" -type f -exec chmod +x {} \;
+          # Create required directories
+          mkdir -p dist
+          mkdir -p docker
+
+      - name: Free disk space
+        run: |
+          echo "Disk space before cleanup:"
+          df -h /
+          # Remove unnecessary tools to free space for Docker builds
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL 2>/dev/null || true
+          sudo docker image prune -af 2>/dev/null || true
+          echo "Disk space after cleanup:"
+          df -h /
 
       - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
+        uses: docker/setup-qemu-action@29109295f81e9208d7d86ff1c6c12d2833863392 # v3.6.0
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@b5ca514318bd6ebac0fb2aedd5d36ec1b5c232a2 # v3.10.0
 
       - name: Log in to Docker Hub
-        uses: docker/login-action@v3
+        if: ${{ github.event.inputs.skip_dockerhub != 'true' }}
+        uses: docker/login-action@74a5d142397b4f367a81961eba4e8cd7edddf772 # v3.4.0
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
       - name: Log in to GHCR
-        uses: docker/login-action@v3
+        if: ${{ github.event.inputs.skip_ghcr != 'true' }}
+        uses: docker/login-action@74a5d142397b4f367a81961eba4e8cd7edddf772 # v3.4.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -367,17 +431,16 @@ jobs:
 
       - name: Extract metadata
         id: meta
-        uses: docker/metadata-action@v5
+        uses: docker/metadata-action@902fa8ec7d6ecbf8d84d538b9b233a880e428804 # v5.7.0
         with:
           images: |
-            ${{ env.DOCKERHUB_IMAGE }}
-            ${{ env.GHCR_IMAGE }}
+            ${{ github.event.inputs.skip_dockerhub != 'true' && env.DOCKERHUB_IMAGE || '' }}
+            ${{ github.event.inputs.skip_ghcr != 'true' && env.GHCR_IMAGE || '' }}
           tags: |
             # Version-variant tag: 0.11.2-noavx512
             type=raw,value=${{ matrix.version }}-${{ matrix.variant }}
             # Variant-version tag: noavx512-0.11.2
             type=raw,value=${{ matrix.variant }}-${{ matrix.version }}
-            # NOTE: <variant>-latest tags are handled by update-latest-tags job
 
       - name: Determine platforms
         id: platforms
@@ -387,7 +450,7 @@ jobs:
 
           # Determine available platforms for this variant
           # noavx512 supports both AMD64 and ARM64
-          # Other variants are x86_64 only
+          # Other variants are x86_64 only (Intel/AMD-specific instruction sets)
           if [[ "$VARIANT" == "noavx512" ]]; then
             VARIANT_PLATFORMS="linux/amd64,linux/arm64"
           else
@@ -420,7 +483,7 @@ jobs:
 
       - name: Build and push
         if: steps.platforms.outputs.skip != 'true'
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@263435318d21b8e681c14492fe198d362a7d2c83 # v6.18.0
         with:
           context: ./docker
           file: ./docker/Dockerfile
@@ -433,26 +496,56 @@ jobs:
             VARIANT=${{ matrix.variant }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+          provenance: false
 
       - name: Verify image
         if: steps.platforms.outputs.skip != 'true'
         run: |
           echo "Verifying image for ${{ matrix.variant }} @ ${{ matrix.version }}..."
-          docker pull ${{ env.DOCKERHUB_IMAGE }}:${{ matrix.version }}-${{ matrix.variant }}
-          docker run --rm ${{ env.DOCKERHUB_IMAGE }}:${{ matrix.version }}-${{ matrix.variant }} \
-            python -c "import vllm; print(f'vLLM version: {vllm.__version__}')"
 
-  # Update <variant>-latest tags by re-tagging existing images (no rebuild needed)
+          # Pull and verify (Docker Hub takes priority if available)
+          if [[ "${{ github.event.inputs.skip_dockerhub }}" != "true" ]]; then
+            docker pull ${{ env.DOCKERHUB_IMAGE }}:${{ matrix.version }}-${{ matrix.variant }}
+            docker run --rm ${{ env.DOCKERHUB_IMAGE }}:${{ matrix.version }}-${{ matrix.variant }} \
+              python -c "import vllm; print(f'vLLM version: {vllm.__version__}')"
+          elif [[ "${{ github.event.inputs.skip_ghcr }}" != "true" ]]; then
+            docker pull ${{ env.GHCR_IMAGE }}:${{ matrix.version }}-${{ matrix.variant }}
+            docker run --rm ${{ env.GHCR_IMAGE }}:${{ matrix.version }}-${{ matrix.variant }} \
+              python -c "import vllm; print(f'vLLM version: {vllm.__version__}')"
+          fi
+
+      - name: Generate build summary
+        if: always()
+        run: |
+          {
+            echo "### 🐳 ${{ matrix.variant }} @ ${{ matrix.version }}"
+            echo ""
+            if [[ "${{ steps.platforms.outputs.skip }}" == "true" ]]; then
+              echo "⏭️ **Skipped** - Platform not supported for this variant"
+            else
+              echo "| Property | Value |"
+              echo "|----------|-------|"
+              echo "| Platforms | ${{ steps.platforms.outputs.platforms }} |"
+              echo "| Docker Hub | ${{ github.event.inputs.skip_dockerhub != 'true' && '✅' || '⏭️' }} |"
+              echo "| GHCR | ${{ github.event.inputs.skip_ghcr != 'true' && '✅' || '⏭️' }} |"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # ==========================================================================
+  # Update <variant>-latest tags by re-tagging existing images (no rebuild)
+  # ==========================================================================
   update-latest-tags:
     name: Update ${{ matrix.variant }}-latest tag
     needs: [check-versions, build-images]
     if: |
       always() &&
       (github.event.inputs.dry_run || 'false') != 'true' &&
+      (github.event.inputs.skip_latest_tag || 'false') != 'true' &&
       needs.check-versions.outputs.needs_latest_update == 'true' &&
       (needs.build-images.result == 'success' || needs.build-images.result == 'skipped')
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
+
     strategy:
       fail-fast: false
       matrix:
@@ -464,19 +557,21 @@ jobs:
 
     steps:
       - name: Log in to Docker Hub
-        uses: docker/login-action@v3
+        if: ${{ github.event.inputs.skip_dockerhub != 'true' }}
+        uses: docker/login-action@74a5d142397b4f367a81961eba4e8cd7edddf772 # v3.4.0
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
       - name: Log in to GHCR
-        uses: docker/login-action@v3
+        if: ${{ github.event.inputs.skip_ghcr != 'true' }}
+        uses: docker/login-action@74a5d142397b4f367a81961eba4e8cd7edddf772 # v3.4.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Re-tag image as latest (Docker Hub & GHCR)
+      - name: Re-tag image as latest
         run: |
           LATEST_VERSION="${{ needs.check-versions.outputs.latest_version }}"
           VARIANT="${{ matrix.variant }}"
@@ -486,26 +581,44 @@ jobs:
 
           echo "Attempting to re-tag ${SOURCE_TAG} as ${LATEST_TAG}..."
 
-          # Try to pull the version-specific image from Docker Hub
-          if docker pull ${{ env.DOCKERHUB_IMAGE }}:${SOURCE_TAG} 2>/dev/null; then
-            echo "Found image on Docker Hub, re-tagging..."
+          SUCCESS=false
 
-            # Tag and push to Docker Hub
-            docker tag ${{ env.DOCKERHUB_IMAGE }}:${SOURCE_TAG} \
-                       ${{ env.DOCKERHUB_IMAGE }}:${LATEST_TAG}
-            docker push ${{ env.DOCKERHUB_IMAGE }}:${LATEST_TAG}
-            echo "Successfully updated Docker Hub ${LATEST_TAG} -> ${LATEST_VERSION}"
+          # Docker Hub
+          if [[ "${{ github.event.inputs.skip_dockerhub }}" != "true" ]]; then
+            if docker pull ${{ env.DOCKERHUB_IMAGE }}:${SOURCE_TAG} 2>/dev/null; then
+              echo "Found image on Docker Hub, re-tagging..."
+              docker tag ${{ env.DOCKERHUB_IMAGE }}:${SOURCE_TAG} \
+                         ${{ env.DOCKERHUB_IMAGE }}:${LATEST_TAG}
+              docker push ${{ env.DOCKERHUB_IMAGE }}:${LATEST_TAG}
+              echo "✅ Updated Docker Hub ${LATEST_TAG} -> ${LATEST_VERSION}"
+              SUCCESS=true
+            else
+              echo "::warning::Image ${SOURCE_TAG} not found on Docker Hub"
+            fi
+          fi
 
-            # Tag and push to GHCR
-            docker tag ${{ env.DOCKERHUB_IMAGE }}:${SOURCE_TAG} \
-                       ${{ env.GHCR_IMAGE }}:${LATEST_TAG}
-            docker push ${{ env.GHCR_IMAGE }}:${LATEST_TAG}
-            echo "Successfully updated GHCR ${LATEST_TAG} -> ${LATEST_VERSION}"
-          else
-            echo "WARNING: Image ${SOURCE_TAG} not found on Docker Hub"
-            echo "This can happen if PyPI has a version we haven't built yet"
-            echo "Skipping latest tag update for ${VARIANT}"
-            exit 0
+          # GHCR
+          if [[ "${{ github.event.inputs.skip_ghcr }}" != "true" ]]; then
+            if docker pull ${{ env.GHCR_IMAGE }}:${SOURCE_TAG} 2>/dev/null; then
+              echo "Found image on GHCR, re-tagging..."
+              docker tag ${{ env.GHCR_IMAGE }}:${SOURCE_TAG} \
+                         ${{ env.GHCR_IMAGE }}:${LATEST_TAG}
+              docker push ${{ env.GHCR_IMAGE }}:${LATEST_TAG}
+              echo "✅ Updated GHCR ${LATEST_TAG} -> ${LATEST_VERSION}"
+              SUCCESS=true
+            elif [[ "$SUCCESS" == "true" ]]; then
+              # Try to use Docker Hub image for GHCR
+              docker tag ${{ env.DOCKERHUB_IMAGE }}:${SOURCE_TAG} \
+                         ${{ env.GHCR_IMAGE }}:${LATEST_TAG}
+              docker push ${{ env.GHCR_IMAGE }}:${LATEST_TAG}
+              echo "✅ Updated GHCR ${LATEST_TAG} from Docker Hub source"
+            else
+              echo "::warning::Image ${SOURCE_TAG} not found on GHCR"
+            fi
+          fi
+
+          if [[ "$SUCCESS" != "true" ]]; then
+            echo "::warning::Could not update latest tag for ${VARIANT} - source image not found"
           fi
 
       - name: Verify latest image
@@ -514,51 +627,67 @@ jobs:
           VARIANT="${{ matrix.variant }}"
 
           # Only verify if the image exists
-          if docker pull ${{ env.DOCKERHUB_IMAGE }}:${VARIANT}-latest 2>/dev/null; then
-            echo "Verifying ${VARIANT}-latest..."
-            docker run --rm ${{ env.DOCKERHUB_IMAGE }}:${VARIANT}-latest \
-              python -c "import vllm; print(f'vLLM version: {vllm.__version__}')"
-          else
-            echo "No ${VARIANT}-latest image to verify (expected if source image didn't exist)"
+          if [[ "${{ github.event.inputs.skip_dockerhub }}" != "true" ]]; then
+            if docker pull ${{ env.DOCKERHUB_IMAGE }}:${VARIANT}-latest 2>/dev/null; then
+              echo "Verifying ${VARIANT}-latest..."
+              docker run --rm ${{ env.DOCKERHUB_IMAGE }}:${VARIANT}-latest \
+                python -c "import vllm; print(f'vLLM version: {vllm.__version__}')"
+            else
+              echo "No ${VARIANT}-latest image to verify"
+            fi
           fi
 
+  # ==========================================================================
   # Summary
+  # ==========================================================================
   summary:
     name: Build Summary
     needs: [check-versions, build-images, update-latest-tags]
     if: always()
     runs-on: ubuntu-latest
+    timeout-minutes: 5
 
     steps:
-      - name: Summary
+      - name: Generate final summary
         run: |
-          echo "=========================================="
-          echo "Auto Docker Build Summary"
-          echo "=========================================="
-          echo ""
-          echo "New versions found: ${{ needs.check-versions.outputs.new_versions }}"
-          echo "Latest version (PyPI): ${{ needs.check-versions.outputs.latest_version }}"
-          echo "Needs latest update: ${{ needs.check-versions.outputs.needs_latest_update }}"
-          echo ""
-          echo "Build Results:"
-          echo "  New images: ${{ needs.build-images.result }}"
-          echo "  Latest tags: ${{ needs.update-latest-tags.result }}"
-          echo "=========================================="
+          {
+            echo "# 🐳 Auto Docker Build Summary"
+            echo ""
+            echo "## Version Information"
+            echo "| Property | Value |"
+            echo "|----------|-------|"
+            echo "| New versions | \`${{ needs.check-versions.outputs.new_versions }}\` |"
+            echo "| Latest version (PyPI) | ${{ needs.check-versions.outputs.latest_version }} |"
+            echo "| Needs latest update | ${{ needs.check-versions.outputs.needs_latest_update }} |"
+            echo ""
+            echo "## Build Results"
+            echo "| Job | Status |"
+            echo "|-----|--------|"
+            echo "| New images | ${{ needs.build-images.result == 'success' && '✅ Success' || needs.build-images.result == 'skipped' && '⏭️ Skipped' || '❌ Failed' }} |"
+            echo "| Latest tags | ${{ needs.update-latest-tags.result == 'success' && '✅ Success' || needs.update-latest-tags.result == 'skipped' && '⏭️ Skipped' || '❌ Failed' }} |"
+            echo ""
 
-          if [[ "${{ needs.check-versions.outputs.has_new_versions }}" != "true" ]] && \
-             [[ "${{ needs.check-versions.outputs.needs_latest_update }}" != "true" ]]; then
-            echo "No updates needed - all Docker images up to date!"
-          else
-            if [[ "${{ needs.build-images.result }}" == "success" ]]; then
-              echo "Successfully built new version images!"
+            if [[ "${{ needs.check-versions.outputs.has_new_versions }}" != "true" ]] && \
+               [[ "${{ needs.check-versions.outputs.needs_latest_update }}" != "true" ]]; then
+              echo "✅ **No updates needed** - all Docker images are up to date!"
+            else
+              if [[ "${{ needs.build-images.result }}" == "success" ]]; then
+                echo "✅ Successfully built new version images!"
+              fi
+              if [[ "${{ needs.update-latest-tags.result }}" == "success" ]]; then
+                echo "✅ Successfully updated latest tags!"
+              fi
+              echo ""
+              echo "## Pull Commands"
+              echo ""
+              echo "**Docker Hub (primary):**"
+              echo "\`\`\`bash"
+              echo "docker pull ${{ env.DOCKERHUB_IMAGE }}:noavx512-latest"
+              echo "\`\`\`"
+              echo ""
+              echo "**GHCR (secondary):**"
+              echo "\`\`\`bash"
+              echo "docker pull ${{ env.GHCR_IMAGE }}:noavx512-latest"
+              echo "\`\`\`"
             fi
-            if [[ "${{ needs.update-latest-tags.result }}" == "success" ]]; then
-              echo "Successfully updated latest tags!"
-            fi
-            echo ""
-            echo "Docker Hub (primary):"
-            echo "  docker pull ${{ env.DOCKERHUB_IMAGE }}:noavx512-latest"
-            echo ""
-            echo "GHCR (secondary):"
-            echo "  docker pull ${{ env.GHCR_IMAGE }}:noavx512-latest"
-          fi
+          } >> "$GITHUB_STEP_SUMMARY"

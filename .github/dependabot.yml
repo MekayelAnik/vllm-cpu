@@ -1,0 +1,71 @@
+# ==============================================================================
+# Dependabot Configuration
+# ==============================================================================
+# Automatically creates PRs to update dependencies:
+# - GitHub Actions: Weekly updates with security priority
+# - pip: Weekly updates for Python dependencies
+#
+# Security: Keeps dependencies current to patch vulnerabilities
+# ==============================================================================
+
+version: 2
+
+updates:
+  # GitHub Actions - keep workflow actions up to date
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "06:00"
+      timezone: "UTC"
+    # Group all action updates into a single PR
+    groups:
+      actions:
+        patterns:
+          - "*"
+    commit-message:
+      prefix: "ci"
+      include: "scope"
+    labels:
+      - "dependencies"
+      - "github-actions"
+    # Limit open PRs to avoid noise
+    open-pull-requests-limit: 5
+
+  # Python dependencies (pip)
+  - package-ecosystem: "pip"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "06:00"
+      timezone: "UTC"
+    # Group updates by type
+    groups:
+      dev-dependencies:
+        patterns:
+          - "pytest*"
+          - "black"
+          - "ruff"
+          - "mypy"
+        update-types:
+          - "minor"
+          - "patch"
+      build-tools:
+        patterns:
+          - "build"
+          - "wheel"
+          - "twine"
+          - "setuptools"
+    commit-message:
+      prefix: "deps"
+      include: "scope"
+    labels:
+      - "dependencies"
+      - "python"
+    open-pull-requests-limit: 5
+    # Ignore major version updates for stability
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]

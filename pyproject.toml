@@ -46,10 +46,6 @@ Repository = "https://github.com/yourusername/vllm-cpu"
 "Bug Tracker" = "https://github.com/yourusername/vllm-cpu/issues"
 "vLLM Upstream" = "https://github.com/vllm-project/vllm"
 
-[project.scripts]
-# Helper script for generating package metadata
-vllm-cpu-generate-metadata = "generate_package_metadata:main"
-
 [tool.setuptools]
 # This is not a Python package to be installed, it's a build tool repository
 # No py-modules or packages to install
@@ -75,7 +71,7 @@ ignore = [
 ]
 
 [tool.ruff.lint.isort]
-known-first-party = ["generate_package_metadata"]
+known-first-party = []
 
 [tool.mypy]
 # Type checking configuration
@@ -90,10 +86,6 @@ warn_redundant_casts = true
 warn_unused_ignores = true
 warn_no_return = true
 strict_equality = true
-
-[[tool.mypy.overrides]]
-module = "generate_package_metadata"
-disallow_untyped_defs = false
 
 # Build configuration (not for this repo, but included for completeness)
 [build-system]

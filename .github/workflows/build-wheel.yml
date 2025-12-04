@@ -1,13 +1,24 @@
-name: Auto-Build vLLM CPU Wheels
-
+# =============================================================================
+# Auto-Build vLLM CPU Wheels
+# =============================================================================
 # Automatically checks for new vLLM releases and builds wheels for them
 # - noavx512 (vllm-cpu): Built for both AMD64 and ARM64
 # - avx512, avx512vnni, avx512bf16, amxbf16: Built for AMD64 only
+#
+# Security Best Practices Applied:
+# - Minimal permissions per job (principle of least privilege)
+# - Concurrency control to prevent duplicate runs
+# - Timeout limits to prevent runaway jobs
+# - Action pinning with SHA hashes for supply chain security
+# =============================================================================
+
+name: Auto-Build vLLM CPU Wheels
 
 on:
-  # Run once a day at 00:00 UTC (temporary - will change back to every 30 minutes)
+  # Run every hour to check for new vLLM releases
+  # Note: Actual builds only run when new versions are detected
   schedule:
-    - cron: '0 0 * * *'
+    - cron: '0 * * * *'
 
   # Allow manual trigger
   workflow_dispatch:
@@ -59,11 +70,29 @@ on:
         type: boolean
         default: false
 
+# Concurrency: Cancel in-progress runs for the same workflow/branch
+# This prevents wasted resources on outdated runs
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+# Default permissions: Read-only (principle of least privilege)
+# Individual jobs override as needed
+permissions:
+  contents: read
+
+env:
+  # Use consistent UV version across all jobs
+  UV_VERSION: "0.5"
+
 jobs:
+  # ==========================================================================
   # Check for new vLLM versions
+  # ==========================================================================
   check-versions:
     name: Check for New Versions
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     outputs:
       new_versions: ${{ steps.compare.outputs.new_versions }}
       has_new_versions: ${{ steps.compare.outputs.has_new_versions }}
@@ -80,13 +109,23 @@ jobs:
         run: |
           echo "Fetching vLLM releases from GitHub..."
 
+          # Use GitHub token for higher rate limits (5000/hour vs 60/hour)
           # Fetch all releases >= 0.8.5 (no older versions needed)
-          GITHUB_VERSIONS=$(curl -s "https://api.github.com/repos/vllm-project/vllm/releases?per_page=100" | \
+          GITHUB_VERSIONS=$(curl -sfL --retry 3 --retry-delay 5 \
+            -H "Accept: application/vnd.github.v3+json" \
+            -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/vllm-project/vllm/releases?per_page=100" | \
             jq -r '.[].tag_name' | \
             grep -E '^v[0-9]+\.[0-9]+\.[0-9]+(\.[0-9]+)?$' | \
             sed 's/^v//' | \
             sort -V | \
             awk -F. '$1 > 0 || ($1 == 0 && ($2 > 8 || ($2 == 8 && $3 >= 5)))')
+
+          if [[ -z "$GITHUB_VERSIONS" ]]; then
+            echo "::error::Failed to fetch vLLM releases from GitHub (possible rate limit)"
+            exit 1
+          fi
 
           echo "GitHub versions (stable only):"
           echo "$GITHUB_VERSIONS"
@@ -99,17 +138,22 @@ jobs:
         run: |
           echo "Fetching existing versions from PyPI..."
 
-          # Query PyPI for vllm-cpu package versions
-          PYPI_VERSIONS=$(curl -s "https://pypi.org/pypi/vllm-cpu/json" | \
+          # Query PyPI for vllm-cpu package versions with retry
+          # PyPI has generous rate limits, no auth needed
+          PYPI_VERSIONS=$(curl -sfL --retry 3 --retry-delay 5 \
+            "https://pypi.org/pypi/vllm-cpu/json" | \
             jq -r '.releases | keys[]' | \
             grep -E '^[0-9]+\.[0-9]+\.[0-9]+(\.[0-9]+)?$' | \
             sort -V)
 
-          echo "PyPI versions (excluding .post/.dev):"
-          echo "$PYPI_VERSIONS"
-
-          # Save to file for later use
-          echo "$PYPI_VERSIONS" > /tmp/pypi_versions.txt
+          if [[ -z "$PYPI_VERSIONS" ]]; then
+            echo "::warning::Failed to fetch PyPI versions, assuming no existing versions"
+            touch /tmp/pypi_versions.txt
+          else
+            echo "PyPI versions (excluding .post/.dev):"
+            echo "$PYPI_VERSIONS"
+            echo "$PYPI_VERSIONS" > /tmp/pypi_versions.txt
+          fi
 
       - name: Compare versions
         id: compare
@@ -312,7 +356,9 @@ jobs:
           echo "Build ARM64: ${{ steps.platforms.outputs.build_arm64 }}"
           echo "=========================================="
 
-  # Build noavx512 (vllm-cpu) for AMD64 + ARM64
+  # ==========================================================================
+  # Build noavx512 (vllm-cpu) for AMD64
+  # ==========================================================================
   build-noavx512-amd64:
     name: Build noavx512 AMD64 (${{ matrix.version }})
     needs: check-versions
@@ -330,35 +376,56 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
-      - name: Ensure scripts are executable
-        run: chmod +x *.sh
+      - name: Setup environment
+        run: |
+          # Ensure all shell scripts are executable
+          find . -name "*.sh" -type f -exec chmod +x {} \;
+          # Create required directories
+          mkdir -p dist
+          mkdir -p ~/.cache/ccache
+          mkdir -p ~/.cache/uv
+
+      - name: Free disk space
+        run: |
+          # Remove unnecessary large packages to free disk space
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc
+          df -h
 
       - name: Install system dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y \
+          sudo apt-get install -y --no-install-recommends \
             python3 python3-pip python3-venv \
             build-essential gcc g++ \
             cmake ninja-build ccache \
             libnuma-dev numactl jq
 
       - name: Install uv
-        run: |
-          curl -LsSf https://astral.sh/uv/install.sh | sh
-          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
-
-      - name: Cache build artifacts
-        uses: actions/cache@v4
+        uses: astral-sh/setup-uv@6b9c6063abd6010835644d4c2e1bef4cf5cd0fca # v6.0.1
         with:
-          path: |
-            ~/.cache/ccache
-            ~/.cache/uv
-          key: auto-amd64-noavx512-${{ matrix.version }}-${{ hashFiles('build_config.json') }}
+          version: ${{ env.UV_VERSION }}
+
+      - name: Cache ccache
+        uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
+        with:
+          path: ~/.cache/ccache
+          key: ccache-amd64-noavx512-${{ matrix.version }}-${{ github.sha }}
           restore-keys: |
-            auto-amd64-noavx512-
-            amd64-
+            ccache-amd64-noavx512-${{ matrix.version }}-
+            ccache-amd64-noavx512-
+            ccache-amd64-
+
+      - name: Cache uv
+        uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
+        with:
+          path: ~/.cache/uv
+          key: uv-amd64-noavx512-${{ matrix.version }}-${{ hashFiles('build_config.json') }}
+          restore-keys: |
+            uv-amd64-noavx512-${{ matrix.version }}-
+            uv-amd64-noavx512-
+            uv-amd64-
 
       - name: Build wheels
         run: |
@@ -375,13 +442,16 @@ jobs:
           find dist -name "*.whl" -exec ls -lh {} \;
 
       - name: Upload artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: wheels-noavx512-amd64-${{ matrix.version }}
           path: dist/**/*.whl
           retention-days: 30
           if-no-files-found: error
 
+  # ==========================================================================
+  # Build noavx512 (vllm-cpu) for ARM64
+  # ==========================================================================
   build-noavx512-arm64:
     name: Build noavx512 ARM64 (${{ matrix.version }})
     needs: check-versions
@@ -399,35 +469,56 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
-      - name: Ensure scripts are executable
-        run: chmod +x *.sh
+      - name: Setup environment
+        run: |
+          # Ensure all shell scripts are executable
+          find . -name "*.sh" -type f -exec chmod +x {} \;
+          # Create required directories
+          mkdir -p dist
+          mkdir -p ~/.cache/ccache
+          mkdir -p ~/.cache/uv
+
+      - name: Free disk space
+        run: |
+          # Remove unnecessary large packages to free disk space
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc 2>/dev/null || true
+          df -h
 
       - name: Install system dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y \
+          sudo apt-get install -y --no-install-recommends \
             python3 python3-pip python3-venv \
             build-essential gcc g++ \
             cmake ninja-build ccache \
             libnuma-dev numactl jq
 
       - name: Install uv
-        run: |
-          curl -LsSf https://astral.sh/uv/install.sh | sh
-          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
-
-      - name: Cache build artifacts
-        uses: actions/cache@v4
+        uses: astral-sh/setup-uv@6b9c6063abd6010835644d4c2e1bef4cf5cd0fca # v6.0.1
         with:
-          path: |
-            ~/.cache/ccache
-            ~/.cache/uv
-          key: auto-arm64-noavx512-${{ matrix.version }}-${{ hashFiles('build_config.json') }}
+          version: ${{ env.UV_VERSION }}
+
+      - name: Cache ccache
+        uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
+        with:
+          path: ~/.cache/ccache
+          key: ccache-arm64-noavx512-${{ matrix.version }}-${{ github.sha }}
           restore-keys: |
-            auto-arm64-noavx512-
-            arm64-
+            ccache-arm64-noavx512-${{ matrix.version }}-
+            ccache-arm64-noavx512-
+            ccache-arm64-
+
+      - name: Cache uv
+        uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
+        with:
+          path: ~/.cache/uv
+          key: uv-arm64-noavx512-${{ matrix.version }}-${{ hashFiles('build_config.json') }}
+          restore-keys: |
+            uv-arm64-noavx512-${{ matrix.version }}-
+            uv-arm64-noavx512-
+            uv-arm64-
 
       - name: Build wheels
         run: |
@@ -444,14 +535,16 @@ jobs:
           find dist -name "*.whl" -exec ls -lh {} \;
 
       - name: Upload artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: wheels-noavx512-arm64-${{ matrix.version }}
           path: dist/**/*.whl
           retention-days: 30
           if-no-files-found: error
 
+  # ==========================================================================
   # Build AVX512 variants for AMD64 only
+  # ==========================================================================
   build-avx512-variants:
     name: Build ${{ matrix.variant }} AMD64 (${{ matrix.version }})
     needs: check-versions
@@ -470,35 +563,56 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
-      - name: Ensure scripts are executable
-        run: chmod +x *.sh
+      - name: Setup environment
+        run: |
+          # Ensure all shell scripts are executable
+          find . -name "*.sh" -type f -exec chmod +x {} \;
+          # Create required directories
+          mkdir -p dist
+          mkdir -p ~/.cache/ccache
+          mkdir -p ~/.cache/uv
+
+      - name: Free disk space
+        run: |
+          # Remove unnecessary large packages to free disk space
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc
+          df -h
 
       - name: Install system dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y \
+          sudo apt-get install -y --no-install-recommends \
             python3 python3-pip python3-venv \
             build-essential gcc g++ \
             cmake ninja-build ccache \
             libnuma-dev numactl jq
 
       - name: Install uv
-        run: |
-          curl -LsSf https://astral.sh/uv/install.sh | sh
-          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
-
-      - name: Cache build artifacts
-        uses: actions/cache@v4
+        uses: astral-sh/setup-uv@6b9c6063abd6010835644d4c2e1bef4cf5cd0fca # v6.0.1
         with:
-          path: |
-            ~/.cache/ccache
-            ~/.cache/uv
-          key: auto-amd64-${{ matrix.variant }}-${{ matrix.version }}-${{ hashFiles('build_config.json') }}
+          version: ${{ env.UV_VERSION }}
+
+      - name: Cache ccache
+        uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
+        with:
+          path: ~/.cache/ccache
+          key: ccache-amd64-${{ matrix.variant }}-${{ matrix.version }}-${{ github.sha }}
           restore-keys: |
-            auto-amd64-${{ matrix.variant }}-
-            amd64-
+            ccache-amd64-${{ matrix.variant }}-${{ matrix.version }}-
+            ccache-amd64-${{ matrix.variant }}-
+            ccache-amd64-
+
+      - name: Cache uv
+        uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
+        with:
+          path: ~/.cache/uv
+          key: uv-amd64-${{ matrix.variant }}-${{ matrix.version }}-${{ hashFiles('build_config.json') }}
+          restore-keys: |
+            uv-amd64-${{ matrix.variant }}-${{ matrix.version }}-
+            uv-amd64-${{ matrix.variant }}-
+            uv-amd64-
 
       - name: Build wheels
         run: |
@@ -515,14 +629,16 @@ jobs:
           find dist -name "*.whl" -exec ls -lh {} \;
 
       - name: Upload artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: wheels-${{ matrix.variant }}-amd64-${{ matrix.version }}
           path: dist/**/*.whl
           retention-days: 30
           if-no-files-found: error
 
+  # ==========================================================================
   # Publish all wheels to PyPI
+  # ==========================================================================
   publish:
     name: Publish to PyPI (${{ matrix.version }})
     needs: [check-versions, build-noavx512-amd64, build-noavx512-arm64, build-avx512-variants]
@@ -543,19 +659,23 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
-      - name: Ensure scripts are executable
-        run: chmod +x *.sh
+      - name: Setup environment
+        run: |
+          # Ensure all shell scripts are executable
+          find . -name "*.sh" -type f -exec chmod +x {} \;
+          # Create required directories
+          mkdir -p dist
 
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y python3 python3-pip jq
-          pip3 install twine
+          sudo apt-get install -y --no-install-recommends python3 python3-pip jq
+          pip3 install --user twine
 
       - name: Download all wheels for version ${{ matrix.version }}
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           path: dist/
           pattern: wheels-*-${{ matrix.version }}
@@ -592,7 +712,9 @@ jobs:
           PYPI_TOKEN_AMXBF16: ${{ secrets.PYPI_TOKEN_AMXBF16 }}
           PYPI_TOKEN: ${{ secrets.PYPI_API_TOKEN }}
 
+  # ==========================================================================
   # Create GitHub Release
+  # ==========================================================================
   github-release:
     name: GitHub Release (${{ matrix.version }})
     needs: [check-versions, build-noavx512-amd64, build-noavx512-arm64, build-avx512-variants, publish]
@@ -603,8 +725,9 @@ jobs:
       (github.event.inputs.skip_github_release || 'false') != 'true' &&
       (needs.publish.result == 'success' || needs.publish.result == 'skipped')
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     permissions:
-      contents: write
+      contents: write  # Required for creating releases
     strategy:
       fail-fast: false
       matrix:
@@ -612,17 +735,22 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Setup environment
+        run: |
+          # Create required directories
+          mkdir -p dist
 
       - name: Download all wheels for version ${{ matrix.version }}
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           path: dist/
           pattern: wheels-*-${{ matrix.version }}
           merge-multiple: true
 
       - name: Create Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@7b4da11513bf3f43f9999e90eabced41ab8571d0 # v2.2.1
         with:
           tag_name: v${{ matrix.version }}
           name: vLLM CPU v${{ matrix.version }}
@@ -655,32 +783,36 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+  # ==========================================================================
   # Summary
+  # ==========================================================================
   summary:
-    name: Auto-Update Summary
+    name: Build Summary
     needs: [check-versions, build-noavx512-amd64, build-noavx512-arm64, build-avx512-variants, publish, github-release]
     if: always()
     runs-on: ubuntu-latest
+    timeout-minutes: 5
 
     steps:
-      - name: Summary
+      - name: Generate Summary
         run: |
-          echo "=========================================="
-          echo "Auto-Update Summary"
-          echo "=========================================="
-          echo ""
-          echo "New versions found: ${{ needs.check-versions.outputs.new_versions }}"
-          echo ""
-          echo "Build Results:"
-          echo "  noavx512 AMD64: ${{ needs.build-noavx512-amd64.result }}"
-          echo "  noavx512 ARM64: ${{ needs.build-noavx512-arm64.result }}"
-          echo "  AVX512 variants: ${{ needs.build-avx512-variants.result }}"
-          echo ""
-          echo "Publish: ${{ needs.publish.result }}"
-          echo "GitHub Release: ${{ needs.github-release.result }}"
-          echo "=========================================="
+          echo "## Auto-Update Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Version Check" >> $GITHUB_STEP_SUMMARY
+          echo "- **New versions found:** ${{ needs.check-versions.outputs.new_versions }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Has new versions:** ${{ needs.check-versions.outputs.has_new_versions }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Build Results" >> $GITHUB_STEP_SUMMARY
+          echo "| Job | Status |" >> $GITHUB_STEP_SUMMARY
+          echo "|-----|--------|" >> $GITHUB_STEP_SUMMARY
+          echo "| noavx512 AMD64 | ${{ needs.build-noavx512-amd64.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| noavx512 ARM64 | ${{ needs.build-noavx512-arm64.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| AVX512 variants | ${{ needs.build-avx512-variants.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| PyPI Publish | ${{ needs.publish.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| GitHub Release | ${{ needs.github-release.result }} |" >> $GITHUB_STEP_SUMMARY
 
-          # Report overall status
+      - name: Check Overall Status
+        run: |
           if [[ "${{ needs.check-versions.outputs.has_new_versions }}" != "true" ]]; then
             echo "No new versions to build - all up to date!"
           elif [[ "${{ needs.publish.result }}" == "success" ]]; then

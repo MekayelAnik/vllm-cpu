@@ -55,33 +55,28 @@ Building ARM64 wheels requires native ARM64 infrastructure. **QEMU emulation doe
 
 **Docker-based builds provide isolated, reproducible environments and support cross-platform compilation.**
 
+Uses `docker-buildx.sh` with `Dockerfile.buildx` for multi-architecture builds:
+
 ```bash
-# Build Docker image first (one-time setup)
-docker build -t vllm-cpu-builder:latest .
+# Build vllm-cpu for both amd64 and arm64 (auto-detected from build_config.json)
+./docker-buildx.sh --variant=vllm-cpu --vllm-version=0.11.2
 
-# Build for native platform (auto-detected)
-./docker-build.sh --variant=vllm-cpu --vllm-versions=0.11.2
+# Build x86-only variant (avx512 variants only support x86_64)
+./docker-buildx.sh --variant=vllm-cpu-avx512bf16 --vllm-version=0.11.2
 
-# Build all 5 variants
-./docker-build.sh --variant=all --vllm-versions=0.11.2
+# Build with specific platform override
+./docker-buildx.sh --variant=vllm-cpu --platform=linux/arm64 --vllm-version=0.11.2
 
-# Build for specific platform
-./docker-build.sh --platform=linux/amd64 --variant=vllm-cpu-avx512bf16
+# Build with custom output directory
+./docker-buildx.sh --variant=vllm-cpu --vllm-version=0.11.2 --output-dir=./my-wheels
 
-# Cross-compile: Build ARM64 wheels on x86_64 host
-./docker-build.sh --platform=linux/arm64 --variant=vllm-cpu --vllm-versions=0.11.2
+# Build multiple Python versions (loop)
+for pyver in 3.10 3.11 3.12 3.13; do
+    ./docker-buildx.sh --variant=vllm-cpu --vllm-version=0.11.2 --python-version=$pyver
+done
 
-# Build for all platforms (x86_64 and ARM64)
-./docker-build.sh --platform=all --variant=vllm-cpu
-
-# Multiple versions and platforms
-./docker-build.sh --platform=all --vllm-versions=0.11.0,0.11.1,0.11.2 --python-versions=3.10-3.13
-
-# Custom output directory
-./docker-build.sh --output-dir=./my-wheels --variant=vllm-cpu
-
-# Rebuild Docker image without cache
-./docker-build.sh --no-cache --variant=vllm-cpu
+# Build without Docker cache (fresh build)
+./docker-buildx.sh --variant=vllm-cpu --vllm-version=0.11.2 --no-cache
 ```
 
 **Testing built wheels in Docker:**
@@ -362,39 +357,6 @@ All 5 packages use the **same version number** as upstream vLLM:
 2. Test locally: `pip install dist/vllm_cpu_avx512bf16-*.whl`
 3. Publish: `./test_and_publish.sh --variant=all --vllm-versions=0.11.2 --skip-build`
 
-## Utilities
-
-### pypi-builder.sh (resources/)
-
-Comprehensive installation script for setting up vLLM directly on Debian Trixie by **building from source**. Supports:
-- Clones vLLM repository and builds from source
-- Python virtual environment setup with `uv`
-- CPU instruction set flags
-- System dependency installation
-- Creates activation script at `/vllm/venv/activate_vllm.sh`
-
-This script is useful for testing or manual installations, but is **not used by build_wheels.sh**.
-
-## Package Templates (package_templates/)
-
-Contains templates for package metadata:
-- **README_template.md**: Template for per-package README files
-- Additional metadata templates for PyPI packages
-
-Used by `generate_package_metadata.py` to create variant-specific documentation.
-
-### Generating Package Metadata
-
-```bash
-# Generate README and pyproject.toml for each variant
-python generate_package_metadata.py
-
-# Or use the installed script
-vllm-cpu-generate-metadata
-```
-
-This creates `package_metadata/` directory with variant-specific files.
-
 ## Setup and Dependencies
 
 ### Initial Setup
@@ -506,39 +468,14 @@ dist/
 - **Dockerfile.buildx**: Multi-stage Dockerfile optimized for buildx artifact export
 - **docker-buildx.sh**: Wrapper script that manages builder setup, QEMU, and build execution
 
-**Advantages over docker-build.sh:**
+**Advantages of Docker buildx:**
 - ✅ True parallel multi-arch builds (both platforms build simultaneously)
 - ✅ No intermediate Docker images created
 - ✅ Leverages buildx's native caching
 - ✅ Single command for multi-platform builds
-- ✅ Better suited for CI/CD pipelines
-
-### Docker Run (Legacy)
-
-**`docker-build.sh`** uses traditional `docker run` for building wheels:
-
-- **Dockerfile**: Multi-platform container image with all build dependencies
-- **docker-build.sh**: Wrapper script for building wheels in Docker containers
-
-```bash
-# Build Docker image first (one-time setup)
-docker build -t vllm-cpu-builder:latest .
-
-# Build for native platform
-./docker-build.sh --variant=vllm-cpu --vllm-versions=0.11.2
-
-# Build for all platforms (runs sequentially)
-./docker-build.sh --platform=all --variant=vllm-cpu
-```
-
-**Advantages of Docker builds:**
 - ✅ Isolated, reproducible build environments
-- ✅ No need to install system dependencies on host
 - ✅ Cross-platform compilation (build ARM64 on x86_64, and vice versa)
-- ✅ Consistent builds across different development machines
-- ✅ Easy CI/CD integration
-
-**Note**: The `docker-experimental/` directory contains older Docker-related experiments that are not actively maintained.
+- ✅ Better suited for CI/CD pipelines
 
 ## Docker Runtime Images
 
