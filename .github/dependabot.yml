@@ -65,7 +65,3 @@ updates:
       - "dependencies"
       - "python"
     open-pull-requests-limit: 5
-    # Ignore major version updates for stability
-    ignore:
-      - dependency-name: "*"
-        update-types: ["version-update:semver-major"]
