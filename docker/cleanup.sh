@@ -30,10 +30,14 @@ echo "Removing unnecessary files to minimize image size..."
 echo ""
 
 # =============================================================================
-# 1. Clean uv cache (not needed at runtime)
+# 1. Clean uv cache and pip cache (not needed at runtime)
 # =============================================================================
-echo "Step 1: Cleaning uv cache..."
-uv cache clean || true
+echo "Step 1: Cleaning uv and pip cache..."
+# Note: uv cache may be mounted, so we also manually remove cached files
+uv cache clean 2>/dev/null || true
+rm -rf /root/.cache/uv/* 2>/dev/null || true
+rm -rf /root/.cache/pip/* 2>/dev/null || true
+rm -rf /vllm/venv/pip-selfcheck.json 2>/dev/null || true
 
 # =============================================================================
 # 2. Remove pip/wheel (NOT setuptools - needed for distutils-precedence.pth)
@@ -188,7 +192,10 @@ rm -rf /usr/share/doc /usr/share/man /usr/share/info 2>/dev/null || true
 echo "Step 14: Removing build tools..."
 rm -f /usr/local/bin/uv
 apt-get purge -y --auto-remove binutils wget 2>/dev/null || true
+apt-get autoremove -y 2>/dev/null || true
+apt-get autoclean 2>/dev/null || true
 apt-get clean 2>/dev/null || true
+rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/* 2>/dev/null || true
 
 # =============================================================================
 # 15. Clean temp files and apt cache

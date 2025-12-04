@@ -225,16 +225,13 @@ ENV UV_LINK_MODE=copy \
     UV_COMPILE_BYTECODE=1 \
     UV_PYTHON_DOWNLOADS=never
 
-# Install Python and vLLM
-COPY setup_vllm.sh /setup_vllm.sh
+# Install Python, vLLM, and cleanup in single layer to minimize image size
+COPY setup_vllm.sh cleanup.sh /tmp/
 RUN --mount=type=cache,target=/root/.cache/uv \
-    chmod +x /setup_vllm.sh && \
-    /setup_vllm.sh "${VARIANT}" "${VLLM_VERSION}" "${USE_GITHUB_RELEASE}" && \
-    rm -f /setup_vllm.sh
-
-# Cleanup to minimize image size
-COPY cleanup.sh /cleanup.sh
-RUN chmod +x /cleanup.sh && /cleanup.sh && rm -f /cleanup.sh
+    chmod +x /tmp/setup_vllm.sh /tmp/cleanup.sh && \
+    /tmp/setup_vllm.sh "${VARIANT}" "${VLLM_VERSION}" "${USE_GITHUB_RELEASE}" && \
+    /tmp/cleanup.sh && \
+    rm -f /tmp/setup_vllm.sh /tmp/cleanup.sh
 
 # Store Python version
 RUN echo "VLLM_PYTHON_VERSION=$(cat /vllm/python_version.txt)" >> /etc/environment
