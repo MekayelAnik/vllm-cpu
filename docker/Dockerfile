@@ -721,8 +721,8 @@ RUN --mount=type=cache,target=/root/.cache/uv \
     rm -rf /vllm/venv/lib/*/site-packages/torch/_inductor/codegen/cuda* || true && \
     rm -rf /vllm/venv/lib/*/site-packages/torch/_inductor/codegen/triton* || true && \
     \
-    # 11. Remove torch profiler/tensorboard integration (not needed at runtime)
-    rm -rf /vllm/venv/lib/*/site-packages/torch/profiler* || true && \
+    # 11. Remove tensorboard integration (not needed at runtime)
+    # NOTE: Keep torch/profiler - it's imported at torch startup!
     rm -rf /vllm/venv/lib/*/site-packages/tensorboard* || true && \
     rm -rf /vllm/venv/lib/*/site-packages/torch/utils/tensorboard* || true && \
     \
