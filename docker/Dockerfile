@@ -87,8 +87,8 @@ RUN set -ex && \
     echo "Detecting Python version for architecture: ${WHEEL_ARCH}" && \
     \
     if [ -n "${PYTHON_VERSION}" ] && [ "${PYTHON_VERSION}" != "auto" ]; then \
-        echo "${PYTHON_VERSION}" > /python_version.txt; \
-        echo "Using explicitly specified Python version: ${PYTHON_VERSION}"; \
+        PYTHON_VER="${PYTHON_VERSION}"; \
+        echo "Using explicitly specified Python version: ${PYTHON_VER}"; \
     else \
         echo "Auto-detecting Python version for ${PACKAGE_NAME}==${VLLM_VERSION}..."; \
         PYTHON_VER=""; \
@@ -152,75 +152,76 @@ RUN set -ex && \
         if [ -z "${PYTHON_VER}" ]; then \
             PYTHON_VER="3.12"; \
             echo "All detection methods failed, using fallback: ${PYTHON_VER}"; \
-        fi && \
-        \
-        # Method 5: Verify key dependencies have wheels for detected Python version
-        # Some dependencies may lack wheels for newer Python versions
-        # Gradually fall back through Python versions until ALL critical deps have wheels
-        # Critical dependencies that often lack wheels for newest Python:
-        #   - xgrammar: Grammar/constrained decoding (C++ extension)
-        #   - msgspec: Fast serialization (C extension)
-        #   - compressed-tensors: Tensor compression (may have C extensions)
-        #   - lm-format-enforcer: Format enforcement
-        ORIGINAL_PY="${PYTHON_VER}" && \
-        PYTHON_MINOR=$(echo "${PYTHON_VER}" | cut -d. -f2) && \
-        # List of critical dependencies to check (space-separated)
-        CRITICAL_DEPS="xgrammar msgspec compressed-tensors lm-format-enforcer" && \
-        echo "Checking ${WHEEL_ARCH} wheel availability for: ${CRITICAL_DEPS}" && \
-        # Fetch wheel lists for all critical dependencies
-        DEP_WHEELS="" && \
-        for DEP in ${CRITICAL_DEPS}; do \
-            DEP_VERSION=$(curl -sfL --max-time 10 "https://pypi.org/pypi/${DEP}/json" 2>/dev/null | \
-                jq -r '.releases | keys[]' 2>/dev/null | sort -V | tail -1) && \
-            if [ -n "${DEP_VERSION}" ]; then \
-                DEP_WHEEL_LIST=$(curl -sfL --max-time 10 "https://pypi.org/pypi/${DEP}/${DEP_VERSION}/json" 2>/dev/null | \
-                    jq -r '.urls[].filename' 2>/dev/null) && \
-                DEP_WHEELS="${DEP_WHEELS}${DEP}:${DEP_WHEEL_LIST}
-"; \
-            fi; \
-        done && \
-        # Try current version, then fall back: 3.13 -> 3.12 -> 3.11 -> 3.10 -> 3.9
-        while [ "${PYTHON_MINOR}" -ge 9 ]; do \
-            ALL_DEPS_OK=true && \
-            MISSING_DEPS="" && \
-            for DEP in ${CRITICAL_DEPS}; do \
-                DEP_WHEEL_LIST=$(echo "${DEP_WHEELS}" | grep "^${DEP}:" | cut -d: -f2-) && \
-                if [ -n "${DEP_WHEEL_LIST}" ]; then \
-                    HAS_WHEEL=$(echo "${DEP_WHEEL_LIST}" | grep -c "cp3${PYTHON_MINOR}.*manylinux.*${WHEEL_ARCH}" || echo "0") && \
-                    # Also check for universal wheels (py3-none-any)
-                    if [ "${HAS_WHEEL}" = "0" ]; then \
-                        HAS_UNIVERSAL=$(echo "${DEP_WHEEL_LIST}" | grep -c "py3-none-any" || echo "0") && \
-                        if [ "${HAS_UNIVERSAL}" != "0" ]; then \
-                            HAS_WHEEL="1"; \
-                        fi; \
-                    fi && \
-                    if [ "${HAS_WHEEL}" = "0" ]; then \
-                        ALL_DEPS_OK=false && \
-                        MISSING_DEPS="${MISSING_DEPS} ${DEP}"; \
-                    fi; \
-                fi; \
-            done && \
-            if [ "${ALL_DEPS_OK}" = "true" ]; then \
-                if [ "3.${PYTHON_MINOR}" != "${ORIGINAL_PY}" ]; then \
-                    echo "WARNING: Some dependencies lack wheels for Python ${ORIGINAL_PY} on ${WHEEL_ARCH}"; \
-                    echo "Falling back to Python 3.${PYTHON_MINOR} for dependency compatibility"; \
-                else \
-                    echo "All critical dependencies have ${WHEEL_ARCH} wheels for Python ${PYTHON_VER}"; \
-                fi; \
-                PYTHON_VER="3.${PYTHON_MINOR}"; \
-                break; \
-            else \
-                echo "Python 3.${PYTHON_MINOR}: Missing ${WHEEL_ARCH} wheels for:${MISSING_DEPS}"; \
-            fi; \
-            PYTHON_MINOR=$((PYTHON_MINOR - 1)); \
-        done && \
-        if [ "${PYTHON_MINOR}" -lt 9 ]; then \
-            echo "WARNING: No Python version found with all dependency wheels, using 3.9 as fallback"; \
-            PYTHON_VER="3.9"; \
-        fi && \
-        \
-        echo "${PYTHON_VER}" > /python_version.txt; \
+        fi; \
     fi && \
+    \
+    # Method 5: Verify key dependencies have wheels for detected/specified Python version
+    # Some dependencies may lack wheels for newer Python versions
+    # Gradually fall back through Python versions until ALL critical deps have wheels
+    # Critical dependencies that often lack wheels for newest Python:
+    #   - xgrammar: Grammar/constrained decoding (C++ extension)
+    #   - msgspec: Fast serialization (C extension)
+    #   - compressed-tensors: Tensor compression (may have C extensions)
+    #   - lm-format-enforcer: Format enforcement
+    # NOTE: This runs for BOTH explicit and auto-detected Python versions
+    ORIGINAL_PY="${PYTHON_VER}" && \
+    PYTHON_MINOR=$(echo "${PYTHON_VER}" | cut -d. -f2) && \
+    # List of critical dependencies to check (space-separated)
+    CRITICAL_DEPS="xgrammar msgspec compressed-tensors lm-format-enforcer" && \
+    echo "Checking ${WHEEL_ARCH} wheel availability for: ${CRITICAL_DEPS}" && \
+    # Fetch wheel lists for all critical dependencies
+    DEP_WHEELS="" && \
+    for DEP in ${CRITICAL_DEPS}; do \
+        DEP_VERSION=$(curl -sfL --max-time 10 "https://pypi.org/pypi/${DEP}/json" 2>/dev/null | \
+            jq -r '.releases | keys[]' 2>/dev/null | sort -V | tail -1) && \
+        if [ -n "${DEP_VERSION}" ]; then \
+            DEP_WHEEL_LIST=$(curl -sfL --max-time 10 "https://pypi.org/pypi/${DEP}/${DEP_VERSION}/json" 2>/dev/null | \
+                jq -r '.urls[].filename' 2>/dev/null) && \
+            DEP_WHEELS="${DEP_WHEELS}${DEP}:${DEP_WHEEL_LIST}
+"; \
+        fi; \
+    done && \
+    # Try current version, then fall back: 3.13 -> 3.12 -> 3.11 -> 3.10 -> 3.9
+    while [ "${PYTHON_MINOR}" -ge 9 ]; do \
+        ALL_DEPS_OK=true && \
+        MISSING_DEPS="" && \
+        for DEP in ${CRITICAL_DEPS}; do \
+            DEP_WHEEL_LIST=$(echo "${DEP_WHEELS}" | grep "^${DEP}:" | cut -d: -f2-) && \
+            if [ -n "${DEP_WHEEL_LIST}" ]; then \
+                HAS_WHEEL=$(echo "${DEP_WHEEL_LIST}" | grep -c "cp3${PYTHON_MINOR}.*manylinux.*${WHEEL_ARCH}" || echo "0") && \
+                # Also check for universal wheels (py3-none-any)
+                if [ "${HAS_WHEEL}" = "0" ]; then \
+                    HAS_UNIVERSAL=$(echo "${DEP_WHEEL_LIST}" | grep -c "py3-none-any" || echo "0") && \
+                    if [ "${HAS_UNIVERSAL}" != "0" ]; then \
+                        HAS_WHEEL="1"; \
+                    fi; \
+                fi && \
+                if [ "${HAS_WHEEL}" = "0" ]; then \
+                    ALL_DEPS_OK=false && \
+                    MISSING_DEPS="${MISSING_DEPS} ${DEP}"; \
+                fi; \
+            fi; \
+        done && \
+        if [ "${ALL_DEPS_OK}" = "true" ]; then \
+            if [ "3.${PYTHON_MINOR}" != "${ORIGINAL_PY}" ]; then \
+                echo "WARNING: Some dependencies lack wheels for Python ${ORIGINAL_PY} on ${WHEEL_ARCH}"; \
+                echo "Falling back to Python 3.${PYTHON_MINOR} for dependency compatibility"; \
+            else \
+                echo "All critical dependencies have ${WHEEL_ARCH} wheels for Python ${PYTHON_VER}"; \
+            fi; \
+            PYTHON_VER="3.${PYTHON_MINOR}"; \
+            break; \
+        else \
+            echo "Python 3.${PYTHON_MINOR}: Missing ${WHEEL_ARCH} wheels for:${MISSING_DEPS}"; \
+        fi; \
+        PYTHON_MINOR=$((PYTHON_MINOR - 1)); \
+    done && \
+    if [ "${PYTHON_MINOR}" -lt 9 ]; then \
+        echo "WARNING: No Python version found with all dependency wheels, using 3.9 as fallback"; \
+        PYTHON_VER="3.9"; \
+    fi && \
+    \
+    echo "${PYTHON_VER}" > /python_version.txt && \
     echo "=== Final Python version: $(cat /python_version.txt) ==="
 
 # =============================================================================
