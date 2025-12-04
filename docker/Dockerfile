@@ -44,6 +44,7 @@
 #   - BuildKit cache mounts for apt and uv packages
 #   - Bytecode compilation for faster container startup
 #   - Layer ordering optimized for cache efficiency
+#   - Modular scripts for maintainability (detect_python_version.sh, setup_vllm.sh, cleanup.sh)
 # ============================================================================
 
 ARG BASE_IMAGE=debian:trixie-slim
@@ -501,18 +502,6 @@ RUN mkdir -p /vllm /data/models /data/cache/vllm /data/config/vllm
 
 WORKDIR /vllm
 
-# Install Python via uv and create virtual environment
-# Uses auto-detected version from python-detector stage, or explicit PYTHON_VERSION if provided
-RUN set -ex && \
-    # Read detected Python version from previous stage
-    DETECTED_PY=$(cat /tmp/python_version.txt) && \
-    echo "Installing Python ${DETECTED_PY}..." && \
-    uv python install "${DETECTED_PY}" && \
-    uv venv /vllm/venv --python "${DETECTED_PY}" && \
-    # Store version for later reference
-    echo "${DETECTED_PY}" > /vllm/python_version.txt && \
-    echo "Python ${DETECTED_PY} installed successfully"
-
 # Set up environment for uv-managed Python
 ENV VIRTUAL_ENV=/vllm/venv
 ENV PATH="/vllm/venv/bin:$PATH"
@@ -524,254 +513,25 @@ ENV UV_LINK_MODE=copy \
     UV_COMPILE_BYTECODE=1 \
     UV_PYTHON_DOWNLOADS=never
 
-# Install vLLM from PyPI or GitHub release
-# Use cache mount for uv to speed up repeated builds and layer changes
-# IMPORTANT: Use CPU-only PyTorch index to avoid CUDA bloat
+# Copy and run the setup script (Python + vLLM installation)
+# This script handles:
+# 1. Installing Python via uv
+# 2. Creating virtual environment
+# 3. Installing vLLM from PyPI (with fallback to GitHub releases)
+COPY setup_vllm.sh /setup_vllm.sh
 RUN --mount=type=cache,target=/root/.cache/uv \
-    set -ex && \
-    # Map variant to package name
-    case "${VARIANT}" in \
-        noavx512) PACKAGE_NAME="vllm-cpu" ;; \
-        avx512) PACKAGE_NAME="vllm-cpu-avx512" ;; \
-        avx512vnni) PACKAGE_NAME="vllm-cpu-avx512vnni" ;; \
-        avx512bf16) PACKAGE_NAME="vllm-cpu-avx512bf16" ;; \
-        amxbf16) PACKAGE_NAME="vllm-cpu-amxbf16" ;; \
-        *) echo "Unknown variant: ${VARIANT}" && exit 1 ;; \
-    esac && \
-    echo "Installing ${PACKAGE_NAME} version ${VLLM_VERSION}..." && \
-    \
-    # Configure index URLs for CPU-only PyTorch
-    # - Primary index: PyTorch CPU-only wheels (torch, torchvision, torchaudio)
-    # - Extra index: PyPI for vllm-cpu and other packages
-    # - unsafe-best-match: Allow uv to pick best version across all indexes
-    #   (required so vllm-cpu comes from PyPI while torch comes from PyTorch index)
-    PYTORCH_INDEX="https://download.pytorch.org/whl/cpu" && \
-    PYPI_INDEX="https://pypi.org/simple" && \
-    \
-    # Try PyPI first unless explicitly requesting GitHub
-    # Also try .post1, .post2, etc. suffixes if base version fails
-    PYPI_SUCCESS=false && \
-    PYPI_LAST_ERROR="" && \
-    DETECTED_PY=$(cat /vllm/python_version.txt) && \
-    echo "Using Python ${DETECTED_PY} for installation..." && \
-    if [ "${USE_GITHUB_RELEASE}" = "true" ]; then \
-        echo "Using GitHub release as requested..."; \
-    else \
-        echo "Attempting PyPI installation with CPU-only PyTorch..." && \
-        # Try base version first, then .post1, .post2, .post3
-        for VERSION_SUFFIX in "" ".post1" ".post2" ".post3"; do \
-            INSTALL_VERSION="${VLLM_VERSION}${VERSION_SUFFIX}" && \
-            echo "Trying ${PACKAGE_NAME}==${INSTALL_VERSION}..." && \
-            if PYPI_LAST_ERROR=$(uv pip install "${PACKAGE_NAME}==${INSTALL_VERSION}" \
-                --index-url "${PYTORCH_INDEX}" \
-                --extra-index-url "${PYPI_INDEX}" \
-                --index-strategy unsafe-best-match 2>&1); then \
-                echo "Successfully installed ${PACKAGE_NAME}==${INSTALL_VERSION} from PyPI" && \
-                PYPI_SUCCESS=true && \
-                break; \
-            else \
-                echo "Failed: ${INSTALL_VERSION}"; \
-            fi; \
-        done; \
-        if [ "${PYPI_SUCCESS}" = "false" ]; then \
-            echo "PyPI installation failed for all version variants." && \
-            echo "Last error: ${PYPI_LAST_ERROR}" && \
-            echo "Falling back to GitHub release..."; \
-        fi; \
-    fi && \
-    \
-    # Fallback to GitHub release
-    if [ "${PYPI_SUCCESS}" = "false" ]; then \
-        echo "Downloading from GitHub release..." && \
-        # Detect architecture
-        ARCH=$(uname -m) && \
-        case "${ARCH}" in \
-            x86_64) WHEEL_ARCH="x86_64" ;; \
-            aarch64) WHEEL_ARCH="aarch64" ;; \
-            *) echo "Unsupported architecture: ${ARCH}" && exit 1 ;; \
-        esac && \
-        # Use tr to remove dots from Python version (POSIX-compatible)
-        PYTHON_TAG="cp$(echo "${DETECTED_PY}" | tr -d '.')" && \
-        echo "Looking for wheel: Python ${DETECTED_PY} (${PYTHON_TAG}), Arch: ${WHEEL_ARCH}" && \
-        # Try base version first, then .post1, .post2, .post3
-        WHEEL_DOWNLOADED=false && \
-        # Use tr to convert package name (POSIX-compatible)
-        PACKAGE_NAME_UNDERSCORE=$(echo "${PACKAGE_NAME}" | tr '-' '_') && \
-        for VERSION_SUFFIX in "" ".post1" ".post2" ".post3"; do \
-            INSTALL_VERSION="${VLLM_VERSION}${VERSION_SUFFIX}" && \
-            WHEEL_NAME="${PACKAGE_NAME_UNDERSCORE}-${INSTALL_VERSION}-${PYTHON_TAG}-${PYTHON_TAG}-manylinux_2_17_${WHEEL_ARCH}.manylinux2014_${WHEEL_ARCH}.whl" && \
-            WHEEL_URL="https://github.com/MekayelAnik/vllm-cpu/releases/download/v${VLLM_VERSION}/${WHEEL_NAME}" && \
-            echo "Trying wheel: ${WHEEL_URL}" && \
-            if wget -q "${WHEEL_URL}" -O "/tmp/${WHEEL_NAME}" 2>/dev/null; then \
-                echo "Downloaded: ${WHEEL_NAME}" && \
-                WHEEL_DOWNLOADED=true && \
-                break; \
-            fi; \
-        done && \
-        if [ "${WHEEL_DOWNLOADED}" = "false" ]; then \
-            echo "============================================================" && \
-            echo "ERROR: Could not install ${PACKAGE_NAME} ${VLLM_VERSION}" && \
-            echo "============================================================" && \
-            echo "Python version: ${DETECTED_PY}" && \
-            echo "Architecture: ${WHEEL_ARCH}" && \
-            echo "" && \
-            echo "Tried:" && \
-            echo "  1. PyPI: ${PACKAGE_NAME}==${VLLM_VERSION} (and .post1/.post2/.post3)" && \
-            echo "  2. GitHub: v${VLLM_VERSION} release wheels" && \
-            echo "" && \
-            echo "Possible causes:" && \
-            echo "  - No wheel exists for Python ${DETECTED_PY} on ${WHEEL_ARCH}" && \
-            echo "  - Package not yet published to PyPI" && \
-            echo "  - No GitHub release exists for this version" && \
-            echo "============================================================" && \
-            exit 1; \
-        fi && \
-        # Install with CPU-only PyTorch index for dependencies
-        uv pip install "/tmp/${WHEEL_NAME}" \
-            --index-url "${PYTORCH_INDEX}" \
-            --extra-index-url "${PYPI_INDEX}" \
-            --index-strategy unsafe-best-match && \
-        rm -f "/tmp/${WHEEL_NAME}" && \
-        echo "Successfully installed from GitHub release with CPU-only PyTorch"; \
-    fi && \
-    \
-    # Verify installation and save version for runtime banner display
-    python -c "import vllm; print(f'vLLM version: {vllm.__version__}')" && \
-    python -c "import vllm; print(vllm.__version__)" > /vllm/vllm_version.txt && \
-    \
-    # ==========================================================================
-    # CLEANUP: Minimize image size
-    # ==========================================================================
-    # NOTE: All cleanup commands use "|| true" to prevent build failures
-    # from non-critical cleanup operations. The vLLM installation is already
-    # verified above, so cleanup failures are acceptable.
-    # ==========================================================================
-    echo "Cleaning up to minimize image size..." && \
-    \
-    # 1. Clean uv cache completely (not needed at runtime)
-    uv cache clean || true && \
-    \
-    # 2. Remove pip/wheel (NOT setuptools - needed for distutils-precedence.pth)
-    rm -rf /vllm/venv/lib/*/site-packages/pip* || true && \
-    rm -rf /vllm/venv/lib/*/site-packages/wheel* || true && \
-    \
-    # 3. Remove triton (GPU compiler - not needed for CPU inference)
-    # Saves ~100-200 MB
-    rm -rf /vllm/venv/lib/*/site-packages/triton* || true && \
-    \
-    # 4. Remove NVIDIA/CUDA stubs from torch (not needed for CPU)
-    # These are placeholder libraries for GPU that bloat CPU images
-    rm -rf /vllm/venv/lib/*/site-packages/torch/lib/*cuda* || true && \
-    rm -rf /vllm/venv/lib/*/site-packages/torch/lib/*cudnn* || true && \
-    rm -rf /vllm/venv/lib/*/site-packages/torch/lib/*nvrtc* || true && \
-    rm -rf /vllm/venv/lib/*/site-packages/torch/lib/*nccl* || true && \
-    rm -rf /vllm/venv/lib/*/site-packages/torch/lib/*cupti* || true && \
-    rm -rf /vllm/venv/lib/*/site-packages/torch/lib/*cufft* || true && \
-    rm -rf /vllm/venv/lib/*/site-packages/torch/lib/*cusparse* || true && \
-    rm -rf /vllm/venv/lib/*/site-packages/torch/lib/*cusolver* || true && \
-    rm -rf /vllm/venv/lib/*/site-packages/torch/lib/*cublas* || true && \
-    rm -rf /vllm/venv/lib/*/site-packages/torch/lib/*curand* || true && \
-    rm -rf /vllm/venv/lib/*/site-packages/nvidia* || true && \
-    \
-    # 5. Remove xformers if present (GPU-specific memory optimization)
-    rm -rf /vllm/venv/lib/*/site-packages/xformers* || true && \
-    \
-    # 6. Remove caffe2 (legacy, deprecated since PyTorch 1.8, dead in PyTorch 2.x)
-    # vLLM 0.8.5+ uses PyTorch 2.x which doesn't need caffe2
-    rm -rf /vllm/venv/lib/*/site-packages/caffe2* || true && \
-    rm -rf /vllm/venv/lib/*/site-packages/torch/lib/libcaffe2* || true && \
-    \
-    # 7. Remove flash_attn (GPU-specific flash attention)
-    rm -rf /vllm/venv/lib/*/site-packages/flash_attn* || true && \
-    \
-    # 8. Remove bitsandbytes (GPU quantization library)
-    rm -rf /vllm/venv/lib/*/site-packages/bitsandbytes* || true && \
-    \
-    # 9. Remove onnx/onnxruntime (not needed for vLLM inference)
-    rm -rf /vllm/venv/lib/*/site-packages/onnx* || true && \
-    rm -rf /vllm/venv/lib/*/site-packages/onnxruntime* || true && \
-    \
-    # 10. Remove torch native libraries not needed for CPU (vulkan, mps, metal)
-    # NOTE: Keep ALL torch/backends/* Python modules intact!
-    # PyTorch imports cuda, cudnn, mps, etc. at startup even on CPU.
-    # These provide stub functionality and are required for imports to work.
-    # Only remove native libraries (.so files) and codegen files, not Python code.
-    rm -rf /vllm/venv/lib/*/site-packages/torch/lib/*vulkan* || true && \
-    rm -rf /vllm/venv/lib/*/site-packages/torch/lib/*mps* || true && \
-    rm -rf /vllm/venv/lib/*/site-packages/torch/lib/*metal* || true && \
-    rm -rf /vllm/venv/lib/*/site-packages/torch/_inductor/codegen/cuda* || true && \
-    rm -rf /vllm/venv/lib/*/site-packages/torch/_inductor/codegen/triton* || true && \
-    \
-    # 11. Remove tensorboard integration (not needed at runtime)
-    # NOTE: Keep torch/profiler - it's imported at torch startup!
-    rm -rf /vllm/venv/lib/*/site-packages/tensorboard* || true && \
-    rm -rf /vllm/venv/lib/*/site-packages/torch/utils/tensorboard* || true && \
-    \
-    # 12. Remove safetensors rust source files
-    rm -rf /vllm/venv/lib/*/site-packages/safetensors/*.rs || true && \
-    rm -rf /vllm/venv/lib/*/site-packages/safetensors/src || true && \
-    \
-    # 13. Remove functorch (legacy compatibility shim, merged into torch.func in PyTorch 2.0)
-    # vLLM is inference-only and never uses functional transforms (vmap, grad, etc.)
-    rm -rf /vllm/venv/lib/*/site-packages/functorch* || true && \
-    \
-    # 14. Remove test directories from installed packages
-    # IMPORTANT: Skip torch entirely - torch/testing is a required module
-    # 15. Remove documentation and examples from packages
-    # Combined into single find for efficiency
-    find /vllm/venv/lib/*/site-packages -depth -type d \( \
-        -name "tests" -o -name "test" -o -name "*_tests" -o \
-        -name "docs" -o -name "doc" -o -name "examples" -o -name "benchmarks" \
-        \) ! -path "*/torch/*" -exec rm -rf {} \; 2>/dev/null || true && \
-    \
-    # 16. Remove unnecessary files by extension (consolidated find)
-    find /vllm/venv -type f \( \
-        -name "*.md" -o -name "*.rst" -o -name "*.pyi" -o \
-        -name "LICENSE*" -o -name "COPYING*" -o -name "CHANGELOG*" -o \
-        -name "HISTORY*" -o -name "AUTHORS*" -o -name "CONTRIBUTORS*" -o \
-        -name "*.h" -o -name "*.hpp" -o -name "*.a" \
-        \) -delete 2>/dev/null || true && \
-    find /vllm/venv -type f -name "*.txt" ! -name "requirements*.txt" ! -name "top_level.txt" -delete 2>/dev/null || true && \
-    \
-    # 17. Remove .dist-info files except essential ones
-    find /vllm/venv -path "*/.dist-info/*" -type f \
-        ! -name "METADATA" ! -name "RECORD" ! -name "WHEEL" ! -name "top_level.txt" ! -name "entry_points.txt" \
-        -delete 2>/dev/null || true && \
-    \
-    # 18. Remove __pycache__ and include directories (consolidated)
-    find /vllm/venv -depth -type d \( -name "__pycache__" -o -name "include" \) -exec rm -rf {} \; 2>/dev/null || true && \
-    \
-    # 19. Strip debug symbols from shared libraries (significant size reduction)
-    find /vllm/venv /root/.local/share/uv -type f -name "*.so*" -exec strip --strip-unneeded {} \; 2>/dev/null || true && \
-    \
-    # 20. Clean up uv-managed Python installation
-    # Remove static libs, test dirs, and unused stdlib modules (tkinter, idle - not needed for headless inference)
-    find /root/.local/share/uv/python -type f -name "*.a" -delete 2>/dev/null || true && \
-    find /root/.local/share/uv/python -depth -type d \( \
-        -name "test" -o -name "tests" -o -name "idle_test" -o -name "__pycache__" -o \
-        -name "tkinter" -o -name "idlelib" -o -name "turtledemo" \
-        \) -exec rm -rf {} \; 2>/dev/null || true && \
-    rm -rf /root/.local/share/uv/python/*/share/man /root/.local/share/uv/python/*/share/doc 2>/dev/null || true && \
-    rm -rf /root/.local/share/uv/python/*/lib/*/lib-tk 2>/dev/null || true && \
-    rm -rf /root/.local/share/uv/python/*/lib/*/tkinter 2>/dev/null || true && \
-    \
-    # 21. Remove locale data (keep only en_US)
-    find /usr/share/locale -mindepth 1 -maxdepth 1 ! -name 'en*' -exec rm -rf {} \; 2>/dev/null || true && \
-    rm -rf /usr/share/doc /usr/share/man /usr/share/info 2>/dev/null || true && \
-    \
-    # 22. Remove uv binary and wget (not needed at runtime)
-    rm -f /usr/local/bin/uv && \
-    apt-get purge -y --auto-remove binutils wget && \
-    apt-get clean && \
-    \
-    # 23. Clean temp files and apt cache
-    rm -rf /tmp/* /var/tmp/* /var/lib/apt/lists/* /var/cache/apt/archives/* /var/log/* /root/.cache/* && \
-    \
-    # 24. Report cleanup results
-    echo "=== Cleanup complete ===" && \
-    du -sh /vllm/venv || true && \
-    du -sh /root/.local/share/uv/python 2>/dev/null || true && \
-    du -sh /vllm || true
+    chmod +x /setup_vllm.sh && \
+    /setup_vllm.sh "${VARIANT}" "${VLLM_VERSION}" "${USE_GITHUB_RELEASE}"
+
+# Copy and run the cleanup script (image optimization)
+# This script handles all cleanup operations to minimize image size:
+# - Removes GPU packages (triton, xformers, flash_attn)
+# - Removes CUDA/NVIDIA libraries from PyTorch
+# - Removes test directories and documentation
+# - Strips debug symbols from shared libraries
+# - Cleans up temporary files and caches
+COPY cleanup.sh /cleanup.sh
+RUN chmod +x /cleanup.sh && /cleanup.sh
 
 # Store detected Python version as environment variable for runtime reference
 # This allows querying the Python version without running python --version
