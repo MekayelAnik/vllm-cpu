@@ -182,7 +182,7 @@ RUN set -ex && \
         OTHER_PLATFORM="aarch64"; \
     fi && \
     # Process each pinned dependency line
-    echo "${VLLM_REQUIRES}" | grep -E '^[a-zA-Z0-9_-]+==' | while read -r DEP_LINE; do \
+    echo "${VLLM_REQUIRES}" | grep -E '^[a-zA-Z0-9._-]+==' | while read -r DEP_LINE; do \
         # Skip optional "extra ==" dependencies first
         if echo "${DEP_LINE}" | grep -q 'extra =='; then \
             continue; \
@@ -224,7 +224,7 @@ RUN set -ex && \
             fi; \
         fi && \
         # Extract dep_name:version
-        DEP_ENTRY=$(echo "${DEP_LINE}" | sed 's/^\([a-zA-Z0-9_-]*\)==\([^;, ]*\).*/\1:\2/') && \
+        DEP_ENTRY=$(echo "${DEP_LINE}" | sed 's/^\([a-zA-Z0-9._-]*\)==\([^;, ]*\).*/\1:\2/') && \
         DEP_NAME=$(echo "${DEP_ENTRY}" | cut -d: -f1) && \
         DEP_VER=$(echo "${DEP_ENTRY}" | cut -d: -f2) && \
         if [ -n "${DEP_NAME}" ] && [ -n "${DEP_VER}" ]; then \
@@ -281,6 +281,18 @@ RUN set -ex && \
                     if [ "${HAS_PLATFORM_UNIVERSAL}" != "0" ]; then \
                         HAS_WHEEL="1"; \
                     fi; \
+                fi && \
+                # Check 4: ABI3 stable ABI wheels (cpXY-abi3-manylinux*_arch where XY <= target)
+                # Examples: tokenizers only provides cp39-abi3 wheels which work for 3.9+
+                # The abi3 tag means "stable ABI, works with Python >= cpXY"
+                if [ "${HAS_WHEEL}" = "0" ]; then \
+                    for ABI3_WHEEL in $(echo "${DEP_WHEEL_LIST}" | tr ' ' '\n' | grep -E "cp3[0-9]+-abi3-manylinux.*${WHEEL_ARCH}"); do \
+                        ABI3_MIN=$(echo "${ABI3_WHEEL}" | grep -oE 'cp3[0-9]+' | sed 's/cp3//') && \
+                        if [ -n "${ABI3_MIN}" ] && [ "${ABI3_MIN}" -le "${PYTHON_MINOR}" ]; then \
+                            HAS_WHEEL="1" && \
+                            break; \
+                        fi; \
+                    done; \
                 fi && \
                 if [ "${HAS_WHEEL}" = "0" ]; then \
                     ALL_DEPS_OK=false && \
