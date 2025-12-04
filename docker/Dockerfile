@@ -158,14 +158,25 @@ ARG PYTHON_VERSION=auto
 ARG VARIANT=noavx512
 ARG USE_GITHUB_RELEASE=false
 
-# Labels (Note: vllm.python label is set later after Python version detection)
-LABEL org.opencontainers.image.title="vLLM CPU (${VARIANT})"
-LABEL org.opencontainers.image.description="vLLM CPU inference engine - ${VARIANT} variant"
-LABEL org.opencontainers.image.version="${VLLM_VERSION}"
-LABEL org.opencontainers.image.vendor="Mekayel Anik"
-LABEL org.opencontainers.image.source="https://github.com/MekayelAnik/vllm-cpu"
-LABEL org.opencontainers.image.licenses="GPL-3.0"
-LABEL vllm.variant="${VARIANT}"
+# =============================================================================
+# OCI Image Labels (https://github.com/opencontainers/image-spec/blob/main/annotations.md)
+# =============================================================================
+# Standard OCI annotations for container image metadata
+LABEL org.opencontainers.image.title="vLLM CPU (${VARIANT})" \
+      org.opencontainers.image.description="Run large language models on CPU without a GPU. This ${VARIANT} build provides an OpenAI-compatible API server for local LLM inference." \
+      org.opencontainers.image.version="${VLLM_VERSION}" \
+      org.opencontainers.image.vendor="Md. Mekayel Anik" \
+      org.opencontainers.image.authors="Md. Mekayel Anik <mekayel.anik@gmail.com>" \
+      org.opencontainers.image.url="https://github.com/MekayelAnik/vllm-cpu" \
+      org.opencontainers.image.source="https://github.com/MekayelAnik/vllm-cpu" \
+      org.opencontainers.image.documentation="https://github.com/MekayelAnik/vllm-cpu#readme" \
+      org.opencontainers.image.licenses="GPL-3.0-only" \
+      org.opencontainers.image.base.name="docker.io/library/debian:trixie-slim" \
+      org.opencontainers.image.ref.name="${VARIANT}-${VLLM_VERSION}" \
+      # Custom labels for vLLM-specific metadata
+      vllm.variant="${VARIANT}" \
+      vllm.version="${VLLM_VERSION}" \
+      vllm.upstream.url="https://github.com/vllm-project/vllm"
 
 # =============================================================================
 # Environment Variables - All vLLM Runtime Configuration
@@ -699,16 +710,16 @@ RUN --mount=type=cache,target=/root/.cache/uv \
     rm -rf /vllm/venv/lib/*/site-packages/onnx* || true && \
     rm -rf /vllm/venv/lib/*/site-packages/onnxruntime* || true && \
     \
-    # 10. Remove torch backends not needed for CPU (vulkan, mps, metal)
-    # NOTE: Keep torch/backends/cuda and torch/backends/cudnn Python modules!
-    # PyTorch imports these at startup even on CPU - they provide stub functionality.
-    # Only remove the native libraries (.so files), not the Python code.
+    # 10. Remove torch native libraries not needed for CPU (vulkan, mps, metal)
+    # NOTE: Keep ALL torch/backends/* Python modules intact!
+    # PyTorch imports cuda, cudnn, mps, etc. at startup even on CPU.
+    # These provide stub functionality and are required for imports to work.
+    # Only remove native libraries (.so files) and codegen files, not Python code.
     rm -rf /vllm/venv/lib/*/site-packages/torch/lib/*vulkan* || true && \
     rm -rf /vllm/venv/lib/*/site-packages/torch/lib/*mps* || true && \
     rm -rf /vllm/venv/lib/*/site-packages/torch/lib/*metal* || true && \
     rm -rf /vllm/venv/lib/*/site-packages/torch/_inductor/codegen/cuda* || true && \
     rm -rf /vllm/venv/lib/*/site-packages/torch/_inductor/codegen/triton* || true && \
-    rm -rf /vllm/venv/lib/*/site-packages/torch/backends/mps* || true && \
     \
     # 11. Remove torch profiler/tensorboard integration (not needed at runtime)
     rm -rf /vllm/venv/lib/*/site-packages/torch/profiler* || true && \
