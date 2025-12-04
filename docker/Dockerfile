@@ -119,8 +119,10 @@ RUN set -ex && \
             GH_JSON=$(curl -sfL --max-time 15 "${GH_API}" 2>/dev/null || echo ""); \
             if [ -n "${GH_JSON}" ]; then \
                 # Extract CPython versions from wheel asset names, filtering by architecture
+                # Use tr to replace - with _ (POSIX-compatible, no bash-specific ${var//-/_})
+                PACKAGE_NAME_UNDERSCORE=$(echo "${PACKAGE_NAME}" | tr '-' '_') && \
                 PYTHON_VER=$(echo "${GH_JSON}" | jq -r '.assets[].name' 2>/dev/null | \
-                    grep -E "^${PACKAGE_NAME//-/_}" | \
+                    grep -E "^${PACKAGE_NAME_UNDERSCORE}" | \
                     grep "_${WHEEL_ARCH}" | \
                     grep -oE 'cp3[0-9]+' | \
                     sed 's/cp3/3./' | \
@@ -663,13 +665,16 @@ RUN --mount=type=cache,target=/root/.cache/uv \
             aarch64) WHEEL_ARCH="aarch64" ;; \
             *) echo "Unsupported architecture: ${ARCH}" && exit 1 ;; \
         esac && \
-        PYTHON_TAG="cp${DETECTED_PY//./}" && \
+        # Use tr to remove dots from Python version (POSIX-compatible)
+        PYTHON_TAG="cp$(echo "${DETECTED_PY}" | tr -d '.')" && \
         echo "Looking for wheel: Python ${DETECTED_PY} (${PYTHON_TAG}), Arch: ${WHEEL_ARCH}" && \
         # Try base version first, then .post1, .post2, .post3
         WHEEL_DOWNLOADED=false && \
+        # Use tr to convert package name (POSIX-compatible)
+        PACKAGE_NAME_UNDERSCORE=$(echo "${PACKAGE_NAME}" | tr '-' '_') && \
         for VERSION_SUFFIX in "" ".post1" ".post2" ".post3"; do \
             INSTALL_VERSION="${VLLM_VERSION}${VERSION_SUFFIX}" && \
-            WHEEL_NAME="${PACKAGE_NAME//-/_}-${INSTALL_VERSION}-${PYTHON_TAG}-${PYTHON_TAG}-manylinux_2_17_${WHEEL_ARCH}.manylinux2014_${WHEEL_ARCH}.whl" && \
+            WHEEL_NAME="${PACKAGE_NAME_UNDERSCORE}-${INSTALL_VERSION}-${PYTHON_TAG}-${PYTHON_TAG}-manylinux_2_17_${WHEEL_ARCH}.manylinux2014_${WHEEL_ARCH}.whl" && \
             WHEEL_URL="https://github.com/MekayelAnik/vllm-cpu/releases/download/v${VLLM_VERSION}/${WHEEL_NAME}" && \
             echo "Trying wheel: ${WHEEL_URL}" && \
             if wget -q "${WHEEL_URL}" -O "/tmp/${WHEEL_NAME}" 2>/dev/null; then \
