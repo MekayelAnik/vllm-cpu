@@ -154,6 +154,25 @@ RUN set -ex && \
             echo "All detection methods failed, using fallback: ${PYTHON_VER}"; \
         fi && \
         \
+        # Method 5: Verify key dependencies have wheels for detected Python version
+        # xgrammar is a common dependency that may lack wheels for newer Python on aarch64
+        # If dependency check fails, fall back to Python 3.12 (most compatible)
+        if [ "${WHEEL_ARCH}" = "aarch64" ]; then \
+            PYTHON_MINOR=$(echo "${PYTHON_VER}" | cut -d. -f2) && \
+            XGRAMMAR_CHECK=$(curl -sfL --max-time 10 "https://pypi.org/pypi/xgrammar/json" 2>/dev/null | \
+                jq -r '.releases | keys[]' 2>/dev/null | sort -V | tail -1) && \
+            if [ -n "${XGRAMMAR_CHECK}" ]; then \
+                XGRAMMAR_HAS_WHEEL=$(curl -sfL --max-time 10 "https://pypi.org/pypi/xgrammar/${XGRAMMAR_CHECK}/json" 2>/dev/null | \
+                    jq -r '.urls[].filename' 2>/dev/null | \
+                    grep -c "cp${PYTHON_MINOR}.*manylinux.*aarch64" || echo "0") && \
+                if [ "${XGRAMMAR_HAS_WHEEL}" = "0" ]; then \
+                    echo "WARNING: xgrammar lacks wheel for Python ${PYTHON_VER} on aarch64"; \
+                    echo "Falling back to Python 3.12 for dependency compatibility"; \
+                    PYTHON_VER="3.12"; \
+                fi; \
+            fi; \
+        fi && \
+        \
         echo "${PYTHON_VER}" > /python_version.txt; \
     fi && \
     echo "=== Final Python version: $(cat /python_version.txt) ==="
