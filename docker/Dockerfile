@@ -643,97 +643,81 @@ RUN --mount=type=cache,target=/root/.cache/uv \
         echo "Successfully installed from GitHub release with CPU-only PyTorch"; \
     fi && \
     \
-    # Verify installation
+    # Verify installation and save version for runtime banner display
     python -c "import vllm; print(f'vLLM version: {vllm.__version__}')" && \
+    python -c "import vllm; print(vllm.__version__)" > /vllm/vllm_version.txt && \
     \
     # ==========================================================================
     # CLEANUP: Minimize image size
     # ==========================================================================
+    # NOTE: All cleanup commands use "|| true" to prevent build failures
+    # from non-critical cleanup operations. The vLLM installation is already
+    # verified above, so cleanup failures are acceptable.
+    # ==========================================================================
     echo "Cleaning up to minimize image size..." && \
     \
     # 1. Clean uv cache completely (not needed at runtime)
-    uv cache clean && \
+    uv cache clean || true && \
     \
-    # 2. Remove Python bytecode cache (will be regenerated on first run if needed)
-    #    Note: We compiled bytecode during install, but remove .pyc source caches
-    find /vllm/venv -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null || true && \
-    find /vllm/venv -type f -name "*.py[co]" -delete 2>/dev/null || true && \
+    # 2. Remove pip/wheel (NOT setuptools - needed for distutils-precedence.pth)
+    # Note: We keep setuptools, _distutils_hack, and pkg_resources because:
+    # - distutils-precedence.pth references _distutils_hack at Python startup
+    # - Removing them causes "ModuleNotFoundError: No module named '_distutils_hack'"
+    rm -rf /vllm/venv/lib/*/site-packages/pip* || true && \
+    rm -rf /vllm/venv/lib/*/site-packages/wheel* || true && \
     \
-    # 3. Remove pip/setuptools cache and metadata not needed at runtime
-    rm -rf /vllm/venv/lib/*/site-packages/pip* 2>/dev/null || true && \
-    rm -rf /vllm/venv/lib/*/site-packages/setuptools* 2>/dev/null || true && \
-    rm -rf /vllm/venv/lib/*/site-packages/wheel* 2>/dev/null || true && \
-    rm -rf /vllm/venv/lib/*/site-packages/_distutils_hack* 2>/dev/null || true && \
-    rm -rf /vllm/venv/lib/*/site-packages/pkg_resources* 2>/dev/null || true && \
+    # 3. Remove test directories from installed packages
+    # IMPORTANT: Skip torch entirely - torch/testing is a required module, not tests
+    # torch.testing is imported by torch.autograd.gradcheck which is needed at runtime
+    # Use -depth to process children before parents (prevents "directory not found" errors)
+    find /vllm/venv/lib/*/site-packages -depth -type d \( -name "tests" -o -name "test" -o -name "*_tests" \) \
+        ! -path "*/torch/*" -exec rm -rf {} \; 2>/dev/null || true && \
     \
-    # 4. Remove test directories from installed packages
-    find /vllm/venv -type d -name "tests" -exec rm -rf {} + 2>/dev/null || true && \
-    find /vllm/venv -type d -name "test" -exec rm -rf {} + 2>/dev/null || true && \
-    find /vllm/venv -type d -name "testing" -exec rm -rf {} + 2>/dev/null || true && \
-    find /vllm/venv -type d -name "*_tests" -exec rm -rf {} + 2>/dev/null || true && \
+    # 4. Remove documentation and examples from packages
+    find /vllm/venv/lib/*/site-packages -depth -type d \( -name "docs" -o -name "doc" -o -name "examples" -o -name "benchmarks" \) \
+        -exec rm -rf {} \; 2>/dev/null || true && \
     \
-    # 5. Remove documentation and examples from packages
-    find /vllm/venv -type d -name "docs" -exec rm -rf {} + 2>/dev/null || true && \
-    find /vllm/venv -type d -name "doc" -exec rm -rf {} + 2>/dev/null || true && \
-    find /vllm/venv -type d -name "examples" -exec rm -rf {} + 2>/dev/null || true && \
-    find /vllm/venv -type d -name "benchmarks" -exec rm -rf {} + 2>/dev/null || true && \
+    # 5. Remove unnecessary files by extension (excluding critical files)
+    find /vllm/venv -type f \( -name "*.md" -o -name "*.rst" \) -delete 2>/dev/null || true && \
+    find /vllm/venv -type f -name "*.txt" ! -name "requirements*.txt" ! -name "top_level.txt" -delete 2>/dev/null || true && \
+    find /vllm/venv -type f \( -name "LICENSE*" -o -name "COPYING*" -o -name "CHANGELOG*" -o -name "HISTORY*" -o -name "AUTHORS*" -o -name "CONTRIBUTORS*" \) \
+        -delete 2>/dev/null || true && \
     \
-    # 6. Remove unnecessary files by extension
-    find /vllm/venv -type f -name "*.md" -delete 2>/dev/null || true && \
-    find /vllm/venv -type f -name "*.rst" -delete 2>/dev/null || true && \
-    find /vllm/venv -type f -name "*.txt" ! -name "requirements*.txt" -delete 2>/dev/null || true && \
-    find /vllm/venv -type f -name "LICENSE*" -delete 2>/dev/null || true && \
-    find /vllm/venv -type f -name "COPYING*" -delete 2>/dev/null || true && \
-    find /vllm/venv -type f -name "CHANGELOG*" -delete 2>/dev/null || true && \
-    find /vllm/venv -type f -name "HISTORY*" -delete 2>/dev/null || true && \
-    find /vllm/venv -type f -name "AUTHORS*" -delete 2>/dev/null || true && \
-    find /vllm/venv -type f -name "CONTRIBUTORS*" -delete 2>/dev/null || true && \
-    \
-    # 7. Remove .dist-info directories except METADATA and RECORD (needed for uninstall info)
+    # 6. Remove .dist-info files except essential ones
     find /vllm/venv -path "*/.dist-info/*" -type f \
         ! -name "METADATA" ! -name "RECORD" ! -name "WHEEL" ! -name "top_level.txt" ! -name "entry_points.txt" \
         -delete 2>/dev/null || true && \
     \
-    # 8. Remove static libraries (.a files) - not needed for runtime
+    # 7. Remove static libraries (.a files) - not needed for runtime
     find /vllm/venv -type f -name "*.a" -delete 2>/dev/null || true && \
+    \
+    # 8. Remove Python bytecode cache (will be regenerated on first run)
+    find /vllm/venv -depth -type d -name "__pycache__" -exec rm -rf {} \; 2>/dev/null || true && \
     \
     # 9. Strip debug symbols from shared libraries (significant size reduction)
     find /vllm/venv -type f -name "*.so*" -exec strip --strip-unneeded {} \; 2>/dev/null || true && \
-    \
-    # 10. Also strip system libraries that were installed
     find /root/.local/share/uv -type f -name "*.so*" -exec strip --strip-unneeded {} \; 2>/dev/null || true && \
     \
-    # 11. Clean up uv-managed Python installation
-    # Remove static libraries, test files, and documentation from Python itself
+    # 10. Clean up uv-managed Python installation
     find /root/.local/share/uv/python -type f -name "*.a" -delete 2>/dev/null || true && \
-    find /root/.local/share/uv/python -type d -name "test" -exec rm -rf {} + 2>/dev/null || true && \
-    find /root/.local/share/uv/python -type d -name "tests" -exec rm -rf {} + 2>/dev/null || true && \
-    find /root/.local/share/uv/python -type d -name "idle_test" -exec rm -rf {} + 2>/dev/null || true && \
-    find /root/.local/share/uv/python -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null || true && \
-    rm -rf /root/.local/share/uv/python/*/share/man 2>/dev/null || true && \
-    rm -rf /root/.local/share/uv/python/*/share/doc 2>/dev/null || true && \
+    find /root/.local/share/uv/python -depth -type d \( -name "test" -o -name "tests" -o -name "idle_test" -o -name "__pycache__" \) \
+        -exec rm -rf {} \; 2>/dev/null || true && \
+    rm -rf /root/.local/share/uv/python/*/share/man /root/.local/share/uv/python/*/share/doc 2>/dev/null || true && \
     \
-    # 12. Remove uv binary (not needed at runtime - packages already installed)
+    # 11. Remove uv binary (not needed at runtime - packages already installed)
     rm -f /usr/local/bin/uv && \
     \
-    # 13. Remove binutils (only needed for stripping, not at runtime)
+    # 12. Remove binutils (only needed for stripping, not at runtime)
     apt-get purge -y --auto-remove binutils && \
     apt-get clean && \
     \
-    # 14. Clean temp files and apt cache
-    rm -rf /tmp/* /var/tmp/* && \
-    rm -rf /var/lib/apt/lists/* && \
-    rm -rf /var/cache/apt/archives/* && \
-    rm -rf /var/log/* && \
-    rm -rf /root/.cache/* && \
+    # 13. Clean temp files and apt cache
+    rm -rf /tmp/* /var/tmp/* /var/lib/apt/lists/* /var/cache/apt/archives/* /var/log/* /root/.cache/* && \
     \
-    # Report cleanup results
+    # 14. Report cleanup results
     echo "=== Cleanup complete ===" && \
-    echo "Virtual environment size:" && \
     du -sh /vllm/venv || true && \
-    echo "Python installation size:" && \
     du -sh /root/.local/share/uv/python 2>/dev/null || true && \
-    echo "Total /vllm size:" && \
     du -sh /vllm || true
 
 # Store detected Python version as environment variable for runtime reference

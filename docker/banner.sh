@@ -29,11 +29,17 @@ print_banner() {
 # Print system information
 print_info() {
     local variant="${VLLM_CPU_VARIANT:-unknown}"
-    local vllm_version=$(python -c 'import vllm; print(vllm.__version__)' 2>/dev/null || echo "unknown")
+    # Get vLLM version - use stored version file first, fallback to runtime import
+    local vllm_version
+    if [ -f /vllm/vllm_version.txt ]; then
+        vllm_version=$(cat /vllm/vllm_version.txt)
+    else
+        vllm_version=$(python -c 'import vllm; print(vllm.__version__)' 2>/dev/null || echo "unknown")
+    fi
     local python_version=$(python --version 2>&1 | cut -d' ' -f2)
     local container_ip=$(hostname -I 2>/dev/null | awk '{print $1}' || echo "N/A")
-    local host="${VLLM_HOST:-0.0.0.0}"
-    local port="${VLLM_PORT:-8000}"
+    local host="${VLLM_SERVER_HOST:-0.0.0.0}"
+    local port="${VLLM_SERVER_PORT:-8000}"
 
     printf "${GRAY}══════════════════════════════════════════════════════════════════════════════${NC}\n"
     printf "${BLUE}  vLLM CPU Inference Engine${NC}\n"
