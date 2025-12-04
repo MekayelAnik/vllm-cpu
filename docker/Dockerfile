@@ -700,13 +700,14 @@ RUN --mount=type=cache,target=/root/.cache/uv \
     rm -rf /vllm/venv/lib/*/site-packages/onnxruntime* || true && \
     \
     # 10. Remove torch backends not needed for CPU (vulkan, mps, metal)
+    # NOTE: Keep torch/backends/cuda and torch/backends/cudnn Python modules!
+    # PyTorch imports these at startup even on CPU - they provide stub functionality.
+    # Only remove the native libraries (.so files), not the Python code.
     rm -rf /vllm/venv/lib/*/site-packages/torch/lib/*vulkan* || true && \
     rm -rf /vllm/venv/lib/*/site-packages/torch/lib/*mps* || true && \
     rm -rf /vllm/venv/lib/*/site-packages/torch/lib/*metal* || true && \
     rm -rf /vllm/venv/lib/*/site-packages/torch/_inductor/codegen/cuda* || true && \
     rm -rf /vllm/venv/lib/*/site-packages/torch/_inductor/codegen/triton* || true && \
-    rm -rf /vllm/venv/lib/*/site-packages/torch/backends/cuda* || true && \
-    rm -rf /vllm/venv/lib/*/site-packages/torch/backends/cudnn* || true && \
     rm -rf /vllm/venv/lib/*/site-packages/torch/backends/mps* || true && \
     \
     # 11. Remove torch profiler/tensorboard integration (not needed at runtime)
