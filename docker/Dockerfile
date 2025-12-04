@@ -155,35 +155,91 @@ RUN set -ex && \
         fi; \
     fi && \
     \
-    # Method 5: Verify the vllm-cpu package AND its pinned dependencies have wheels
-    # IMPORTANT: We must check the EXACT versions that vllm-cpu pins, not latest!
-    # vllm-cpu pins specific versions like xgrammar==0.1.23, which may lack wheels
-    # for newer Python versions even if the latest xgrammar has them.
+    # Method 5: Verify the vllm-cpu package AND ALL its pinned dependencies have wheels
+    # IMPORTANT: We check ALL dependencies with pinned versions (==X.Y.Z) from requires_dist
+    # Some packages like xgrammar==0.1.23 may lack wheels for newer Python versions
+    # even if the latest version has them.
     # NOTE: This runs for BOTH explicit and auto-detected Python versions
     ORIGINAL_PY="${PYTHON_VER}" && \
     PYTHON_MINOR=$(echo "${PYTHON_VER}" | cut -d. -f2) && \
     echo "Fetching ${PACKAGE_NAME}==${VLLM_VERSION} dependency versions..." && \
-    # Get the requires_dist from vllm-cpu to find pinned versions
+    # Get the requires_dist from vllm-cpu to find ALL pinned versions
     VLLM_REQUIRES=$(curl -sfL --max-time 15 "https://pypi.org/pypi/${PACKAGE_NAME}/${VLLM_VERSION}/json" 2>/dev/null | \
         jq -r '.info.requires_dist[]' 2>/dev/null || echo "") && \
-    # Critical dependencies with C extensions that may lack wheels for newer Python
-    # Format: "dep_name:pinned_version" (extracted from requires_dist)
+    # Extract ALL dependencies with pinned versions (==X.Y.Z format)
+    # Format: "dep_name:pinned_version" for each pinned dependency
+    # This catches packages like xgrammar, numba, depyf, outlines_core, etc.
+    # IMPORTANT: Filter by platform markers - skip deps for other architectures
+    # Logic: Skip if marker has ONLY the other platform (no "or" with our platform)
+    # Also skip "extra ==" dependencies (optional features not installed by default)
     CRITICAL_DEPS="${PACKAGE_NAME}:${VLLM_VERSION}" && \
-    for DEP_NAME in xgrammar msgspec compressed-tensors lm-format-enforcer numba; do \
-        # Extract pinned version from requires_dist (handles ==X.Y.Z; markers format)
-        # Regex: match "dep==version" where version stops at ; or space or comma
-        PINNED_VER=$(echo "${VLLM_REQUIRES}" | grep -E "^${DEP_NAME}==" | head -1 | sed 's/^[^=]*==\([^;, ]*\).*/\1/' || echo "") && \
-        if [ -n "${PINNED_VER}" ]; then \
-            CRITICAL_DEPS="${CRITICAL_DEPS} ${DEP_NAME}:${PINNED_VER}"; \
-        else \
-            # Not pinned, use latest
-            LATEST_VER=$(curl -sfL --max-time 10 "https://pypi.org/pypi/${DEP_NAME}/json" 2>/dev/null | \
-                jq -r '.releases | keys[]' 2>/dev/null | sort -V | tail -1 || echo "") && \
-            if [ -n "${LATEST_VER}" ]; then \
-                CRITICAL_DEPS="${CRITICAL_DEPS} ${DEP_NAME}:${LATEST_VER}"; \
+    # Determine our target platform for marker matching
+    if [ "${WHEEL_ARCH}" = "aarch64" ]; then \
+        OUR_PLATFORM="aarch64"; \
+        OTHER_PLATFORM="x86_64"; \
+    else \
+        OUR_PLATFORM="x86_64"; \
+        OTHER_PLATFORM="aarch64"; \
+    fi && \
+    # Process each pinned dependency line
+    echo "${VLLM_REQUIRES}" | grep -E '^[a-zA-Z0-9_-]+==' | while read -r DEP_LINE; do \
+        # Skip optional "extra ==" dependencies first
+        if echo "${DEP_LINE}" | grep -q 'extra =='; then \
+            continue; \
+        fi && \
+        # Check platform markers
+        # If no platform_machine marker, include it (applies to all platforms)
+        # If has "platform_machine ==" marker, check if our platform is included
+        # If has "platform_machine !=" marker, check if our platform is NOT excluded
+        if echo "${DEP_LINE}" | grep -q 'platform_machine'; then \
+            # Check for exclusion marker (!=)
+            if echo "${DEP_LINE}" | grep -q 'platform_machine !='; then \
+                # Exclusion marker: skip only if OUR platform is excluded
+                if [ "${OUR_PLATFORM}" = "aarch64" ]; then \
+                    if echo "${DEP_LINE}" | grep -qE 'platform_machine != "(aarch64|arm64)"'; then \
+                        continue; \
+                    fi; \
+                else \
+                    if echo "${DEP_LINE}" | grep -q 'platform_machine != "x86_64"'; then \
+                        continue; \
+                    fi; \
+                fi; \
+            else \
+                # Inclusion marker (==): include only if our platform is listed
+                if [ "${OUR_PLATFORM}" = "aarch64" ]; then \
+                    # For aarch64, also accept "arm64" as it's an alias
+                    if echo "${DEP_LINE}" | grep -qE "(aarch64|arm64)"; then \
+                        : ; \
+                    else \
+                        continue; \
+                    fi; \
+                else \
+                    # For x86_64
+                    if echo "${DEP_LINE}" | grep -q "x86_64"; then \
+                        : ; \
+                    else \
+                        continue; \
+                    fi; \
+                fi; \
             fi; \
+        fi && \
+        # Extract dep_name:version
+        DEP_ENTRY=$(echo "${DEP_LINE}" | sed 's/^\([a-zA-Z0-9_-]*\)==\([^;, ]*\).*/\1:\2/') && \
+        DEP_NAME=$(echo "${DEP_ENTRY}" | cut -d: -f1) && \
+        DEP_VER=$(echo "${DEP_ENTRY}" | cut -d: -f2) && \
+        if [ -n "${DEP_NAME}" ] && [ -n "${DEP_VER}" ]; then \
+            echo "${DEP_NAME}:${DEP_VER}"; \
         fi; \
-    done && \
+    done > /tmp/pinned_deps.txt && \
+    # Read deps from temp file (needed because while loop runs in subshell)
+    while read -r DEP_ENTRY; do \
+        if [ -n "${DEP_ENTRY}" ]; then \
+            CRITICAL_DEPS="${CRITICAL_DEPS} ${DEP_ENTRY}"; \
+        fi; \
+    done < /tmp/pinned_deps.txt && \
+    rm -f /tmp/pinned_deps.txt && \
+    DEP_COUNT=$(echo "${CRITICAL_DEPS}" | wc -w | tr -d ' ') && \
+    echo "Found ${DEP_COUNT} pinned dependencies for ${WHEEL_ARCH} to check" && \
     echo "Checking ${WHEEL_ARCH} wheel availability for: ${CRITICAL_DEPS}" && \
     # Fetch wheel lists for all critical dependencies (use | as record separator)
     DEP_WHEELS="" && \
