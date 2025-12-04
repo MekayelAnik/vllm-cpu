@@ -155,56 +155,71 @@ RUN set -ex && \
         fi; \
     fi && \
     \
-    # Method 5: Verify the vllm-cpu package AND key dependencies have wheels
-    # Some dependencies may lack wheels for newer Python versions
-    # Gradually fall back through Python versions until ALL have wheels
-    # Packages to check:
-    #   - The vllm-cpu package itself (MUST have wheel for selected Python+arch)
-    #   - xgrammar: Grammar/constrained decoding (C++ extension)
-    #   - msgspec: Fast serialization (C extension)
-    #   - compressed-tensors: Tensor compression (may have C extensions)
-    #   - lm-format-enforcer: Format enforcement
+    # Method 5: Verify the vllm-cpu package AND its pinned dependencies have wheels
+    # IMPORTANT: We must check the EXACT versions that vllm-cpu pins, not latest!
+    # vllm-cpu pins specific versions like xgrammar==0.1.23, which may lack wheels
+    # for newer Python versions even if the latest xgrammar has them.
     # NOTE: This runs for BOTH explicit and auto-detected Python versions
     ORIGINAL_PY="${PYTHON_VER}" && \
     PYTHON_MINOR=$(echo "${PYTHON_VER}" | cut -d. -f2) && \
-    # List of critical dependencies to check (space-separated)
-    # Include the vllm-cpu package itself first!
-    CRITICAL_DEPS="${PACKAGE_NAME} xgrammar msgspec compressed-tensors lm-format-enforcer" && \
+    echo "Fetching ${PACKAGE_NAME}==${VLLM_VERSION} dependency versions..." && \
+    # Get the requires_dist from vllm-cpu to find pinned versions
+    VLLM_REQUIRES=$(curl -sfL --max-time 15 "https://pypi.org/pypi/${PACKAGE_NAME}/${VLLM_VERSION}/json" 2>/dev/null | \
+        jq -r '.info.requires_dist[]' 2>/dev/null || echo "") && \
+    # Critical dependencies with C extensions that may lack wheels for newer Python
+    # Format: "dep_name:pinned_version" (extracted from requires_dist)
+    CRITICAL_DEPS="${PACKAGE_NAME}:${VLLM_VERSION}" && \
+    for DEP_NAME in xgrammar msgspec compressed-tensors lm-format-enforcer numba; do \
+        # Extract pinned version from requires_dist (handles ==X.Y.Z; markers format)
+        # Regex: match "dep==version" where version stops at ; or space or comma
+        PINNED_VER=$(echo "${VLLM_REQUIRES}" | grep -E "^${DEP_NAME}==" | head -1 | sed 's/^[^=]*==\([^;, ]*\).*/\1/' || echo "") && \
+        if [ -n "${PINNED_VER}" ]; then \
+            CRITICAL_DEPS="${CRITICAL_DEPS} ${DEP_NAME}:${PINNED_VER}"; \
+        else \
+            # Not pinned, use latest
+            LATEST_VER=$(curl -sfL --max-time 10 "https://pypi.org/pypi/${DEP_NAME}/json" 2>/dev/null | \
+                jq -r '.releases | keys[]' 2>/dev/null | sort -V | tail -1 || echo "") && \
+            if [ -n "${LATEST_VER}" ]; then \
+                CRITICAL_DEPS="${CRITICAL_DEPS} ${DEP_NAME}:${LATEST_VER}"; \
+            fi; \
+        fi; \
+    done && \
     echo "Checking ${WHEEL_ARCH} wheel availability for: ${CRITICAL_DEPS}" && \
     # Fetch wheel lists for all critical dependencies (use | as record separator)
     DEP_WHEELS="" && \
-    for DEP in ${CRITICAL_DEPS}; do \
-        # For vllm-cpu packages, use the specific version; for others, use latest
-        if [ "${DEP}" = "${PACKAGE_NAME}" ]; then \
-            DEP_VERSION="${VLLM_VERSION}"; \
-        else \
-            DEP_VERSION=$(curl -sfL --max-time 10 "https://pypi.org/pypi/${DEP}/json" 2>/dev/null | \
-                jq -r '.releases | keys[]' 2>/dev/null | sort -V | tail -1); \
-        fi && \
+    for DEP_SPEC in ${CRITICAL_DEPS}; do \
+        DEP_NAME=$(echo "${DEP_SPEC}" | cut -d: -f1) && \
+        DEP_VERSION=$(echo "${DEP_SPEC}" | cut -d: -f2) && \
         if [ -n "${DEP_VERSION}" ]; then \
-            DEP_WHEEL_LIST=$(curl -sfL --max-time 10 "https://pypi.org/pypi/${DEP}/${DEP_VERSION}/json" 2>/dev/null | \
+            DEP_WHEEL_LIST=$(curl -sfL --max-time 10 "https://pypi.org/pypi/${DEP_NAME}/${DEP_VERSION}/json" 2>/dev/null | \
                 jq -r '.urls[].filename' 2>/dev/null | tr '\n' ' ') && \
-            DEP_WHEELS="${DEP_WHEELS}${DEP}:${DEP_WHEEL_LIST}|"; \
+            DEP_WHEELS="${DEP_WHEELS}${DEP_NAME}:${DEP_WHEEL_LIST}|" && \
+            echo "  ${DEP_NAME}==${DEP_VERSION}: $(echo "${DEP_WHEEL_LIST}" | wc -w | tr -d ' ') wheels"; \
         fi; \
     done && \
     # Try current version, then fall back: 3.13 -> 3.12 -> 3.11 -> 3.10 -> 3.9
     while [ "${PYTHON_MINOR}" -ge 9 ]; do \
         ALL_DEPS_OK=true && \
         MISSING_DEPS="" && \
-        for DEP in ${CRITICAL_DEPS}; do \
-            DEP_WHEEL_LIST=$(echo "${DEP_WHEELS}" | tr '|' '\n' | grep "^${DEP}:" | cut -d: -f2-) && \
+        for DEP_SPEC in ${CRITICAL_DEPS}; do \
+            DEP_NAME=$(echo "${DEP_SPEC}" | cut -d: -f1) && \
+            DEP_WHEEL_LIST=$(echo "${DEP_WHEELS}" | tr '|' '\n' | grep "^${DEP_NAME}:" | cut -d: -f2-) && \
             if [ -n "${DEP_WHEEL_LIST}" ]; then \
-                HAS_WHEEL=$(echo "${DEP_WHEEL_LIST}" | grep -c "cp3${PYTHON_MINOR}.*manylinux.*${WHEEL_ARCH}" || echo "0") && \
+                # IMPORTANT: Convert space-separated list to newlines BEFORE grep
+                # Otherwise .* regex matches across multiple wheel filenames!
+                # NOTE: grep -c always outputs a count (even 0), but returns exit code 1 on no match
+                # Use "|| true" to prevent shell exit, NOT "|| echo 0" which corrupts the output
+                HAS_WHEEL=$(echo "${DEP_WHEEL_LIST}" | tr ' ' '\n' | grep -c "cp3${PYTHON_MINOR}.*manylinux.*${WHEEL_ARCH}" || true) && \
                 # Also check for universal wheels (py3-none-any)
                 if [ "${HAS_WHEEL}" = "0" ]; then \
-                    HAS_UNIVERSAL=$(echo "${DEP_WHEEL_LIST}" | grep -c "py3-none-any" || echo "0") && \
+                    HAS_UNIVERSAL=$(echo "${DEP_WHEEL_LIST}" | tr ' ' '\n' | grep -c "py3-none-any" || true) && \
                     if [ "${HAS_UNIVERSAL}" != "0" ]; then \
                         HAS_WHEEL="1"; \
                     fi; \
                 fi && \
                 if [ "${HAS_WHEEL}" = "0" ]; then \
                     ALL_DEPS_OK=false && \
-                    MISSING_DEPS="${MISSING_DEPS} ${DEP}"; \
+                    MISSING_DEPS="${MISSING_DEPS} ${DEP_NAME}"; \
                 fi; \
             fi; \
         done && \
