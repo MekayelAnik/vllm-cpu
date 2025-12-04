@@ -65,6 +65,7 @@ ARG USE_GITHUB_RELEASE=false
 
 # Detect highest available CPython version from PyPI or GitHub releases
 # Priority: 1) Explicit PYTHON_VERSION, 2) PyPI wheels, 3) GitHub release wheels, 4) Fallback
+# IMPORTANT: Filter by current architecture to avoid selecting wheels that don't exist for this platform
 RUN set -ex && \
     # Map variant to package name
     case "${VARIANT}" in \
@@ -76,6 +77,15 @@ RUN set -ex && \
         *) PACKAGE_NAME="vllm-cpu" ;; \
     esac && \
     \
+    # Detect current architecture for wheel filtering
+    ARCH=$(uname -m) && \
+    case "${ARCH}" in \
+        x86_64) WHEEL_ARCH="x86_64" ;; \
+        aarch64) WHEEL_ARCH="aarch64" ;; \
+        *) WHEEL_ARCH="${ARCH}" ;; \
+    esac && \
+    echo "Detecting Python version for architecture: ${WHEEL_ARCH}" && \
+    \
     if [ -n "${PYTHON_VERSION}" ] && [ "${PYTHON_VERSION}" != "auto" ]; then \
         echo "${PYTHON_VERSION}" > /python_version.txt; \
         echo "Using explicitly specified Python version: ${PYTHON_VERSION}"; \
@@ -83,39 +93,41 @@ RUN set -ex && \
         echo "Auto-detecting Python version for ${PACKAGE_NAME}==${VLLM_VERSION}..."; \
         PYTHON_VER=""; \
         \
-        # Method 1: Check PyPI for available wheels
+        # Method 1: Check PyPI for available wheels (filtered by architecture)
         if [ "${USE_GITHUB_RELEASE}" != "true" ]; then \
-            echo "Checking PyPI for available wheels..."; \
+            echo "Checking PyPI for available ${WHEEL_ARCH} wheels..."; \
             PYPI_JSON=$(curl -sfL --max-time 15 "https://pypi.org/pypi/${PACKAGE_NAME}/${VLLM_VERSION}/json" 2>/dev/null || echo ""); \
             if [ -n "${PYPI_JSON}" ]; then \
-                # Extract CPython versions from wheel filenames (e.g., cp310, cp311, cp312, cp313)
-                # Get highest version available
+                # Extract CPython versions from wheel filenames, filtering by architecture
+                # e.g., vllm_cpu-0.11.0-cp312-cp312-manylinux_2_17_x86_64.whl
                 PYTHON_VER=$(echo "${PYPI_JSON}" | jq -r '.urls[].filename' 2>/dev/null | \
+                    grep "_${WHEEL_ARCH}" | \
                     grep -oE 'cp3[0-9]+' | \
                     sed 's/cp3/3./' | \
                     sort -t. -k2 -n -r | \
                     head -1 || echo ""); \
                 if [ -n "${PYTHON_VER}" ]; then \
-                    echo "Found highest CPython on PyPI: ${PYTHON_VER}"; \
+                    echo "Found highest CPython on PyPI for ${WHEEL_ARCH}: ${PYTHON_VER}"; \
                 fi; \
             fi; \
         fi && \
         \
-        # Method 2: Check GitHub releases if PyPI failed or was skipped
+        # Method 2: Check GitHub releases if PyPI failed or was skipped (filtered by architecture)
         if [ -z "${PYTHON_VER}" ]; then \
-            echo "Checking GitHub releases for available wheels..."; \
+            echo "Checking GitHub releases for available ${WHEEL_ARCH} wheels..."; \
             GH_API="https://api.github.com/repos/MekayelAnik/vllm-cpu/releases/tags/v${VLLM_VERSION}"; \
             GH_JSON=$(curl -sfL --max-time 15 "${GH_API}" 2>/dev/null || echo ""); \
             if [ -n "${GH_JSON}" ]; then \
-                # Extract CPython versions from wheel asset names
+                # Extract CPython versions from wheel asset names, filtering by architecture
                 PYTHON_VER=$(echo "${GH_JSON}" | jq -r '.assets[].name' 2>/dev/null | \
                     grep -E "^${PACKAGE_NAME//-/_}" | \
+                    grep "_${WHEEL_ARCH}" | \
                     grep -oE 'cp3[0-9]+' | \
                     sed 's/cp3/3./' | \
                     sort -t. -k2 -n -r | \
                     head -1 || echo ""); \
                 if [ -n "${PYTHON_VER}" ]; then \
-                    echo "Found highest CPython on GitHub: ${PYTHON_VER}"; \
+                    echo "Found highest CPython on GitHub for ${WHEEL_ARCH}: ${PYTHON_VER}"; \
                 fi; \
             fi; \
         fi && \
