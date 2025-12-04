@@ -406,6 +406,8 @@ jobs:
         uses: astral-sh/setup-uv@1e862dfacbd1d6d858c55d9b792c756523627244 # v7.1.4
         with:
           version: ${{ env.UV_VERSION }}
+          enable-cache: true
+          cache-suffix: amd64-noavx512-${{ matrix.version }}
 
       - name: Cache ccache
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
@@ -416,16 +418,6 @@ jobs:
             ccache-amd64-noavx512-${{ matrix.version }}-
             ccache-amd64-noavx512-
             ccache-amd64-
-
-      - name: Cache uv
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
-        with:
-          path: ~/.cache/uv
-          key: uv-amd64-noavx512-${{ matrix.version }}-${{ hashFiles('build_config.json') }}
-          restore-keys: |
-            uv-amd64-noavx512-${{ matrix.version }}-
-            uv-amd64-noavx512-
-            uv-amd64-
 
       - name: Build wheels
         run: |
@@ -499,6 +491,8 @@ jobs:
         uses: astral-sh/setup-uv@1e862dfacbd1d6d858c55d9b792c756523627244 # v7.1.4
         with:
           version: ${{ env.UV_VERSION }}
+          enable-cache: true
+          cache-suffix: arm64-noavx512-${{ matrix.version }}
 
       - name: Cache ccache
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
@@ -509,16 +503,6 @@ jobs:
             ccache-arm64-noavx512-${{ matrix.version }}-
             ccache-arm64-noavx512-
             ccache-arm64-
-
-      - name: Cache uv
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
-        with:
-          path: ~/.cache/uv
-          key: uv-arm64-noavx512-${{ matrix.version }}-${{ hashFiles('build_config.json') }}
-          restore-keys: |
-            uv-arm64-noavx512-${{ matrix.version }}-
-            uv-arm64-noavx512-
-            uv-arm64-
 
       - name: Build wheels
         run: |
@@ -593,6 +577,8 @@ jobs:
         uses: astral-sh/setup-uv@1e862dfacbd1d6d858c55d9b792c756523627244 # v7.1.4
         with:
           version: ${{ env.UV_VERSION }}
+          enable-cache: true
+          cache-suffix: amd64-${{ matrix.variant }}-${{ matrix.version }}
 
       - name: Cache ccache
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
@@ -603,16 +589,6 @@ jobs:
             ccache-amd64-${{ matrix.variant }}-${{ matrix.version }}-
             ccache-amd64-${{ matrix.variant }}-
             ccache-amd64-
-
-      - name: Cache uv
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
-        with:
-          path: ~/.cache/uv
-          key: uv-amd64-${{ matrix.variant }}-${{ matrix.version }}-${{ hashFiles('build_config.json') }}
-          restore-keys: |
-            uv-amd64-${{ matrix.variant }}-${{ matrix.version }}-
-            uv-amd64-${{ matrix.variant }}-
-            uv-amd64-
 
       - name: Build wheels
         run: |
