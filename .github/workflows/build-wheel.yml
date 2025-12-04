@@ -332,6 +332,9 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Ensure scripts are executable
+        run: chmod +x *.sh
+
       - name: Install system dependencies
         run: |
           sudo apt-get update
@@ -397,6 +400,9 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Ensure scripts are executable
+        run: chmod +x *.sh
 
       - name: Install system dependencies
         run: |
@@ -465,6 +471,9 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Ensure scripts are executable
+        run: chmod +x *.sh
 
       - name: Install system dependencies
         run: |
@@ -535,6 +544,9 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Ensure scripts are executable
+        run: chmod +x *.sh
 
       - name: Install dependencies
         run: |
