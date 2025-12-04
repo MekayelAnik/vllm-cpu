@@ -622,20 +622,27 @@ RUN --mount=type=cache,target=/root/.cache/uv \
     PYPI_INDEX="https://pypi.org/simple" && \
     \
     # Try PyPI first unless explicitly requesting GitHub
+    # Also try .post1, .post2, etc. suffixes if base version fails
+    PYPI_SUCCESS=false && \
     if [ "${USE_GITHUB_RELEASE}" = "true" ]; then \
-        echo "Using GitHub release as requested..." && \
-        PYPI_SUCCESS=false; \
+        echo "Using GitHub release as requested..."; \
     else \
         echo "Attempting PyPI installation with CPU-only PyTorch..." && \
-        if uv pip install "${PACKAGE_NAME}==${VLLM_VERSION}" \
-            --index-url "${PYTORCH_INDEX}" \
-            --extra-index-url "${PYPI_INDEX}" \
-            --index-strategy unsafe-best-match 2>/dev/null; then \
-            echo "Successfully installed from PyPI with CPU-only PyTorch" && \
-            PYPI_SUCCESS=true; \
-        else \
-            echo "PyPI installation failed, falling back to GitHub release..." && \
-            PYPI_SUCCESS=false; \
+        # Try base version first, then .post1, .post2, .post3
+        for VERSION_SUFFIX in "" ".post1" ".post2" ".post3"; do \
+            INSTALL_VERSION="${VLLM_VERSION}${VERSION_SUFFIX}" && \
+            echo "Trying ${PACKAGE_NAME}==${INSTALL_VERSION}..." && \
+            if uv pip install "${PACKAGE_NAME}==${INSTALL_VERSION}" \
+                --index-url "${PYTORCH_INDEX}" \
+                --extra-index-url "${PYPI_INDEX}" \
+                --index-strategy unsafe-best-match 2>/dev/null; then \
+                echo "Successfully installed ${PACKAGE_NAME}==${INSTALL_VERSION} from PyPI" && \
+                PYPI_SUCCESS=true && \
+                break; \
+            fi; \
+        done; \
+        if [ "${PYPI_SUCCESS}" = "false" ]; then \
+            echo "PyPI installation failed for all version variants, falling back to GitHub release..."; \
         fi; \
     fi && \
     \
@@ -652,11 +659,23 @@ RUN --mount=type=cache,target=/root/.cache/uv \
         # Get detected Python version (stored earlier in /vllm/python_version.txt)
         DETECTED_PY=$(cat /vllm/python_version.txt) && \
         PYTHON_TAG="cp${DETECTED_PY//./}" && \
-        # Construct wheel filename
-        WHEEL_NAME="${PACKAGE_NAME//-/_}-${VLLM_VERSION}-${PYTHON_TAG}-${PYTHON_TAG}-manylinux_2_17_${WHEEL_ARCH}.manylinux2014_${WHEEL_ARCH}.whl" && \
-        WHEEL_URL="https://github.com/MekayelAnik/vllm-cpu/releases/download/v${VLLM_VERSION}/${WHEEL_NAME}" && \
-        echo "Downloading wheel: ${WHEEL_URL}" && \
-        wget -q "${WHEEL_URL}" -O "/tmp/${WHEEL_NAME}" && \
+        # Try base version first, then .post1, .post2, .post3
+        WHEEL_DOWNLOADED=false && \
+        for VERSION_SUFFIX in "" ".post1" ".post2" ".post3"; do \
+            INSTALL_VERSION="${VLLM_VERSION}${VERSION_SUFFIX}" && \
+            WHEEL_NAME="${PACKAGE_NAME//-/_}-${INSTALL_VERSION}-${PYTHON_TAG}-${PYTHON_TAG}-manylinux_2_17_${WHEEL_ARCH}.manylinux2014_${WHEEL_ARCH}.whl" && \
+            WHEEL_URL="https://github.com/MekayelAnik/vllm-cpu/releases/download/v${VLLM_VERSION}/${WHEEL_NAME}" && \
+            echo "Trying wheel: ${WHEEL_URL}" && \
+            if wget -q "${WHEEL_URL}" -O "/tmp/${WHEEL_NAME}" 2>/dev/null; then \
+                echo "Downloaded: ${WHEEL_NAME}" && \
+                WHEEL_DOWNLOADED=true && \
+                break; \
+            fi; \
+        done && \
+        if [ "${WHEEL_DOWNLOADED}" = "false" ]; then \
+            echo "ERROR: Could not find wheel for ${PACKAGE_NAME} ${VLLM_VERSION} on GitHub" && \
+            exit 1; \
+        fi && \
         # Install with CPU-only PyTorch index for dependencies
         uv pip install "/tmp/${WHEEL_NAME}" \
             --index-url "${PYTORCH_INDEX}" \
