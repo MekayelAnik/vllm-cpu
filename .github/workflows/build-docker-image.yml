@@ -343,6 +343,9 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Ensure scripts are executable
+        run: chmod +x *.sh 2>/dev/null || true
+
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
 
