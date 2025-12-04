@@ -385,7 +385,6 @@ jobs:
           # Create required directories
           mkdir -p dist
           mkdir -p ~/.cache/ccache
-          mkdir -p ~/.cache/uv
 
       - name: Free disk space
         run: |
@@ -470,7 +469,6 @@ jobs:
           # Create required directories
           mkdir -p dist
           mkdir -p ~/.cache/ccache
-          mkdir -p ~/.cache/uv
 
       - name: Free disk space
         run: |
@@ -556,7 +554,6 @@ jobs:
           # Create required directories
           mkdir -p dist
           mkdir -p ~/.cache/ccache
-          mkdir -p ~/.cache/uv
 
       - name: Free disk space
         run: |
@@ -623,9 +620,9 @@ jobs:
       needs.check-versions.outputs.has_new_versions == 'true' &&
       (github.event.inputs.dry_run || 'false') != 'true' &&
       (github.event.inputs.skip_pypi || 'false') != 'true' &&
-      (needs.build-noavx512-amd64.result == 'success' || needs.build-noavx512-amd64.result == 'skipped') &&
-      (needs.build-noavx512-arm64.result == 'success' || needs.build-noavx512-arm64.result == 'skipped') &&
-      (needs.build-avx512-variants.result == 'success' || needs.build-avx512-variants.result == 'skipped')
+      (needs.build-noavx512-amd64.result == 'success' ||
+       needs.build-noavx512-arm64.result == 'success' ||
+       needs.build-avx512-variants.result == 'success')
     runs-on: ubuntu-latest
     timeout-minutes: 30
     strategy:
@@ -699,7 +696,9 @@ jobs:
       needs.check-versions.outputs.has_new_versions == 'true' &&
       (github.event.inputs.dry_run || 'false') != 'true' &&
       (github.event.inputs.skip_github_release || 'false') != 'true' &&
-      (needs.publish.result == 'success' || needs.publish.result == 'skipped')
+      (needs.build-noavx512-amd64.result == 'success' ||
+       needs.build-noavx512-arm64.result == 'success' ||
+       needs.build-avx512-variants.result == 'success')
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
