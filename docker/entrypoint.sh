@@ -270,13 +270,13 @@ show_variant_recommendation() {
     if [ "${current}" = "${best}" ]; then
         echo "Status: Optimal - current variant is the best for your CPU"
     elif [ "${current}" = "unknown" ] || [ -z "${current}" ]; then
-        echo "Status: Unknown - recommend vllm-cpu-${best}"
+        echo "Status: Unknown - recommend mekayelanik/vllm-cpu:${best}-latest"
     elif [ "${cur_lvl}" -gt "${best_lvl}" ]; then
         echo "Status: INCOMPATIBLE - may crash due to missing CPU features"
-        echo "Fix: docker pull mekayelanik/vllm-cpu:${best}-latest"
+        echo "Fix: Deploy the container using mekayelanik/vllm-cpu:${best}-latest"
     else
         echo "Status: Suboptimal - better performance available"
-        echo "Upgrade: docker pull mekayelanik/vllm-cpu:${best}-latest"
+        echo "Upgrade: Deploy the container using mekayelanik/vllm-cpu:${best}-latest"
     fi
     echo "====================="
 }
