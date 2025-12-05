@@ -278,8 +278,12 @@ if [ -n "${VLLM_CPU_DIST}" ] && [ -d "${VLLM_CPU_DIST}" ]; then
         mkdir -p "${VLLM_DIST}"
         # Copy METADATA but change the Name to "vllm"
         if [ -f "${VLLM_CPU_DIST}/METADATA" ]; then
-            # Get the version from the original package
+            # Get the version from the original package and ensure it contains "cpu"
             VLLM_VERSION=$(grep "^Version:" "${VLLM_CPU_DIST}/METADATA" | cut -d: -f2 | tr -d ' ')
+            # Append +cpu if not already present (required for platform detection)
+            if [[ "${VLLM_VERSION}" != *"cpu"* ]]; then
+                VLLM_VERSION="${VLLM_VERSION}+cpu"
+            fi
             cat > "${VLLM_DIST}/METADATA" << EOF
 Metadata-Version: 2.1
 Name: vllm
