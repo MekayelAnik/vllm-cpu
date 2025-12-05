@@ -101,8 +101,11 @@ rm -vrf /vllm/venv/lib/*/site-packages/torch/lib/libcaffe2* || true
 rm -vrf /vllm/venv/lib/*/site-packages/torch/lib/*vulkan* || true
 rm -vrf /vllm/venv/lib/*/site-packages/torch/lib/*mps* || true
 rm -vrf /vllm/venv/lib/*/site-packages/torch/lib/*metal* || true
-rm -vrf /vllm/venv/lib/*/site-packages/torch/_inductor/codegen/cuda* || true
-rm -vrf /vllm/venv/lib/*/site-packages/torch/_inductor/codegen/triton* || true
+# NOTE: Do NOT remove torch/_inductor/codegen/{cuda,triton} - they're imported by
+# torch.compile via torch._inductor code paths even for CPU inference (vLLM 0.12.0+)
+# The import chain: torch.compile → torch._inductor.compile_fx → ... → codegen.triton
+# rm -vrf /vllm/venv/lib/*/site-packages/torch/_inductor/codegen/cuda* || true
+# rm -vrf /vllm/venv/lib/*/site-packages/torch/_inductor/codegen/triton* || true
 
 # tensorboard integration (not needed at runtime)
 # NOTE: Keep torch/profiler - it's imported at torch startup!
