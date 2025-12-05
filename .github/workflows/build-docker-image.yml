@@ -101,6 +101,20 @@ on:
         required: false
         type: boolean
         default: false
+      compression:
+        description: 'Image compression algorithm'
+        required: false
+        type: choice
+        options:
+          - 'zstd'
+          - 'gzip'
+          - 'uncompressed'
+        default: 'zstd'
+      compression_level:
+        description: 'Compression level (zstd: 1-22 default 22, gzip: 1-9 default 9)'
+        required: false
+        type: string
+        default: ''
 
 # Concurrency control:
 # - Scheduled runs: Only one at a time, queue others (don't cancel running)
@@ -442,6 +456,12 @@ jobs:
             echo "| Latest version | ${{ steps.compare.outputs.latest_version }} |"
             echo "| Needs latest update | ${{ steps.check_latest.outputs.needs_update }} |"
             echo "| Variants to build | \`${{ steps.variants.outputs.matrix }}\` |"
+            COMP="${{ github.event.inputs.compression || 'zstd' }}"
+            LEVEL="${{ github.event.inputs.compression_level }}"
+            if [[ -z "$LEVEL" ]]; then
+              [[ "$COMP" == "gzip" ]] && LEVEL=9 || LEVEL=22
+            fi
+            echo "| Compression | $COMP level $LEVEL |"
             echo "| Force rebuild Docker Hub | ${{ github.event.inputs.force_rebuild_dockerhub || 'false' }} |"
             echo "| Force rebuild GHCR | ${{ github.event.inputs.force_rebuild_ghcr || 'false' }} |"
             echo "| Dry run | ${{ github.event.inputs.dry_run || 'false' }} |"
@@ -562,6 +582,32 @@ jobs:
           echo "platforms=$FINAL_PLATFORMS" >> "$GITHUB_OUTPUT"
           echo "skip=false" >> "$GITHUB_OUTPUT"
 
+      - name: Determine compression settings
+        id: compression
+        run: |
+          COMPRESSION="${{ github.event.inputs.compression || 'zstd' }}"
+          INPUT_LEVEL="${{ github.event.inputs.compression_level }}"
+
+          # Validate and set compression output string
+          if [[ "$COMPRESSION" == "uncompressed" ]]; then
+            echo "output_opts=type=registry,compression=uncompressed" >> "$GITHUB_OUTPUT"
+            echo "Using uncompressed layers"
+          elif [[ "$COMPRESSION" == "gzip" ]]; then
+            # Default gzip level is 9, clamp to 1-9
+            LEVEL="${INPUT_LEVEL:-9}"
+            if [[ "$LEVEL" -gt 9 ]]; then LEVEL=9; fi
+            if [[ "$LEVEL" -lt 1 ]]; then LEVEL=1; fi
+            echo "output_opts=type=registry,compression=gzip,compression-level=$LEVEL" >> "$GITHUB_OUTPUT"
+            echo "Using gzip compression level $LEVEL"
+          else
+            # zstd (default) - default level is 22, clamp to 1-22
+            LEVEL="${INPUT_LEVEL:-22}"
+            if [[ "$LEVEL" -gt 22 ]]; then LEVEL=22; fi
+            if [[ "$LEVEL" -lt 1 ]]; then LEVEL=1; fi
+            echo "output_opts=type=registry,compression=zstd,compression-level=$LEVEL" >> "$GITHUB_OUTPUT"
+            echo "Using zstd compression level $LEVEL"
+          fi
+
       - name: Build and push
         if: steps.platforms.outputs.skip != 'true'
         uses: docker/build-push-action@263435318d21b8e681c14492fe198d362a7d2c83 # v6.18.0
@@ -577,6 +623,7 @@ jobs:
             VARIANT=${{ matrix.variant }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+          outputs: ${{ steps.compression.outputs.output_opts }}
           provenance: false
 
       - name: Verify image
