@@ -131,10 +131,11 @@ rm -vrf /vllm/venv/lib/*/site-packages/safetensors/src || true
 # =============================================================================
 echo "Step 7: Removing test directories and documentation..."
 # IMPORTANT: Skip torch entirely - torch/testing is a required module
+# IMPORTANT: Skip numpy entirely - numpy._core.tests._natype is imported at runtime by scipy
 find /vllm/venv/lib/*/site-packages -depth -type d \( \
     -name "tests" -o -name "test" -o -name "*_tests" -o \
     -name "docs" -o -name "doc" -o -name "examples" -o -name "benchmarks" \
-    \) ! -path "*/torch/*" -exec rm -vrf {} \; 2>/dev/null || true
+    \) ! -path "*/torch/*" ! -path "*/numpy/*" -exec rm -vrf {} \; 2>/dev/null || true
 
 # =============================================================================
 # 8. Remove unnecessary files by extension
