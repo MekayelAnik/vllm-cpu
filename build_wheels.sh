@@ -1411,14 +1411,36 @@ build_variant() {
 
     # Patch setup.py to disable version suffix (e.g., +cpu)
     # PyPI doesn't allow local version identifiers (PEP 440), so we must strip +cpu
-    # For Docker images, setup_vllm.sh creates a vllm package alias with +cpu for
-    # platform detection. For direct pip installs, users need manual workaround.
+    # Platform detection is handled by the CPU platform fix injected into vllm/__init__.py
+    # which creates a fake "vllm" dist-info with +cpu version at runtime.
     log_info "Patching setup.py to remove +cpu suffix (PyPI requirement)..."
     if [[ -f "$WORKSPACE/vllm/setup.py" ]]; then
         sed -i 's/^            version += f"{sep}cpu"/            pass  # Disabled: PyPI forbids local version identifiers (+cpu)/' "$WORKSPACE/vllm/setup.py"
         log_info "Version suffix disabled for PyPI compatibility"
     else
         log_warning "setup.py not found, skipping version patch"
+    fi
+
+    # Inject CPU platform fix into vllm/__init__.py
+    # This creates a fake "vllm" dist-info with +cpu version at runtime
+    # so that vLLM's platform detection (vllm_version_matches_substr("cpu")) works
+    log_info "Injecting CPU platform fix into vllm/__init__.py..."
+    local vllm_init="$WORKSPACE/vllm/vllm/__init__.py"
+    local cpu_fix_file="$SCRIPT_DIR/cpu_platform_fix.py"
+    if [[ -f "$vllm_init" ]] && [[ -f "$cpu_fix_file" ]]; then
+        # Backup original __init__.py
+        cp "$vllm_init" "${vllm_init}.backup"
+        # Prepend the CPU platform fix code
+        cat "$cpu_fix_file" "$vllm_init" > "${vllm_init}.new"
+        mv "${vllm_init}.new" "$vllm_init"
+        log_success "CPU platform fix injected into vllm/__init__.py"
+    else
+        if [[ ! -f "$vllm_init" ]]; then
+            log_warning "vllm/__init__.py not found, skipping CPU platform fix injection"
+        fi
+        if [[ ! -f "$cpu_fix_file" ]]; then
+            log_warning "cpu_platform_fix.py not found at $cpu_fix_file"
+        fi
     fi
 
     # Build wheel with timeout (30-60 minutes)
@@ -1499,6 +1521,13 @@ build_variant() {
         if [[ -f "README.md.backup" ]]; then
             if ! mv README.md.backup README.md; then
                 log_warning "Failed to restore original README.md"
+            fi
+        fi
+
+        # Restore original vllm/__init__.py
+        if [[ -f "vllm/__init__.py.backup" ]]; then
+            if ! mv vllm/__init__.py.backup vllm/__init__.py; then
+                log_warning "Failed to restore original vllm/__init__.py"
             fi
         fi
 

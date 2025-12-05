@@ -218,12 +218,30 @@ python -c "from vllm import LLM; llm = LLM(model='facebook/opt-125m', device='cp
    - Modifies `pyproject.toml` to change package name and description
    - Adds Python version classifiers (3.10, 3.11, 3.12, 3.13) to pyproject.toml
    - Copies variant-specific README file (e.g., `noavx512_README.md` for vllm-cpu)
+   - Patches `setup.py` to remove +cpu version suffix (PyPI forbids local version identifiers)
+   - Injects CPU platform fix into `vllm/__init__.py` (see below)
    - Sets CPU-specific environment variables (VLLM_CPU_DISABLE_AVX512, VLLM_CPU_AVX512VNNI, etc.)
    - Builds wheel: `python setup.py bdist_wheel`
    - Copies wheel to output directory (default: `./dist/`)
-   - Restores original pyproject.toml and README.md
+   - Restores original pyproject.toml, README.md, and vllm/__init__.py
 
 3. Cleanup: Removes build workspace (unless `--no-cleanup` specified)
+
+### CPU Platform Detection Fix
+
+vLLM's platform detection (`cpu_platform_plugin()`) checks if "cpu" is in the version string via `importlib.metadata.version("vllm")`. However:
+- PyPI doesn't allow local version identifiers like `+cpu` (PEP 440)
+- Our packages are named `vllm-cpu`, `vllm-cpu-avx512`, etc., not `vllm`
+
+**Solution:** The build injects code into `vllm/__init__.py` that:
+1. Runs on first import of vllm
+2. Creates a fake `vllm-0.0.0.dist-info` directory in site-packages
+3. Writes METADATA with `Version: X.X.X+cpu` (adding +cpu suffix)
+4. This allows `importlib.metadata.version("vllm")` to return a version containing "cpu"
+
+This fix is in `cpu_platform_fix.py` and is automatically injected during wheel build. It works for both:
+- Docker images (also has a similar fix in `docker/setup_vllm.sh`)
+- Direct pip installs
 
 ### Build Configuration (build_config.json)
 
