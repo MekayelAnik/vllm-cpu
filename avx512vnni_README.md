@@ -123,6 +123,7 @@ Find the full list of supported models [here](https://docs.vllm.ai/en/latest/mod
 - This package has a Container.io (Docker/Podman etc.) compatible image in [Docker Hub](https://hub.docker.com/r/mekayelanik/vllm-cpu)
 - [Apache Licence of main vLLM project](https://raw.githubusercontent.com/vllm-project/vllm/refs/heads/main/LICENSE)
 - [GPL License of this CPU specific vLLM package](https://raw.githubusercontent.com/MekayelAnik/vllm-cpu/refs/heads/main/LICENSE)
+- **For versions 0.8.5–0.12.0, use `.post2` releases** (e.g., `pip install vllm-cpu-avx512vnni==0.12.0.post2`) — includes critical CPU platform detection fix
 
 ## Platform Detection Fix (versions 0.8.5 - 0.12.0)
 
