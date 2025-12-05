@@ -281,9 +281,11 @@ if [ -n "${VLLM_CPU_DIST}" ] && [ -d "${VLLM_CPU_DIST}" ]; then
             # Get the version from the original package and ensure it contains "cpu"
             VLLM_VERSION=$(grep "^Version:" "${VLLM_CPU_DIST}/METADATA" | cut -d: -f2 | tr -d ' ')
             # Append +cpu if not already present (required for platform detection)
-            if [[ "${VLLM_VERSION}" != *"cpu"* ]]; then
-                VLLM_VERSION="${VLLM_VERSION}+cpu"
-            fi
+            # Use POSIX case statement instead of bash [[ ]] for /bin/sh compatibility
+            case "${VLLM_VERSION}" in
+                *cpu*) ;; # already contains "cpu", do nothing
+                *) VLLM_VERSION="${VLLM_VERSION}+cpu" ;;
+            esac
             cat > "${VLLM_DIST}/METADATA" << EOF
 Metadata-Version: 2.1
 Name: vllm

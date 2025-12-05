@@ -581,7 +581,7 @@ if [ $# -eq 0 ] || [ "${1#--}" != "$1" ]; then
         if [ -n "${VLLM_TOKENIZER}" ]; then
             # Explicit tokenizer provided
             CMD="${CMD} --tokenizer ${VLLM_TOKENIZER}"
-        elif [[ "${VLLM_MODEL}" == *.gguf ]] || [[ "${VLLM_MODEL}" == *-GGUF* ]] || [[ "${VLLM_MODEL}" == *-gguf* ]]; then
+        elif echo "${VLLM_MODEL}" | grep -qE '\.gguf$|-GGUF|-gguf'; then
             # GGUF model detected - try to use tokenizer from model directory
             MODEL_DIR=$(dirname "${VLLM_MODEL}")
             if [ -d "${MODEL_DIR}" ] && [ -f "${MODEL_DIR}/tokenizer.json" ] || [ -f "${MODEL_DIR}/tokenizer_config.json" ]; then
