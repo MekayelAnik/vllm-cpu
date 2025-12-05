@@ -116,8 +116,8 @@ rm -vrf /vllm/venv/lib/*/site-packages/torch/include || true
 rm -vrf /vllm/venv/lib/*/site-packages/torch/share || true
 
 # Torch distributed extras (not needed for single-node CPU)
+# NOTE: Do NOT remove torch/distributed/rpc - it's imported at torch startup
 rm -vrf /vllm/venv/lib/*/site-packages/torch/distributed/elastic/rendezvous/etcd* || true
-rm -vrf /vllm/venv/lib/*/site-packages/torch/distributed/rpc || true
 
 # =============================================================================
 # 6. Remove safetensors rust source files
