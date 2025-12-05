@@ -144,12 +144,13 @@ find /vllm/venv/lib/*/site-packages -depth -type d \( \
 # 8. Remove unnecessary files by extension
 # =============================================================================
 echo "Step 8: Removing unnecessary file types..."
+# NOTE: We intentionally DO NOT delete .txt files - too many packages need them at runtime
+# (e.g., setuptools/_vendor/jaraco/text/Lorem ipsum.txt)
 find /vllm/venv -type f \( \
     -name "*.md" -o -name "*.rst" -o -name "*.pyi" -o \
     -name "LICENSE*" -o -name "COPYING*" -o -name "CHANGELOG*" -o \
     -name "HISTORY*" -o -name "AUTHORS*" -o -name "CONTRIBUTORS*" -o \
-    -name "*.h" -o -name "*.hpp" -o -name "*.a" -o \
-    \( -name "*.txt" ! -name "requirements*.txt" ! -name "top_level.txt" ! -path "*/setuptools/*" \) \
+    -name "*.h" -o -name "*.hpp" -o -name "*.a" \
     \) -delete 2>/dev/null || true
 
 # =============================================================================
