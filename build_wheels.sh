@@ -1409,17 +1409,13 @@ build_variant() {
         log_warning "pyproject.toml not found, skipping metadata customization"
     fi
 
-    # Patch setup.py to disable version suffix (e.g., +cpu, +cuda)
-    # We want version to be exactly what user specified (e.g., 0.11.0)
-    # The package name differentiation is handled by pyproject.toml
-    log_info "Patching setup.py to use exact version without suffix..."
-    if [[ -f "$WORKSPACE/vllm/setup.py" ]]; then
-        # Replace version += line with pass, maintaining proper indentation (12 spaces)
-        sed -i 's/^            version += f"{sep}cpu"/            pass  # Disabled: use exact version (no +cpu suffix)/' "$WORKSPACE/vllm/setup.py"
-        log_info "Version suffix disabled - wheel will use exact version: ${SETUPTOOLS_SCM_PRETEND_VERSION}"
-    else
-        log_warning "setup.py not found, skipping version patch"
-    fi
+    # NOTE: We intentionally KEEP the +cpu version suffix from setup.py
+    # This is REQUIRED for vLLM's platform detection to work correctly.
+    # vLLM's cpu_platform_plugin() calls vllm_version_matches_substr("cpu")
+    # which checks if "cpu" is in the version string.
+    # Without +cpu suffix, platform detection fails with:
+    #   "RuntimeError: Failed to infer device type"
+    log_info "Keeping +cpu version suffix for platform detection compatibility"
 
     # Build wheel with timeout (30-60 minutes)
     log_info "Building wheel (this may take 30-60 minutes)..."
