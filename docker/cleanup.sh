@@ -149,7 +149,7 @@ find /vllm/venv -type f \( \
     -name "LICENSE*" -o -name "COPYING*" -o -name "CHANGELOG*" -o \
     -name "HISTORY*" -o -name "AUTHORS*" -o -name "CONTRIBUTORS*" -o \
     -name "*.h" -o -name "*.hpp" -o -name "*.a" -o \
-    \( -name "*.txt" ! -name "requirements*.txt" ! -name "top_level.txt" \) \
+    \( -name "*.txt" ! -name "requirements*.txt" ! -name "top_level.txt" ! -path "*/setuptools/*" \) \
     \) -delete 2>/dev/null || true
 
 # =============================================================================
