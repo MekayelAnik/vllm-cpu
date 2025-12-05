@@ -509,8 +509,12 @@ fi
 # Start vLLM server or execute custom command
 # =============================================================================
 echo ""
-if [ $# -eq 0 ]; then
-    # No arguments provided - start vLLM OpenAI-compatible server
+# Determine if we should start vLLM server or run a custom command
+# Start vLLM server if:
+#   - No arguments provided, OR
+#   - First argument starts with "--" (vLLM server flags like --model)
+if [ $# -eq 0 ] || [ "${1#--}" != "$1" ]; then
+    # Start vLLM OpenAI-compatible server
     # Build command array for proper argument handling
     CMD="python -m vllm.entrypoints.openai.api_server"
     CMD="${CMD} --host ${VLLM_SERVER_HOST:-0.0.0.0}"
@@ -597,6 +601,11 @@ if [ $# -eq 0 ]; then
     # Additional arguments passed via VLLM_EXTRA_ARGS
     if [ -n "${VLLM_EXTRA_ARGS}" ]; then
         CMD="${CMD} ${VLLM_EXTRA_ARGS}"
+    fi
+
+    # Append any command-line arguments (e.g., --model Qwen/Qwen3-0.6B)
+    if [ $# -gt 0 ]; then
+        CMD="${CMD} $*"
     fi
 
     echo "=== Server Configuration ==="
