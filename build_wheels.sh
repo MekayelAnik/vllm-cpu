@@ -1409,13 +1409,17 @@ build_variant() {
         log_warning "pyproject.toml not found, skipping metadata customization"
     fi
 
-    # NOTE: We intentionally KEEP the +cpu version suffix from setup.py
-    # This is REQUIRED for vLLM's platform detection to work correctly.
-    # vLLM's cpu_platform_plugin() calls vllm_version_matches_substr("cpu")
-    # which checks if "cpu" is in the version string.
-    # Without +cpu suffix, platform detection fails with:
-    #   "RuntimeError: Failed to infer device type"
-    log_info "Keeping +cpu version suffix for platform detection compatibility"
+    # Patch setup.py to disable version suffix (e.g., +cpu)
+    # PyPI doesn't allow local version identifiers (PEP 440), so we must strip +cpu
+    # For Docker images, setup_vllm.sh creates a vllm package alias with +cpu for
+    # platform detection. For direct pip installs, users need manual workaround.
+    log_info "Patching setup.py to remove +cpu suffix (PyPI requirement)..."
+    if [[ -f "$WORKSPACE/vllm/setup.py" ]]; then
+        sed -i 's/^            version += f"{sep}cpu"/            pass  # Disabled: PyPI forbids local version identifiers (+cpu)/' "$WORKSPACE/vllm/setup.py"
+        log_info "Version suffix disabled for PyPI compatibility"
+    else
+        log_warning "setup.py not found, skipping version patch"
+    fi
 
     # Build wheel with timeout (30-60 minutes)
     log_info "Building wheel (this may take 30-60 minutes)..."
