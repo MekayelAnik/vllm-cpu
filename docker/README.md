@@ -84,6 +84,7 @@ Docker Images for CPU-Only Inference
 - [Docker Compose Examples](#docker-compose-examples)
   - [Standard Bridge Network](#standard-bridge-network-recommended)
   - [MACVLAN Network](#macvlan-network-advanced)
+  - [High Performance Production](#high-performance-production-server)
 - [Environment Variables](#environment-variables)
 - [Volume Mounts](#volume-mounts)
 - [Runtime Configuration](#runtime-configuration)
@@ -466,6 +467,240 @@ sudo ip route add 192.168.1.100/32 dev vllm-shim
 
 # Now host can reach container
 curl http://192.168.1.100:8000/health
+```
+
+---
+
+### High Performance Production Server
+
+This configuration is optimized for **high-load, high-concurrency production environments** with maximum throughput. Designed for enterprise deployments on high-end Intel Xeon or AMD EPYC servers.
+
+**Target Hardware:**
+- 32+ CPU cores (64+ threads)
+- 128+ GB RAM
+- NVMe storage for model files
+- 10GbE+ networking
+
+**Use Cases:**
+- Production API serving with hundreds of concurrent users
+- High-throughput batch processing
+- Enterprise LLM deployments
+- Multi-tenant inference services
+
+```yaml
+# docker-compose-high-performance.yml - High Load Production Configuration
+# Optimized for maximum throughput and concurrency
+# Run: docker compose -f docker-compose-high-performance.yml up -d
+
+services:
+  vllm-cpu-prod:
+    image: mekayelanik/vllm-cpu:amxbf16-latest
+    container_name: vllm-cpu-prod
+    hostname: vllm-prod
+    domainname: local
+    restart: always
+
+    # Use host network for maximum network performance
+    network_mode: host
+
+    # Extended capabilities for performance optimization
+    cap_add:
+      - SYS_NICE
+      - IPC_LOCK
+    security_opt:
+      - seccomp=unconfined
+
+    # Large shared memory for concurrent request handling
+    shm_size: 16g
+
+    # CPU pinning for NUMA optimization (adjust to your topology)
+    # cpuset: "0-31"
+
+    # Persistent storage with performance optimizations
+    volumes:
+      # Use fast NVMe storage for models
+      - /mnt/nvme/vllm-data:/data
+      - /mnt/nvme/vllm-cache:/data/cache
+      - /mnt/nvme/models:/data/models:ro
+      # tmpfs for temporary files
+      - type: tmpfs
+        target: /tmp
+        tmpfs:
+          size: 4G
+          mode: 1777
+
+    # Production environment configuration
+    environment:
+      # Run as root for maximum performance (or set specific user)
+      # - PUID=0
+      # - PGID=0
+      - TZ=UTC
+
+      # Model configuration - use a powerful model
+      - VLLM_MODEL=Qwen/Qwen3-8B
+      - HF_HOME=/data/models
+      - HF_HUB_OFFLINE=1
+      # - HF_TOKEN=your_token
+
+      # Server configuration
+      - VLLM_SERVER_HOST=0.0.0.0
+      - VLLM_SERVER_PORT=8000
+      - VLLM_API_KEY=${VLLM_API_KEY:-}
+
+      # Extended timeouts for high load
+      - VLLM_HTTP_TIMEOUT_KEEP_ALIVE=30
+      - VLLM_ENGINE_ITERATION_TIMEOUT_S=300
+      - VLLM_RPC_TIMEOUT=30000
+
+      # Logging - reduce verbosity for performance
+      - VLLM_CONFIGURE_LOGGING=1
+      - VLLM_LOGGING_LEVEL=WARNING
+      - VLLM_LOG_STATS_INTERVAL=60
+
+      # Memory optimization - aggressive settings
+      - MALLOC_TRIM_THRESHOLD_=65536
+      - MALLOC_MMAP_THRESHOLD_=131072
+      - MALLOC_MMAP_MAX_=65536
+
+      # Threading - set to physical core count
+      - OMP_NUM_THREADS=32
+      - MKL_NUM_THREADS=32
+      - OMP_PROC_BIND=close
+      - OMP_PLACES=cores
+
+      # NUMA optimization
+      - GOMP_CPU_AFFINITY=0-31
+      - KMP_AFFINITY=granularity=fine,compact,1,0
+      - KMP_BLOCKTIME=1
+
+      # Use tcmalloc for better memory performance
+      - LD_PRELOAD=/usr/lib/x86_64-linux-gnu/libtcmalloc_minimal.so.4
+
+      # Disable usage stats for privacy/performance
+      - VLLM_NO_USAGE_STATS=1
+      - VLLM_DO_NOT_TRACK=1
+
+    # High-performance vLLM arguments
+    command:
+      # Context length
+      - "--max-model-len"
+      - "32768"
+      # Data type for Intel AMX
+      - "--dtype"
+      - "bfloat16"
+      # Scheduling for high concurrency
+      - "--max-num-seqs"
+      - "256"
+      - "--max-num-batched-tokens"
+      - "32768"
+      # Disable request logging for performance
+      - "--disable-log-requests"
+      # Enable chunked prefill for better latency
+      - "--enable-chunked-prefill"
+      - "--max-chunked-prefill-len"
+      - "8192"
+      # Speculative decoding (if supported by model)
+      # - "--speculative-model"
+      # - "path/to/draft/model"
+      # - "--num-speculative-tokens"
+      # - "5"
+
+    # Aggressive health check
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8000/health"]
+      interval: 15s
+      timeout: 5s
+      start_period: 300s
+      retries: 5
+
+    # No resource limits - use all available resources
+    # deploy:
+    #   resources:
+    #     limits:
+    #       memory: 120G
+    #     reservations:
+    #       memory: 64G
+
+    # Logging configuration
+    logging:
+      driver: json-file
+      options:
+        max-size: "100m"
+        max-file: "5"
+        compress: "true"
+
+    # Ulimits for high concurrency
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+      nofile:
+        soft: 1048576
+        hard: 1048576
+      nproc:
+        soft: 65535
+        hard: 65535
+```
+
+**Pre-Deployment Checklist:**
+
+```bash
+# 1. Verify CPU supports AMX (for amxbf16 variant)
+lscpu | grep -i amx
+
+# 2. Check available memory
+free -h
+
+# 3. Verify NUMA topology
+numactl --hardware
+
+# 4. Pre-download models (for offline mode)
+docker run --rm -v /mnt/nvme/models:/models \
+  python:3.12-slim pip install huggingface_hub && \
+  python -c "from huggingface_hub import snapshot_download; \
+  snapshot_download('Qwen/Qwen3-8B', local_dir='/models/Qwen--Qwen3-8B')"
+
+# 5. Set kernel parameters for high performance
+sudo sysctl -w vm.swappiness=1
+sudo sysctl -w vm.overcommit_memory=1
+sudo sysctl -w net.core.somaxconn=65535
+sudo sysctl -w net.ipv4.tcp_max_syn_backlog=65535
+```
+
+**Deploy High Performance:**
+```bash
+# Start production server
+docker compose -f docker-compose-high-performance.yml up -d
+
+# Monitor performance
+docker stats vllm-cpu-prod
+
+# Watch logs
+docker compose -f docker-compose-high-performance.yml logs -f
+
+# Benchmark with concurrent requests
+for i in {1..100}; do
+  curl -s http://localhost:8000/v1/chat/completions \
+    -H "Content-Type: application/json" \
+    -d '{"model":"Qwen/Qwen3-8B","messages":[{"role":"user","content":"Hello"}],"max_tokens":50}' &
+done
+wait
+```
+
+**Monitoring & Observability:**
+
+```yaml
+# Add Prometheus metrics endpoint
+command:
+  - "--enable-metrics"
+  - "--metrics-port"
+  - "9090"
+
+# Prometheus scrape config
+# scrape_configs:
+#   - job_name: 'vllm'
+#     static_configs:
+#       - targets: ['localhost:9090']
 ```
 
 ---
