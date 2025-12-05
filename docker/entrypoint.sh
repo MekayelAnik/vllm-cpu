@@ -44,6 +44,7 @@ DOCKER_IMAGE="${DOCKER_IMAGE_BASE}/${DOCKER_IMAGE_NAME}"
 #   VLLM_MAX_NUM_BATCHED_TOKENS - Max tokens per batch (higher=throughput, lower=latency)
 #   VLLM_TENSOR_PARALLEL_SIZE - Tensor parallelism for multi-socket (default: 1)
 #   VLLM_MODEL                - Model to load (passed as --model argument)
+#   VLLM_TOKENIZER            - Tokenizer to use (auto-detected for GGUF from model dir)
 #   VLLM_MAX_MODEL_LEN        - Maximum model context length (optional)
 #
 # Host-level optimizations for maximum performance (run on host, not container):
@@ -523,6 +524,23 @@ if [ $# -eq 0 ] || [ "${1#--}" != "$1" ]; then
     # Model - required for server to start
     if [ -n "${VLLM_MODEL}" ]; then
         CMD="${CMD} --model ${VLLM_MODEL}"
+
+        # Tokenizer handling for GGUF models
+        # GGUF files don't include tokenizer, so we need to specify one
+        if [ -n "${VLLM_TOKENIZER}" ]; then
+            # Explicit tokenizer provided
+            CMD="${CMD} --tokenizer ${VLLM_TOKENIZER}"
+        elif [[ "${VLLM_MODEL}" == *.gguf ]] || [[ "${VLLM_MODEL}" == *-GGUF* ]] || [[ "${VLLM_MODEL}" == *-gguf* ]]; then
+            # GGUF model detected - try to use tokenizer from model directory
+            MODEL_DIR=$(dirname "${VLLM_MODEL}")
+            if [ -d "${MODEL_DIR}" ] && [ -f "${MODEL_DIR}/tokenizer.json" ] || [ -f "${MODEL_DIR}/tokenizer_config.json" ]; then
+                echo "GGUF detected: Using tokenizer from model directory: ${MODEL_DIR}"
+                CMD="${CMD} --tokenizer ${MODEL_DIR}"
+            else
+                echo "WARNING: GGUF model detected but no tokenizer found in ${MODEL_DIR}"
+                echo "Please set VLLM_TOKENIZER to specify a tokenizer (e.g., Qwen/Qwen3-0.6B)"
+            fi
+        fi
     fi
 
     # Data type - bfloat16 recommended for CPU stability and AMX acceleration
@@ -612,6 +630,7 @@ if [ $# -eq 0 ] || [ "${1#--}" != "$1" ]; then
     echo "Host: ${VLLM_SERVER_HOST:-0.0.0.0}"
     echo "Port: ${VLLM_SERVER_PORT:-8000}"
     echo "Model: ${VLLM_MODEL:-<not set - pass via args>}"
+    echo "Tokenizer: ${VLLM_TOKENIZER:-<auto>}"
     echo "Dtype: ${VLLM_DTYPE:-bfloat16}"
     echo "Block size: ${VLLM_BLOCK_SIZE:-128}"
     echo "Tensor parallel: ${VLLM_TENSOR_PARALLEL_SIZE:-1}"
