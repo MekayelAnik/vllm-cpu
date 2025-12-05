@@ -2,12 +2,63 @@
 set -e
 
 # =============================================================================
-# vLLM CPU Optimized Entrypoint Script v2.0
+# vLLM CPU Optimized Entrypoint Script v2.1
+# =============================================================================
+# Signal handling for graceful shutdown (PID 1 best practices)
+# Reference: https://www.docker.com/blog/docker-best-practices-choosing-between-run-cmd-and-entrypoint/
+# =============================================================================
+
+# Track child process PID for signal forwarding
+CHILD_PID=""
+
+# Cleanup function for graceful shutdown
+cleanup() {
+    local signal="${1:-TERM}"
+    echo ""
+    echo "=== Received SIG${signal} - Initiating graceful shutdown ==="
+
+    if [ -n "${CHILD_PID}" ] && kill -0 "${CHILD_PID}" 2>/dev/null; then
+        echo "Forwarding SIG${signal} to vLLM server (PID: ${CHILD_PID})..."
+        kill -"${signal}" "${CHILD_PID}" 2>/dev/null || true
+
+        # Wait for child to exit gracefully (max 25 seconds to leave buffer before Docker's 30s SIGKILL)
+        local timeout=25
+        local count=0
+        while kill -0 "${CHILD_PID}" 2>/dev/null && [ ${count} -lt ${timeout} ]; do
+            sleep 1
+            count=$((count + 1))
+        done
+
+        if kill -0 "${CHILD_PID}" 2>/dev/null; then
+            echo "Child process did not exit gracefully, sending SIGKILL..."
+            kill -9 "${CHILD_PID}" 2>/dev/null || true
+        else
+            echo "vLLM server exited gracefully."
+        fi
+    fi
+
+    echo "=== Shutdown complete ==="
+    exit 0
+}
+
+# Register signal handlers for graceful shutdown
+# SIGTERM: Docker stop, Kubernetes pod termination
+# SIGINT: Ctrl+C, docker stop --signal=SIGINT
+# SIGQUIT: Core dump request (forward to child)
+trap 'cleanup TERM' TERM
+trap 'cleanup INT' INT
+trap 'cleanup QUIT' QUIT
+
+# Disable job control (not needed in Docker, reduces overhead)
+set +m
+
 # =============================================================================
 # Docker image reference (constructed to avoid GitHub Actions secret masking)
+# =============================================================================
 DOCKER_IMAGE_BASE="mekayelanik"
 DOCKER_IMAGE_NAME="vllm-cpu"
 DOCKER_IMAGE="${DOCKER_IMAGE_BASE}/${DOCKER_IMAGE_NAME}"
+
 # =============================================================================
 # Dynamically configures CPU performance settings based on available resources.
 #
@@ -644,11 +695,22 @@ if [ $# -eq 0 ] || [ "${1#--}" != "$1" ]; then
     echo "Command: ${CMD}"
     echo ""
 
-    # Use exec to replace shell process with vLLM server
+    # Start vLLM server in background and capture PID for signal handling
+    # This allows the trap handlers to forward signals gracefully
     # shellcheck disable=SC2086
-    exec ${CMD}
+    ${CMD} &
+    CHILD_PID=$!
+
+    # Wait for child process (this allows trap handlers to execute)
+    # The wait will be interrupted by signals, which trigger the trap handlers
+    wait "${CHILD_PID}"
+    exit_code=$?
+
+    # If we reach here without signal, child exited on its own
+    exit ${exit_code}
 else
     # Execute custom command (e.g., python script, bash, etc.)
+    # For custom commands, use exec directly (user is responsible for signal handling)
     echo "Executing custom command: $*"
     exec "$@"
 fi
