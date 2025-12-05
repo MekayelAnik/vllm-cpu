@@ -261,6 +261,39 @@ if [ "${FINAL_PY_VERSION}" != "${DETECTED_PY}" ]; then
 fi
 
 # =============================================================================
+# Create vllm package alias for platform detection
+# =============================================================================
+# vLLM's platform detection uses `importlib.metadata.version("vllm")` to check
+# if the package contains "cpu" in its version string. Since our packages are
+# named "vllm-cpu", "vllm-cpu-avx512", etc., we need to create a symlink so
+# that version("vllm") returns the correct version with "cpu" in it.
+echo ""
+echo "=== Creating vllm package alias ==="
+SITE_PACKAGES=$(python -c "import site; print(site.getsitepackages()[0])")
+VLLM_CPU_DIST=$(find "${SITE_PACKAGES}" -maxdepth 1 -type d -name "vllm_cpu*.dist-info" | head -1)
+if [ -n "${VLLM_CPU_DIST}" ] && [ -d "${VLLM_CPU_DIST}" ]; then
+    VLLM_DIST="${SITE_PACKAGES}/vllm-0.0.0.dist-info"
+    if [ ! -d "${VLLM_DIST}" ]; then
+        # Create a minimal dist-info for "vllm" that returns the cpu version
+        mkdir -p "${VLLM_DIST}"
+        # Copy METADATA but change the Name to "vllm"
+        if [ -f "${VLLM_CPU_DIST}/METADATA" ]; then
+            # Get the version from the original package
+            VLLM_VERSION=$(grep "^Version:" "${VLLM_CPU_DIST}/METADATA" | cut -d: -f2 | tr -d ' ')
+            cat > "${VLLM_DIST}/METADATA" << EOF
+Metadata-Version: 2.1
+Name: vllm
+Version: ${VLLM_VERSION}
+Summary: vLLM CPU package alias for platform detection
+EOF
+            echo "Created vllm package alias with version: ${VLLM_VERSION}"
+        fi
+    fi
+else
+    echo "WARNING: Could not find vllm-cpu dist-info directory"
+fi
+
+# =============================================================================
 # Verify installation
 # =============================================================================
 echo ""
