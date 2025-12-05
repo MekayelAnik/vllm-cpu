@@ -117,12 +117,29 @@ vLLM seamlessly supports most popular open-source models on HuggingFace, includi
 
 Find the full list of supported models [here](https://docs.vllm.ai/en/latest/models/supported_models.html).
 
-## Importnt Notes
+## Important Notes
 
 - Install this package on Linux envirenment only. For Windows you will have to use WSL2 or later
 - This package has a Container.io (Docker/Podman etc.) compatible image in [Docker Hub](https://hub.docker.com/r/mekayelanik/vllm-cpu)
 - [Apache Licence of main vLLM project](https://raw.githubusercontent.com/vllm-project/vllm/refs/heads/main/LICENSE)
 - [GPL License of this CPU specific vLLM package](https://raw.githubusercontent.com/MekayelAnik/vllm-cpu/refs/heads/main/LICENSE)
+
+## Platform Detection Fix (versions 0.8.5 - 0.12.0)
+
+If you encounter `RuntimeError: Failed to infer device type` or see `UnspecifiedPlatform` warnings with versions 0.8.5 to 0.12.0, run this one-time fix after installation:
+
+```python
+import os, sys, importlib.metadata as m
+v = next((d.metadata['Version'] for d in m.distributions() if d.metadata['Name'].startswith('vllm-cpu')), None)
+if v:
+    p = next((p for p in sys.path if 'site-packages' in p and os.path.isdir(p)), None)
+    if p:
+        d = os.path.join(p, 'vllm-0.0.0.dist-info'); os.makedirs(d, exist_ok=True)
+        open(os.path.join(d, 'METADATA'), 'w').write(f'Metadata-Version: 2.1\nName: vllm\nVersion: {v}+cpu\n')
+        print(f'Fixed: vllm version set to {v}+cpu')
+```
+
+This creates a package alias so vLLM detects the CPU platform correctly. Only needed once per environment. Versions after 0.12.0 include this fix automatically.
 
 ## Getting Started
 
