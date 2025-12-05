@@ -93,8 +93,8 @@ echo "Step 5: Removing unused PyTorch components..."
 rm -vrf /vllm/venv/lib/*/site-packages/caffe2* || true
 rm -vrf /vllm/venv/lib/*/site-packages/torch/lib/libcaffe2* || true
 
-# functorch (legacy compatibility shim, merged into torch.func in PyTorch 2.0)
-rm -vrf /vllm/venv/lib/*/site-packages/functorch* || true
+# NOTE: Do NOT remove functorch - torch._dynamo.backends.debugging imports it
+# (functorch.compile.min_cut_rematerialization_partition)
 
 # torch native libraries not needed for CPU (vulkan, mps, metal)
 # NOTE: Keep ALL torch/backends/* Python modules intact!
