@@ -62,62 +62,25 @@ Docker Images for CPU-Only Inference
 
 ---
 
-<div align="center">
-
 ## Buy Me a Coffee
 
 **Your support encourages me to keep creating/supporting my open-source projects.** If you found value in this project, you can buy me a coffee to keep me up all the sleepless nights.
 
+<p align="center">
 <a href="https://07mekayel07.gumroad.com/coffee" target="_blank">
 <img src="https://cdn.buymeacoffee.com/buttons/v2/default-yellow.png" alt="Buy Me A Coffee" width="217" height="60">
 </a>
-
-</div>
-
----
-
-## Table of Contents
-
-- [Overview](#overview)
-- [Image Variants](#image-variants)
-- [Quick Start](#quick-start)
-- [Docker Compose Examples](#docker-compose-examples)
-  - [Standard Bridge Network](#standard-bridge-network-recommended)
-  - [MACVLAN Network](#macvlan-network-advanced)
-  - [High Performance Production](#high-performance-production-server)
-- [Environment Variables](#environment-variables)
-- [Volume Mounts](#volume-mounts)
-- [Runtime Configuration](#runtime-configuration)
-- [Performance Tuning](#performance-tuning)
-- [Troubleshooting](#troubleshooting)
-- [Updating Images](#updating-images)
-- [Support & License](#support--license)
+</p>
 
 ---
 
 ## Overview
 
-This repository provides pre-built Docker images for running vLLM on CPU-only systems. These images are optimized for different CPU instruction sets, allowing you to choose the best variant for your hardware.
+Pre-built Docker images for running vLLM on CPU-only systems, optimized for different CPU instruction sets.
 
-### Key Features
+**Features:** OpenAI-Compatible API, CPU Optimizations (AVX512, VNNI, BF16, AMX), Multi-Architecture, Health Checks, PUID/PGID.
 
-- **OpenAI-Compatible API** - Drop-in replacement for OpenAI API endpoints
-- **Multiple CPU Optimizations** - AVX512, VNNI, BF16, and AMX variants available
-- **Multi-Architecture Support** - x86_64 and ARM64 (noavx512 variant only)
-- **Minimal Runtime** - Based on Debian slim for reduced image size
-- **Health Checks** - Built-in health endpoint for container orchestration
-- **Flexible Configuration** - Extensive environment variable support
-- **User Mapping** - PUID/PGID support for proper file permissions
-
-### System Requirements
-
-| Resource | Minimum | Recommended |
-|:---------|:--------|:------------|
-| **RAM** | 4 GB | 16+ GB |
-| **CPU Cores** | 4 | 8+ |
-| **Storage** | 10 GB | 50+ GB (for models) |
-| **Docker** | 20.10+ | 24.0+ |
-| **Shared Memory** | 2 GB | 4+ GB |
+**Requirements:** 4+ GB RAM (16+ recommended), 4+ CPU cores, Docker 20.10+, 2+ GB shm.
 
 ---
 
@@ -254,6 +217,11 @@ services:
       # Memory optimization
       - MALLOC_TRIM_THRESHOLD_=100000
 
+      # CPU-specific optimization (adjust based on your system)
+      # KV cache size in GB - increase for more concurrent requests
+      # Default is 4GB. Formula: (RAM - Model Size - 8GB) / 2
+      - VLLM_CPU_KVCACHE_SPACE=8
+
     # vLLM arguments (passed to entrypoint)
     command:
       - "--max-model-len"
@@ -261,13 +229,7 @@ services:
       - "--dtype"
       - "auto"
 
-    # Health check
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
-      interval: 30s
-      timeout: 10s
-      start_period: 120s
-      retries: 3
+    # Health check is built into the Docker image (30s interval, 120s start period)
 
     # Resource limits (optional)
     deploy:
@@ -376,6 +338,10 @@ services:
       - OMP_NUM_THREADS=8
       - MKL_NUM_THREADS=8
 
+      # CPU-specific optimization
+      # KV cache size in GB - adjust based on your RAM
+      - VLLM_CPU_KVCACHE_SPACE=12
+
     # vLLM arguments
     command:
       - "--max-model-len"
@@ -385,13 +351,7 @@ services:
       - "--cpu-offload-gb"
       - "0"
 
-    # Health check
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
-      interval: 30s
-      timeout: 10s
-      start_period: 180s
-      retries: 3
+    # Health check is built into the Docker image (30s interval, 120s start period)
 
     # Resource limits
     deploy:
@@ -425,49 +385,17 @@ volumes:
     driver: local
 ```
 
-**Find Your Network Interface:**
-```bash
-# List network interfaces
-ip link show
-
-# Or use
-ip addr show
-
-# Common interface names:
-# - eth0, eth1 (traditional)
-# - ens18, ens192 (predictable naming)
-# - enp0s3, enp0s8 (PCI-based naming)
-```
-
 **Deploy with MACVLAN:**
 ```bash
+# Find your network interface: ip link show
 # Create and start
 docker compose -f docker-compose-macvlan.yml up -d
 
 # Access via dedicated IP
 curl http://192.168.1.100:8000/v1/models
-
-# View logs
-docker compose -f docker-compose-macvlan.yml logs -f
-
-# Stop
-docker compose -f docker-compose-macvlan.yml down
 ```
 
-**Host-to-Container Communication:**
-
-With MACVLAN, the host cannot directly communicate with the container. To enable this, create a macvlan interface on the host:
-
-```bash
-# Create macvlan interface on host
-sudo ip link add vllm-shim link eth0 type macvlan mode bridge
-sudo ip addr add 192.168.1.200/32 dev vllm-shim
-sudo ip link set vllm-shim up
-sudo ip route add 192.168.1.100/32 dev vllm-shim
-
-# Now host can reach container
-curl http://192.168.1.100:8000/health
-```
+**Note:** With MACVLAN, the host cannot directly reach the container. Create a macvlan shim interface on the host if needed.
 
 ---
 
@@ -477,9 +405,13 @@ This configuration is optimized for **high-load, high-concurrency production env
 
 **Target Hardware:**
 - 32+ CPU cores (64+ threads)
-- 128+ GB RAM
+- 128+ GB RAM (more RAM = larger KV cache = more concurrent requests)
 - NVMe storage for model files
 - 10GbE+ networking
+
+**Key Optimization: `VLLM_CPU_KVCACHE_SPACE`**
+
+The most important setting for CPU inference is KV cache size. The default 4GB is too small for production. This config sets it to 40GB for high concurrency.
 
 **Use Cases:**
 - Production API serving with hundreds of concurrent users
@@ -547,6 +479,25 @@ services:
       - VLLM_SERVER_PORT=8000
       - VLLM_API_KEY=${VLLM_API_KEY:-}
 
+      # ============================================================
+      # CPU-SPECIFIC VLLM OPTIMIZATION (CRITICAL FOR PERFORMANCE)
+      # ============================================================
+      # KV Cache size in GB - CRITICAL: Default is only 4GB!
+      # Set this based on your available RAM and model size
+      # Formula: (Total RAM - Model Size - 8GB headroom) / 2
+      # Example: 128GB RAM, 16GB model = (128-16-8)/2 = 52GB
+      - VLLM_CPU_KVCACHE_SPACE=40
+
+      # OpenMP thread binding for CPU affinity
+      # "auto" = automatic binding, or specify cores like "0-31"
+      # Improves cache locality and reduces context switching
+      - VLLM_CPU_OMP_THREADS_BIND=0-31
+
+      # Reserve CPU cores for framework overhead (scheduler, HTTP server)
+      # These cores won't be used for inference, reducing contention
+      - VLLM_CPU_NUM_OF_RESERVED_CPU=2
+      # ============================================================
+
       # Extended timeouts for high load
       - VLLM_HTTP_TIMEOUT_KEEP_ALIVE=30
       - VLLM_ENGINE_ITERATION_TIMEOUT_S=300
@@ -562,16 +513,15 @@ services:
       - MALLOC_MMAP_THRESHOLD_=131072
       - MALLOC_MMAP_MAX_=65536
 
-      # Threading - set to physical core count
-      - OMP_NUM_THREADS=32
-      - MKL_NUM_THREADS=32
+      # Threading - set to (physical cores - reserved cores)
+      # If you have 32 cores and reserve 2, set this to 30
+      - OMP_NUM_THREADS=30
+      - MKL_NUM_THREADS=30
       - OMP_PROC_BIND=close
       - OMP_PLACES=cores
 
-      # NUMA optimization
-      - GOMP_CPU_AFFINITY=0-31
-      - KMP_AFFINITY=granularity=fine,compact,1,0
-      - KMP_BLOCKTIME=1
+      # NUMA optimization (GNU OpenMP)
+      - GOMP_CPU_AFFINITY=0-29
 
       # Use tcmalloc for better memory performance
       - LD_PRELOAD=/usr/lib/x86_64-linux-gnu/libtcmalloc_minimal.so.4
@@ -605,13 +555,7 @@ services:
       # - "--num-speculative-tokens"
       # - "5"
 
-    # Aggressive health check
-    healthcheck:
-      test: ["CMD", "curl", "-sf", "http://localhost:8000/health"]
-      interval: 15s
-      timeout: 5s
-      start_period: 300s
-      retries: 5
+    # Health check is built into the Docker image (30s interval, 120s start period)
 
     # No resource limits - use all available resources
     # deploy:
@@ -642,65 +586,12 @@ services:
         hard: 65535
 ```
 
-**Pre-Deployment Checklist:**
-
+**Deploy:**
 ```bash
-# 1. Verify CPU supports AMX (for amxbf16 variant)
-lscpu | grep -i amx
-
-# 2. Check available memory
-free -h
-
-# 3. Verify NUMA topology
-numactl --hardware
-
-# 4. Pre-download models (for offline mode)
-docker run --rm -v /mnt/nvme/models:/models \
-  python:3.12-slim pip install huggingface_hub && \
-  python -c "from huggingface_hub import snapshot_download; \
-  snapshot_download('Qwen/Qwen3-8B', local_dir='/models/Qwen--Qwen3-8B')"
-
-# 5. Set kernel parameters for high performance
-sudo sysctl -w vm.swappiness=1
-sudo sysctl -w vm.overcommit_memory=1
-sudo sysctl -w net.core.somaxconn=65535
-sudo sysctl -w net.ipv4.tcp_max_syn_backlog=65535
-```
-
-**Deploy High Performance:**
-```bash
-# Start production server
+# Verify CPU supports AMX: lscpu | grep -i amx
+# Set kernel params: sudo sysctl -w vm.swappiness=1
 docker compose -f docker-compose-high-performance.yml up -d
-
-# Monitor performance
 docker stats vllm-cpu-prod
-
-# Watch logs
-docker compose -f docker-compose-high-performance.yml logs -f
-
-# Benchmark with concurrent requests
-for i in {1..100}; do
-  curl -s http://localhost:8000/v1/chat/completions \
-    -H "Content-Type: application/json" \
-    -d '{"model":"Qwen/Qwen3-8B","messages":[{"role":"user","content":"Hello"}],"max_tokens":50}' &
-done
-wait
-```
-
-**Monitoring & Observability:**
-
-```yaml
-# Add Prometheus metrics endpoint
-command:
-  - "--enable-metrics"
-  - "--metrics-port"
-  - "9090"
-
-# Prometheus scrape config
-# scrape_configs:
-#   - job_name: 'vllm'
-#     static_configs:
-#       - targets: ['localhost:9090']
 ```
 
 ---
@@ -750,250 +641,98 @@ command:
 | `OMP_NUM_THREADS` | (auto) | OpenMP thread count |
 | `MKL_NUM_THREADS` | (auto) | MKL thread count |
 
+### CPU-Specific Optimization (Critical)
+
+These environment variables are **specific to vLLM CPU inference** and can significantly impact performance. See [vLLM CPU FAQ](https://docs.vllm.ai/en/stable/getting_started/installation/cpu/#faq) for details.
+
+| Variable | Default | Description |
+|:---------|:--------|:------------|
+| `VLLM_CPU_KVCACHE_SPACE` | `4` | **KV cache size in GB**. Default 4GB is often too small! Set based on: `(RAM - Model Size - 8GB) / 2` |
+| `VLLM_CPU_OMP_THREADS_BIND` | (unset) | OpenMP thread binding. Use `auto` or specific cores like `0-31` for better cache locality |
+| `VLLM_CPU_NUM_OF_RESERVED_CPU` | `0` | Reserve CPU cores for framework overhead (HTTP server, scheduler). Recommended: `2` for high-load servers |
+
+**KV Cache Sizing Guide:**
+
+| System RAM | Model Size | Recommended `VLLM_CPU_KVCACHE_SPACE` |
+|:-----------|:-----------|:-------------------------------------|
+| 32 GB | 7B (~14GB) | `5` |
+| 64 GB | 7B (~14GB) | `20` |
+| 64 GB | 14B (~28GB) | `14` |
+| 128 GB | 7B (~14GB) | `50` |
+| 128 GB | 70B (~140GB) | Not enough RAM |
+| 256 GB | 70B (~140GB) | `50` |
+
 ---
 
 ## Volume Mounts
 
-| Container Path | Purpose | Recommended |
-|:---------------|:--------|:------------|
-| `/data` | Base data directory | Named volume |
-| `/data/models` | HuggingFace cache | Named volume or host mount |
-| `/data/cache/vllm` | vLLM cache | Named volume |
-
-### Example with Host Mounts
-
-```yaml
-volumes:
-  # Use existing HuggingFace cache
-  - ${HOME}/.cache/huggingface:/data/models
-  # Persist vLLM cache
-  - ./vllm-cache:/data/cache/vllm
-  # Mount local models (read-only)
-  - /mnt/models:/models:ro
-```
+| Container Path | Purpose |
+|:---------------|:--------|
+| `/data` | Base data directory |
+| `/data/models` | HuggingFace cache |
+| `/data/cache/vllm` | vLLM cache |
 
 ---
 
-## Runtime Configuration
+## Common Arguments
 
-Pass additional vLLM arguments via the `command` section:
-
-```yaml
-command:
-  - "--max-model-len"
-  - "8192"
-  - "--dtype"
-  - "auto"
-  - "--enforce-eager"
-  - "--disable-log-requests"
-```
-
-### Common Arguments
-
-| Argument | Description | Example |
-|:---------|:------------|:--------|
-| `--max-model-len` | Maximum context length | `8192` |
-| `--dtype` | Data type (auto, float16, bfloat16, float32) | `auto` |
-| `--enforce-eager` | Disable CUDA graphs (use for debugging) | (flag) |
-| `--disable-log-requests` | Don't log individual requests | (flag) |
-| `--cpu-offload-gb` | CPU memory for offloading (GB) | `0` |
-| `--trust-remote-code` | Allow remote code execution | (flag) |
-
----
-
-## Performance Tuning
-
-### Memory Optimization
-
-```yaml
-environment:
-  # Aggressive memory trimming
-  - MALLOC_TRIM_THRESHOLD_=100000
-
-  # Limit context length to reduce memory
-command:
-  - "--max-model-len"
-  - "4096"
-```
-
-### CPU Threading
-
-```yaml
-environment:
-  # Match to your physical core count
-  - OMP_NUM_THREADS=8
-  - MKL_NUM_THREADS=8
-```
-
-### Shared Memory
-
-```yaml
-# Increase for larger models
-shm_size: 8g
-```
-
-### Docker Resource Limits
-
-```yaml
-deploy:
-  resources:
-    limits:
-      memory: 32G
-      cpus: '8'
-    reservations:
-      memory: 8G
-      cpus: '4'
-```
+| Argument | Description |
+|:---------|:------------|
+| `--max-model-len` | Maximum context length |
+| `--dtype` | Data type (auto, float16, bfloat16, float32) |
+| `--disable-log-requests` | Don't log individual requests |
+| `--trust-remote-code` | Allow remote code execution |
 
 ---
 
 ## Troubleshooting
 
-### Container Won't Start
-
-```bash
-# Check logs
-docker logs vllm-cpu
-
-# Verify image pulled correctly
-docker images | grep vllm-cpu
-
-# Test with minimal config
-docker run --rm mekayelanik/vllm-cpu:noavx512-latest --help
-```
-
-### Out of Memory Errors
-
-1. Reduce `--max-model-len` to lower context length
-2. Use a smaller model
-3. Increase Docker memory limits
-4. Increase `shm_size`
-
-```yaml
-command:
-  - "--max-model-len"
-  - "2048"  # Reduce from default
-```
-
-### Model Download Fails
-
-```bash
-# Check HuggingFace token for gated models
-docker exec vllm-cpu env | grep HF_TOKEN
-
-# Verify network connectivity
-docker exec vllm-cpu curl -I https://huggingface.co
-
-# Use offline mode with pre-downloaded models
-environment:
-  - HF_HUB_OFFLINE=1
-```
-
-### Slow Inference
-
-1. Verify you're using the correct CPU variant for your hardware
-2. Check CPU frequency scaling
-3. Ensure adequate cooling (thermal throttling)
-
-```bash
-# Check CPU frequency
-cat /proc/cpuinfo | grep MHz
-
-# Monitor container resources
-docker stats vllm-cpu
-```
-
-### Health Check Failing
-
-Increase `start_period` for larger models:
-
-```yaml
-healthcheck:
-  start_period: 300s  # 5 minutes for large models
-```
+| Issue | Solution |
+|:------|:---------|
+| Container won't start | Check logs: `docker logs vllm-cpu` |
+| Out of memory | Reduce `--max-model-len` or increase `shm_size` |
+| Model download fails | Set `HF_TOKEN` for gated models |
+| Slow inference | Verify correct CPU variant for your hardware |
 
 ---
 
 ## Updating Images
 
-### Docker Compose
-
 ```bash
-# Pull latest image
-docker compose pull
+# Docker Compose
+docker compose pull && docker compose up -d
 
-# Recreate container
-docker compose up -d
+# Docker CLI
+docker pull mekayelanik/vllm-cpu:noavx512-latest
+docker stop vllm-cpu && docker rm vllm-cpu
+# Recreate with new image
 
 # Clean old images
 docker image prune -f
-```
-
-### Docker CLI
-
-```bash
-# Pull new image
-docker pull mekayelanik/vllm-cpu:noavx512-latest
-
-# Stop and remove old container
-docker stop vllm-cpu && docker rm vllm-cpu
-
-# Start with new image
-docker run -d --name vllm-cpu ... mekayelanik/vllm-cpu:noavx512-latest
-
-# Clean up
-docker image prune -f
-```
-
-### Automated Updates with Watchtower
-
-```bash
-# One-time update
-docker run --rm \
-  -v /var/run/docker.sock:/var/run/docker.sock \
-  containrrr/watchtower \
-  --run-once \
-  vllm-cpu
 ```
 
 ---
 
 ## Support & License
 
-### Getting Help
-
-- **Docker Image Issues:** [GitHub Issues](https://github.com/MekayelAnik/vllm-cpu/issues)
-- **vLLM Documentation:** [docs.vllm.ai](https://docs.vllm.ai/en/latest/)
-- **Supported Models:** [Model List](https://docs.vllm.ai/en/latest/models/supported_models.html)
-
-### License
-
-- **Docker Images:** GPL-3.0 License
-- **vLLM Project:** Apache 2.0 License
-
-### Image Repositories
-
-- **Docker Hub:** [mekayelanik/vllm-cpu](https://hub.docker.com/r/mekayelanik/vllm-cpu)
-- **GitHub Container Registry:** [ghcr.io/mekayelanik/vllm-cpu](https://ghcr.io/mekayelanik/vllm-cpu)
+- **Issues:** [GitHub](https://github.com/MekayelAnik/vllm-cpu/issues) | **Docs:** [docs.vllm.ai](https://docs.vllm.ai/en/latest/)
+- **License:** Docker Images (GPL-3.0), vLLM Project (Apache 2.0)
+- **Registries:** [Docker Hub](https://hub.docker.com/r/mekayelanik/vllm-cpu) | [GHCR](https://ghcr.io/mekayelanik/vllm-cpu)
 
 ---
-
-<div align="center">
 
 ## Buy Me a Coffee
 
 **Your support encourages me to keep creating/supporting my open-source projects.** If you found value in this project, you can buy me a coffee to keep me up all the sleepless nights.
 
+<p align="center">
 <a href="https://07mekayel07.gumroad.com/coffee" target="_blank">
 <img src="https://cdn.buymeacoffee.com/buttons/v2/default-yellow.png" alt="Buy Me A Coffee" width="217" height="60">
 </a>
-
-</div>
+</p>
 
 ---
 
-<div align="center">
-
-[Back to Top](#table-of-contents)
-
-</div>
+<p align="center">
+<a href="#table-of-contents">Back to Top</a>
+</p>

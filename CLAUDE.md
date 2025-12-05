@@ -331,6 +331,11 @@ gh workflow run build-and-publish.yml \
   -f publish_to_pypi=false \
   -f publish_to_test_pypi=true \
   -f variants="vllm-cpu-avx512bf16,vllm-cpu-amxbf16"
+
+# Build with version postfix (e.g., .post1, .dev2, .rc1)
+gh workflow run build-wheel.yml \
+  -f vllm_versions=0.12.0 \
+  -f version_postfix=.post1
 ```
 
 ### CPU Detector Tool (cpu_detect/)
@@ -359,6 +364,42 @@ This ensures PyTorch is always installed from the CPU-only index (no CUDA bloat)
 All 5 packages use the **same version number** as upstream vLLM:
 - Upstream vLLM release: `0.11.2`
 - All published packages: `0.11.2`
+
+### Version Postfix Support (PEP 440)
+
+Both the wheel builder and Docker image builder workflows support PyPI-compatible version postfixes for publishing patch releases, development versions, or release candidates:
+
+| Postfix Pattern | Example | Use Case |
+|-----------------|---------|----------|
+| `.postN` | `0.12.0.post1` | Post-release fixes (most common) |
+| `.devN` | `0.12.0.dev1` | Development/nightly builds |
+| `.aN` | `0.12.0a1` | Alpha releases |
+| `.bN` | `0.12.0b1` | Beta releases |
+| `.rcN` | `0.12.0rc1` | Release candidates |
+
+**Wheel Builder (`build-wheel.yml`):**
+```bash
+# Build wheels with version postfix
+gh workflow run build-wheel.yml \
+  -f vllm_versions=0.12.0 \
+  -f version_postfix=.post1
+# Produces: vllm_cpu-0.12.0.post1-cp312-*.whl
+```
+
+**Docker Image Builder (`build-docker-image.yml`):**
+```bash
+# Build Docker images using highest available postfix from PyPI
+gh workflow run build-docker-image.yml \
+  -f vllm_versions=0.12.0 \
+  -f use_highest_postfix=true
+# Auto-detects: If .post1, .post2, .post3 exist on PyPI, uses .post3
+```
+
+The Docker workflow automatically:
+1. Queries PyPI for all versions matching the base version
+2. Finds the highest postfix version (e.g., `.post3` if `.post1`, `.post2`, `.post3` exist)
+3. Sets `USE_GITHUB_RELEASE=true` (postfix wheels come from GitHub releases)
+4. Builds Docker images with the full version (e.g., `0.12.0.post3`)
 
 ### Release Workflow
 
@@ -609,15 +650,27 @@ docker build \
 
 ### CI/CD: GitHub Actions Workflow
 
-The `docker-publish.yml` workflow builds and publishes Docker images:
+The `build-docker-image.yml` workflow builds and publishes Docker images:
 
 ```bash
 # Trigger manually via GitHub Actions UI or CLI
-gh workflow run docker-publish.yml \
-  -f vllm_version=0.11.2 \
-  -f variants=all \
-  -f platforms=all \
-  -f push=true
+gh workflow run build-docker-image.yml \
+  -f vllm_versions=0.11.2 \
+  -f platforms=all
+
+# Build using highest postfix version from PyPI (e.g., .post3)
+gh workflow run build-docker-image.yml \
+  -f vllm_versions=0.12.0 \
+  -f use_highest_postfix=true
+
+# Build specific variants only
+gh workflow run build-docker-image.yml \
+  -f vllm_versions=0.12.0 \
+  -f build_noavx512=true \
+  -f build_avx512=false \
+  -f build_avx512vnni=false \
+  -f build_avx512bf16=true \
+  -f build_amxbf16=false
 ```
 
 **Workflow features:**
@@ -626,7 +679,8 @@ gh workflow run docker-publish.yml \
 - Multi-platform support (amd64 + arm64 for noavx512)
 - Automatic Python version detection from vLLM's requirements
 - Falls back to GitHub release wheels if PyPI unavailable
-- Triggered on release creation or manual dispatch
+- **Version postfix support**: Auto-detect highest postfix from PyPI (`.post1`, `.post2`, etc.)
+- Triggered on schedule (hourly check), release creation, or manual dispatch
 
 **Required GitHub Secrets:**
 - `DOCKERHUB_USERNAME` - Docker Hub username

@@ -71,6 +71,11 @@ on:
         required: false
         type: boolean
         default: false
+      use_highest_postfix:
+        description: 'Use highest postfix version from PyPI (e.g., .post3 if .post1,.post2,.post3 exist)'
+        required: false
+        type: boolean
+        default: false
       skip_dockerhub:
         description: 'Skip Docker Hub publishing'
         required: false
@@ -146,6 +151,8 @@ jobs:
       latest_version: ${{ steps.compare.outputs.latest_version }}
       needs_latest_update: ${{ steps.check_latest.outputs.needs_update }}
       variants_matrix: ${{ steps.variants.outputs.matrix }}
+      version_postfix: ${{ steps.postfix.outputs.postfix }}
+      use_github_release: ${{ steps.postfix.outputs.use_github_release }}
 
     steps:
       - name: Fetch vLLM releases from GitHub
@@ -444,6 +451,80 @@ jobs:
           echo "Variants matrix: $MATRIX"
           echo "matrix=$MATRIX" >> "$GITHUB_OUTPUT"
 
+      - name: Detect highest postfix version
+        id: postfix
+        run: |
+          USE_POSTFIX="${{ github.event.inputs.use_highest_postfix }}"
+          USE_GH_RELEASE="${{ github.event.inputs.use_github_release || 'false' }}"
+
+          # If use_github_release is explicitly set, respect it
+          echo "use_github_release=$USE_GH_RELEASE" >> "$GITHUB_OUTPUT"
+
+          if [[ "$USE_POSTFIX" != "true" ]]; then
+            echo "Postfix detection disabled"
+            echo "postfix=" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "Checking for highest postfix versions on PyPI..."
+
+          # Get all versions to build
+          NEW_VERSIONS='${{ steps.compare.outputs.new_versions }}'
+
+          # For each base version, find the highest postfix
+          POSTFIX_MAP=""
+          for base_ver in $(echo "$NEW_VERSIONS" | jq -r '.[]'); do
+            echo "Checking postfix versions for $base_ver..."
+
+            # Query PyPI for all versions of vllm-cpu
+            ALL_VERSIONS=$(curl -sS --retry 3 --retry-delay 5 \
+              "https://pypi.org/pypi/vllm-cpu/json" | \
+              jq -r '.releases | keys[]' 2>/dev/null || echo "")
+
+            if [[ -z "$ALL_VERSIONS" ]]; then
+              echo "::warning::Failed to fetch PyPI versions for postfix detection"
+              continue
+            fi
+
+            # Find all postfix versions for this base version
+            # Matches: 0.12.0.post1, 0.12.0.post2, 0.12.0.dev1, 0.12.0.rc1, etc.
+            POSTFIX_VERSIONS=$(echo "$ALL_VERSIONS" | \
+              grep -E "^${base_ver}\.(post|dev|rc|a|b)[0-9]+$" | \
+              sort -V)
+
+            if [[ -n "$POSTFIX_VERSIONS" ]]; then
+              # Get the highest postfix version
+              HIGHEST=$(echo "$POSTFIX_VERSIONS" | tail -1)
+              # Extract just the postfix part (e.g., .post3)
+              POSTFIX_PART=$(echo "$HIGHEST" | sed "s/^${base_ver}//")
+              echo "Found highest postfix for $base_ver: $POSTFIX_PART (full: $HIGHEST)"
+
+              if [[ -n "$POSTFIX_MAP" ]]; then
+                POSTFIX_MAP="${POSTFIX_MAP},${base_ver}:${POSTFIX_PART}"
+              else
+                POSTFIX_MAP="${base_ver}:${POSTFIX_PART}"
+              fi
+            else
+              echo "No postfix versions found for $base_ver on PyPI"
+            fi
+          done
+
+          if [[ -n "$POSTFIX_MAP" ]]; then
+            echo "Postfix map: $POSTFIX_MAP"
+            # For simplicity, if all versions have the same postfix, use it globally
+            # Otherwise, we'll use the first one (most common use case is single version builds)
+            FIRST_POSTFIX=$(echo "$POSTFIX_MAP" | cut -d',' -f1 | cut -d':' -f2)
+            echo "Using postfix: $FIRST_POSTFIX"
+            echo "postfix=$FIRST_POSTFIX" >> "$GITHUB_OUTPUT"
+
+            # When using postfix, we need GitHub release wheels (PyPI base version won't have postfix in filename)
+            echo "use_github_release=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::Using GitHub release wheels for postfix version"
+          else
+            echo "No postfix versions found"
+            echo "postfix=" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Generate summary
         run: |
           {
@@ -454,8 +535,10 @@ jobs:
             echo "| New versions | \`${{ steps.compare.outputs.new_versions }}\` |"
             echo "| Has new versions | ${{ steps.compare.outputs.has_new_versions }} |"
             echo "| Latest version | ${{ steps.compare.outputs.latest_version }} |"
+            echo "| Version postfix | ${{ steps.postfix.outputs.postfix || '(none)' }} |"
             echo "| Needs latest update | ${{ steps.check_latest.outputs.needs_update }} |"
             echo "| Variants to build | \`${{ steps.variants.outputs.matrix }}\` |"
+            echo "| Use GitHub release | ${{ steps.postfix.outputs.use_github_release }} |"
             COMP="${{ github.event.inputs.compression || 'zstd' }}"
             LEVEL="${{ github.event.inputs.compression_level }}"
             if [[ -z "$LEVEL" ]]; then
@@ -608,6 +691,25 @@ jobs:
             echo "Using zstd compression level $LEVEL"
           fi
 
+      - name: Prepare build variables
+        id: build-vars
+        run: |
+          # Base version from matrix
+          BASE_VERSION="${{ matrix.version }}"
+          POSTFIX="${{ needs.check-versions.outputs.version_postfix }}"
+          USE_GH_RELEASE="${{ needs.check-versions.outputs.use_github_release }}"
+
+          # Construct full version with postfix if available
+          if [[ -n "$POSTFIX" ]]; then
+            FULL_VERSION="${BASE_VERSION}${POSTFIX}"
+            echo "Building with postfix: $FULL_VERSION"
+          else
+            FULL_VERSION="$BASE_VERSION"
+          fi
+
+          echo "full_version=$FULL_VERSION" >> "$GITHUB_OUTPUT"
+          echo "use_github_release=${USE_GH_RELEASE:-false}" >> "$GITHUB_OUTPUT"
+
       - name: Build and push
         if: steps.platforms.outputs.skip != 'true'
         uses: docker/build-push-action@263435318d21b8e681c14492fe198d362a7d2c83 # v6.18.0
@@ -619,8 +721,9 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           build-args: |
-            VLLM_VERSION=${{ matrix.version }}
+            VLLM_VERSION=${{ steps.build-vars.outputs.full_version }}
             VARIANT=${{ matrix.variant }}
+            USE_GITHUB_RELEASE=${{ steps.build-vars.outputs.use_github_release }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
           outputs: ${{ steps.compression.outputs.output_opts }}
@@ -646,14 +749,21 @@ jobs:
         if: always()
         run: |
           {
-            echo "### 🐳 ${{ matrix.variant }} @ ${{ matrix.version }}"
+            FULL_VERSION="${{ steps.build-vars.outputs.full_version }}"
+            echo "### 🐳 ${{ matrix.variant }} @ ${FULL_VERSION:-${{ matrix.version }}}"
             echo ""
             if [[ "${{ steps.platforms.outputs.skip }}" == "true" ]]; then
               echo "⏭️ **Skipped** - Platform not supported for this variant"
             else
               echo "| Property | Value |"
               echo "|----------|-------|"
+              echo "| Version | ${FULL_VERSION:-${{ matrix.version }}} |"
+              POSTFIX="${{ needs.check-versions.outputs.version_postfix }}"
+              if [[ -n "$POSTFIX" ]]; then
+                echo "| Postfix | $POSTFIX |"
+              fi
               echo "| Platforms | ${{ steps.platforms.outputs.platforms }} |"
+              echo "| GitHub Release | ${{ steps.build-vars.outputs.use_github_release }} |"
               echo "| Docker Hub | ${{ github.event.inputs.skip_dockerhub != 'true' && '✅' || '⏭️' }} |"
               echo "| GHCR | ${{ github.event.inputs.skip_ghcr != 'true' && '✅' || '⏭️' }} |"
             fi
@@ -810,6 +920,11 @@ jobs:
             echo "|----------|-------|"
             echo "| New versions | \`${{ needs.check-versions.outputs.new_versions }}\` |"
             echo "| Latest version (PyPI) | ${{ needs.check-versions.outputs.latest_version }} |"
+            POSTFIX="${{ needs.check-versions.outputs.version_postfix }}"
+            if [[ -n "$POSTFIX" ]]; then
+              echo "| Version postfix | $POSTFIX |"
+            fi
+            echo "| Use GitHub release | ${{ needs.check-versions.outputs.use_github_release }} |"
             echo "| Needs latest update | ${{ needs.check-versions.outputs.needs_latest_update }} |"
             echo ""
             echo "## Build Results"
