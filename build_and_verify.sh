@@ -54,11 +54,10 @@
 #                            Does NOT upload to PyPI - only updates local wheels
 #                            Useful for updating badges/docs without full rebuild
 #
-#   --version-suffix=SUFFIX  Add version suffix for re-uploading (e.g., .post1, .post2, .dev1)
-#                            Required when re-uploading previously deleted wheels
-#                            PyPI has an immutable filename policy - once used, cannot be re-uploaded
+#   --version-suffix=SUFFIX  Add version suffix during build (e.g., .post1, .post2, .dev1)
+#                            The suffix is baked into the wheel filename during build
 #                            Only .postN and .devN are valid (PEP 440 compliant)
-#                            Example: --version-suffix=.post1 turns 0.11.0 into 0.11.0.post1
+#                            Example: --version-suffix=.post1 builds 0.11.0.post1 wheels
 #
 #   --dry-run                Show what would be done without doing it
 #                            Default: disabled
@@ -90,8 +89,8 @@
 #   # Update README in existing wheels without rebuilding
 #   ./test_and_publish.sh --update-readme --variant=all --vllm-versions=0.11.0
 #
-#   # Re-upload previously deleted wheel with .rebuild1 suffix
-#   ./test_and_publish.sh --variant=vllm-cpu-avx512 --vllm-versions=0.10.0 --version-suffix=.rebuild1
+#   # Build wheels with .post1 suffix
+#   ./test_and_publish.sh --variant=vllm-cpu-avx512 --vllm-versions=0.10.0 --version-suffix=.post1
 #
 #   # Auto-detect Python versions from vLLM's pyproject.toml
 #   ./test_and_publish.sh --variant=noavx512 --vllm-versions=0.11.2 --python-versions=auto
@@ -1726,263 +1725,6 @@ print(base64.urlsafe_b64encode(digest).rstrip(b'=').decode('ascii'))
     return 0
 }
 
-# Rename a wheel with a version suffix (e.g., 0.10.0 -> 0.10.0.rebuild1)
-# This updates the wheel filename, internal metadata, and .dist-info directory
-rename_wheel_with_suffix() {
-    local wheel_path="$1"
-    local version_suffix="$2"
-
-    if [[ ! -f "$wheel_path" ]]; then
-        log_error "Wheel not found: $wheel_path"
-        return 1
-    fi
-
-    if [[ -z "$version_suffix" ]]; then
-        log_error "Version suffix is required"
-        return 1
-    fi
-
-    local wheel_name
-    wheel_name=$(basename "$wheel_path")
-    local wheel_dir
-    wheel_dir=$(dirname "$wheel_path")
-
-    # Parse wheel filename: {distribution}-{version}(-{build tag})?-{python tag}-{abi tag}-{platform tag}.whl
-    # Example: vllm_cpu_avx512-0.10.0-cp310-cp310-manylinux_2_17_x86_64.whl
-    local pkg_name version py_tag abi_tag platform_tag
-    if [[ "$wheel_name" =~ ^([^-]+)-([^-]+)-([^-]+)-([^-]+)-(.+)\.whl$ ]]; then
-        pkg_name="${BASH_REMATCH[1]}"
-        version="${BASH_REMATCH[2]}"
-        py_tag="${BASH_REMATCH[3]}"
-        abi_tag="${BASH_REMATCH[4]}"
-        platform_tag="${BASH_REMATCH[5]}"
-    else
-        log_error "Could not parse wheel filename: $wheel_name"
-        return 1
-    fi
-
-    # Check if suffix is already applied
-    if [[ "$version" == *"$version_suffix" ]]; then
-        log_warning "Wheel already has suffix $version_suffix: $wheel_name"
-        return 0
-    fi
-
-    local new_version="${version}${version_suffix}"
-    local new_wheel_name="${pkg_name}-${new_version}-${py_tag}-${abi_tag}-${platform_tag}.whl"
-    local new_wheel_path="${wheel_dir}/${new_wheel_name}"
-
-    log_info "Renaming wheel: $wheel_name -> $new_wheel_name"
-
-    # Create temporary directory for extraction
-    local temp_dir
-    temp_dir=$(mktemp -d)
-    trap "rm -rf '$temp_dir'" RETURN
-
-    # Extract wheel
-    log_info "  Extracting wheel..."
-    if ! unzip -q "$wheel_path" -d "$temp_dir"; then
-        log_error "Failed to extract wheel"
-        return 1
-    fi
-
-    # Find and rename the .dist-info directory
-    local old_dist_info
-    old_dist_info=$(find "$temp_dir" -maxdepth 1 -type d -name "*.dist-info" | head -1)
-
-    if [[ -z "$old_dist_info" ]]; then
-        log_error "Could not find .dist-info directory in wheel"
-        return 1
-    fi
-
-    local old_dist_info_name
-    old_dist_info_name=$(basename "$old_dist_info")
-    # dist-info format: {pkg_name}-{version}.dist-info
-    local new_dist_info_name="${pkg_name}-${new_version}.dist-info"
-    local new_dist_info="${temp_dir}/${new_dist_info_name}"
-
-    log_info "  Renaming dist-info: $old_dist_info_name -> $new_dist_info_name"
-    mv "$old_dist_info" "$new_dist_info"
-
-    # Update METADATA file
-    local metadata_file="${new_dist_info}/METADATA"
-    if [[ -f "$metadata_file" ]]; then
-        log_info "  Updating METADATA version: $version -> $new_version"
-        sed -i "s/^Version: ${version}$/Version: ${new_version}/" "$metadata_file"
-    fi
-
-    # Update WHEEL file (usually doesn't contain version, but check anyway)
-    local wheel_file="${new_dist_info}/WHEEL"
-    if [[ -f "$wheel_file" ]]; then
-        # WHEEL file typically doesn't have version, but update if present
-        if grep -q "^Version:" "$wheel_file"; then
-            sed -i "s/^Version: ${version}$/Version: ${new_version}/" "$wheel_file"
-        fi
-    fi
-
-    # Regenerate RECORD file (contains hashes of all files)
-    local record_file="${new_dist_info}/RECORD"
-    log_info "  Regenerating RECORD file..."
-
-    # Create new RECORD
-    local new_record
-    new_record=$(mktemp)
-
-    # Generate hashes for all files except RECORD itself
-    # PEP 427 requires base64-urlsafe encoded SHA256 hashes (not hex)
-    (
-        cd "$temp_dir" || exit 1
-        find . -type f ! -name "RECORD" -print0 | while IFS= read -r -d '' file; do
-            # Remove leading ./
-            local rel_path="${file#./}"
-            # Calculate SHA256 hash as base64-urlsafe (PEP 427 format)
-            # Using Python for reliable base64url encoding
-            local hash
-            hash=$(python3 -c "
-import hashlib
-import base64
-with open('$file', 'rb') as f:
-    digest = hashlib.sha256(f.read()).digest()
-# base64url encoding without padding (as per PEP 427)
-print(base64.urlsafe_b64encode(digest).rstrip(b'=').decode('ascii'))
-")
-            local size
-            size=$(stat -c%s "$file")
-            # RECORD format: path,sha256=hash,size
-            echo "${rel_path},sha256=${hash},${size}"
-        done
-        # RECORD itself has no hash
-        echo "${new_dist_info_name}/RECORD,,"
-    ) > "$new_record"
-
-    mv "$new_record" "$record_file"
-
-    # Create the new wheel
-    log_info "  Repackaging as: $new_wheel_name"
-
-    # Get absolute path for new wheel
-    local abs_new_wheel_path
-    abs_new_wheel_path=$(cd "$wheel_dir" && pwd)/"$new_wheel_name"
-
-    # Create new wheel from temp directory
-    if ! (cd "$temp_dir" && zip -q -r "$abs_new_wheel_path" ./*); then
-        log_error "Failed to create new wheel"
-        return 1
-    fi
-
-    # Verify the new wheel exists
-    if [[ ! -f "$new_wheel_path" ]]; then
-        log_error "New wheel was not created: $new_wheel_path"
-        return 1
-    fi
-
-    # Remove old wheel
-    rm -f "$wheel_path"
-
-    log_success "  Renamed: $wheel_name -> $new_wheel_name"
-    return 0
-}
-
-# Rename all wheels for a variant with version suffix
-# Usage: rename_wheels_with_suffix <variant> <vllm_ver> <version_suffix> [platform]
-rename_wheels_with_suffix() {
-    local variant="$1"
-    local vllm_ver="$2"
-    local version_suffix="$3"
-    local platform="${4:-$PLATFORM}"  # Use global PLATFORM if not specified
-
-    if [[ -z "$version_suffix" ]]; then
-        log_error "Version suffix is required for renaming"
-        return 1
-    fi
-
-    # Determine platform filter
-    local platform_filter=""
-    local platform_subdir=""
-    case "$platform" in
-        linux/arm64|arm64|aarch64)
-            platform_filter="aarch64"
-            platform_subdir="linux_arm64"
-            ;;
-        linux/amd64|amd64|x86_64)
-            platform_filter="x86_64"
-            platform_subdir="linux_amd64"
-            ;;
-        all|auto|"")
-            platform_filter=""  # Any platform
-            platform_subdir=""
-            ;;
-    esac
-
-    # Find wheels for this variant and BASE version (not with suffix)
-    # This function renames base version wheels to include a suffix
-    local variant_pattern="${variant//-/_}"
-    local exact_pattern="${vllm_ver}-"  # Base version only: "0.10.0-" not "0.10.0.post1-"
-    shopt -s nullglob
-    local wheels=()
-
-    if [[ -n "$platform_subdir" ]]; then
-        # Specific platform - only search that platform's directory
-        local subdir="$DIST_DIR/$platform_subdir"
-        if [[ -d "$subdir" ]]; then
-            for wheel in "$subdir/${variant_pattern}"-${exact_pattern}*${platform_filter}*.whl; do
-                if [[ -f "$wheel" ]]; then
-                    wheels+=("$wheel")
-                fi
-            done
-        fi
-        # Also check root dist dir with platform filter
-        for wheel in "$DIST_DIR/${variant_pattern}"-${exact_pattern}*${platform_filter}*.whl; do
-            if [[ -f "$wheel" ]]; then
-                wheels+=("$wheel")
-            fi
-        done
-    else
-        # Search in dist/ and subdirectories (all platforms)
-        for wheel in "$DIST_DIR"/${variant_pattern}-${exact_pattern}*.whl \
-                     "$DIST_DIR"/**/${variant_pattern}-${exact_pattern}*.whl; do
-            if [[ -f "$wheel" ]]; then
-                wheels+=("$wheel")
-            fi
-        done
-    fi
-    shopt -u nullglob
-
-    if [[ ${#wheels[@]} -eq 0 ]]; then
-        local platform_msg=""
-        [[ -n "$platform_filter" ]] && platform_msg=" ($platform_filter)"
-        log_warning "No wheels found for $variant @ vLLM $vllm_ver${platform_msg} (base version)"
-        return 1
-    fi
-
-    log_info "Found ${#wheels[@]} wheel(s) to rename for $variant @ vLLM $vllm_ver"
-
-    local success_count=0
-    local fail_count=0
-
-    for wheel in "${wheels[@]}"; do
-        if [[ $DRY_RUN -eq 1 ]]; then
-            local wheel_name
-            wheel_name=$(basename "$wheel")
-            local new_name="${wheel_name/-${vllm_ver}-/-${vllm_ver}${version_suffix}-}"
-            log_info "[DRY RUN] Would rename: $wheel_name -> $new_name"
-            ((success_count++))
-        else
-            if rename_wheel_with_suffix "$wheel" "$version_suffix"; then
-                ((success_count++))
-            else
-                ((fail_count++))
-            fi
-        fi
-    done
-
-    log_info "Rename complete: $success_count succeeded, $fail_count failed"
-
-    if [[ $fail_count -gt 0 ]]; then
-        return 1
-    fi
-    return 0
-}
-
 # Update README in all wheels for a variant (with parallel processing)
 # Usage: update_readme_in_wheels <variant> <vllm_ver> [platform]
 update_readme_in_wheels() {
@@ -2936,66 +2678,7 @@ process_single_version() {
         return 0
     fi
 
-    # If rename mode (--skip-build + --version-suffix), rename existing wheels with version suffix and then publish
-    if [[ $SKIP_BUILD -eq 1 ]] && [[ -n "$VERSION_SUFFIX" ]]; then
-        log_info "=== Rename Wheels Mode (vLLM $vllm_ver) ==="
-        log_info "Renaming existing wheels with suffix: $VERSION_SUFFIX"
-
-        if ! rename_wheels_with_suffix "$variant" "$vllm_ver" "$VERSION_SUFFIX"; then
-            log_error "Failed to rename wheels"
-            VLLM_VERSION="$saved_vllm_version"
-            return 1
-        fi
-
-        log_success "Wheels renamed for $variant @ vLLM $vllm_ver"
-
-        # After renaming, find the renamed wheels and continue with publish
-        local new_version="${vllm_ver}${VERSION_SUFFIX}"
-        log_info "Looking for renamed wheels with version: $new_version"
-
-        # Find the renamed wheels (skip in dry-run since they won't exist yet)
-        WHEEL_PATHS=()
-        PACKAGE_NAMES=()
-        DETECTED_VERSIONS=()
-
-        if [[ $DRY_RUN -eq 1 ]]; then
-            log_info "[DRY RUN] Would look for wheels with version: $new_version"
-            log_info "[DRY RUN] Would verify and publish renamed wheels"
-            log_success "[DRY RUN] Rename mode complete for $variant @ vLLM $vllm_ver"
-            VLLM_VERSION="$saved_vllm_version"
-            return 0
-        fi
-
-        local variant_pattern="${variant//-/_}"
-        shopt -s nullglob
-        for wheel in "$DIST_DIR"/${variant_pattern}-${new_version}-*.whl \
-                     "$DIST_DIR"/**/${variant_pattern}-${new_version}-*.whl; do
-            if [[ -f "$wheel" ]]; then
-                WHEEL_PATHS+=("$wheel")
-                PACKAGE_NAMES+=("$variant")
-                DETECTED_VERSIONS+=("$new_version")
-            fi
-        done
-        shopt -u nullglob
-
-        if [[ ${#WHEEL_PATHS[@]} -eq 0 ]]; then
-            log_error "No renamed wheels found for $variant @ vLLM $new_version"
-            VLLM_VERSION="$saved_vllm_version"
-            return 1
-        fi
-
-        log_info "Found ${#WHEEL_PATHS[@]} renamed wheel(s)"
-
-        # Continue with verification and publish (skip build phase)
-        # Fall through to verification and publish phases below
-    fi
-
-    # Phase 1: Build wheels for this version (skip if rename mode)
-    if [[ $SKIP_BUILD -eq 1 ]] && [[ -n "$VERSION_SUFFIX" ]]; then
-        log_info "=== Phase 1: Build (Skipped - using renamed wheels) ==="
-    else
-        log_info "=== Phase 1: Build and Validate (vLLM $vllm_ver) ==="
-    fi
+    log_info "=== Phase 1: Build and Validate (vLLM $vllm_ver) ==="
 
     # Check if all wheels for this variant+version already exist locally
     local needs_build=0
@@ -3352,20 +3035,10 @@ main() {
         log_info "Platform $PLATFORM: filtered to ${#variants_array[@]} variant(s): ${variants_array[*]}"
     fi
 
-    # Detect rename mode: --skip-build + --version-suffix means rename existing wheels
-    local RENAME_MODE=0
-    if [[ $SKIP_BUILD -eq 1 ]] && [[ -n "$VERSION_SUFFIX" ]]; then
-        RENAME_MODE=1
-        log_info "Rename mode enabled: will rename existing wheels with suffix $VERSION_SUFFIX"
-    fi
-
-    # Phase 0: Pre-flight checks (skip for --update-readme and rename modes)
+    # Phase 0: Pre-flight checks (skip for --update-readme mode)
     if [[ $UPDATE_README -eq 1 ]]; then
         log_info "=== README Update Mode - Skipping Pre-flight Checks ==="
         log_info "Will update README in existing local wheels (no rebuild, no upload)"
-    elif [[ $RENAME_MODE -eq 1 ]]; then
-        log_info "=== Rename Wheels Mode - Skipping Pre-flight Checks ==="
-        log_info "Will rename existing wheels with suffix: $VERSION_SUFFIX"
     else
         log_info "=== Phase 0: Pre-flight Checks ==="
         local preflight_result=0
