@@ -101,10 +101,10 @@ concurrency:
   group: ${{ github.event_name == 'schedule' && 'wheel-scheduled' || format('wheel-manual-{0}', github.run_id) }}
   cancel-in-progress: false
 
-# Default permissions: Read-only (principle of least privilege)
-# Individual jobs override as needed
+# Permissions: Write access needed for GitHub releases
+# Reusable workflows inherit permissions from caller
 permissions:
-  contents: read
+  contents: write
 
 env:
   # Use consistent UV version across all jobs
