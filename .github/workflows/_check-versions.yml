@@ -184,6 +184,7 @@ jobs:
 
       - name: Compare versions
         id: compare
+        shell: bash
         run: |
           echo "Comparing versions..."
 
