@@ -63,6 +63,16 @@ on:
         required: false
         type: string
         default: ''
+      skip_pypi:
+        description: 'Whether PyPI publishing is skipped'
+        required: false
+        type: boolean
+        default: false
+      skip_github_release:
+        description: 'Whether GitHub release is skipped'
+        required: false
+        type: boolean
+        default: false
     outputs:
       build_matrix:
         description: 'JSON matrix for unified build jobs (empty array [] if no builds)'
@@ -406,6 +416,8 @@ jobs:
             echo "| AMD64 | ${{ steps.platforms.outputs.build_amd64 }} |"
             echo "| ARM64 | ${{ steps.platforms.outputs.build_arm64 }} |"
             echo "| Has Builds | ${{ steps.matrix.outputs.has_builds }} |"
+            echo "| Skip PyPI | ${{ inputs.skip_pypi == true }} |"
+            echo "| Skip GitHub Release | ${{ inputs.skip_github_release == true }} |"
             echo ""
             echo "### Build Matrix"
             echo ""

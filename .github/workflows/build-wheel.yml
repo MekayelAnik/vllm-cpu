@@ -126,6 +126,8 @@ jobs:
       build_amxbf16: ${{ inputs.build_amxbf16 != false }}
       platforms: ${{ inputs.platforms || 'all' }}
       version_postfix: ${{ inputs.version_postfix || '' }}
+      skip_pypi: ${{ inputs.skip_pypi == true }}
+      skip_github_release: ${{ inputs.skip_github_release == true }}
     secrets: inherit
 
   # ==========================================================================
