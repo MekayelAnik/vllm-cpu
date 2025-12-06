@@ -131,17 +131,20 @@ jobs:
           PUBLISHED=""
           POSTFIX="${{ inputs.version_postfix }}"
 
+          # Construct full version with postfix (wheels are already built with postfix in filename)
+          FULL_VERSION="${{ inputs.version }}${POSTFIX}"
+
           for variant in "${VARIANTS[@]}"; do
-            echo "Publishing variant: $variant"
+            echo "Publishing variant: $variant (version: $FULL_VERSION)"
+            # Note: Don't pass --version-suffix here - wheels already have postfix baked in
             if ./build_and_verify.sh \
               --skip-build \
               --skip-github \
               --variant="$variant" \
-              --vllm-versions="${{ inputs.version }}" \
+              --vllm-versions="$FULL_VERSION" \
               --python-versions="${WHEEL_PY_VERSIONS:-auto}" \
               --platform=all \
-              --dist-dir=dist \
-              ${POSTFIX:+--version-suffix="$POSTFIX"}; then
+              --dist-dir=dist; then
               if [[ -n "$PUBLISHED" ]]; then
                 PUBLISHED="$PUBLISHED,$variant"
               else
