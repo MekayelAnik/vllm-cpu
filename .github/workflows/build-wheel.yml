@@ -119,11 +119,11 @@ jobs:
     uses: ./.github/workflows/_check-versions.yml
     with:
       vllm_versions: ${{ inputs.vllm_versions || '' }}
-      build_noavx512: ${{ inputs.build_noavx512 == '' && true || inputs.build_noavx512 }}
-      build_avx512: ${{ inputs.build_avx512 == '' && true || inputs.build_avx512 }}
-      build_avx512vnni: ${{ inputs.build_avx512vnni == '' && true || inputs.build_avx512vnni }}
-      build_avx512bf16: ${{ inputs.build_avx512bf16 == '' && true || inputs.build_avx512bf16 }}
-      build_amxbf16: ${{ inputs.build_amxbf16 == '' && true || inputs.build_amxbf16 }}
+      build_noavx512: ${{ inputs.build_noavx512 != false }}
+      build_avx512: ${{ inputs.build_avx512 != false }}
+      build_avx512vnni: ${{ inputs.build_avx512vnni != false }}
+      build_avx512bf16: ${{ inputs.build_avx512bf16 != false }}
+      build_amxbf16: ${{ inputs.build_amxbf16 != false }}
       platforms: ${{ inputs.platforms || 'all' }}
       version_postfix: ${{ inputs.version_postfix || '' }}
     secrets: inherit
@@ -137,7 +137,7 @@ jobs:
     # CRITICAL: Skip if no builds (empty matrix causes "Matrix vector does not contain any values" error)
     if: |
       needs.check-versions.outputs.has_builds == 'true' &&
-      (inputs.dry_run == '' || inputs.dry_run == false)
+      inputs.dry_run != true
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.check-versions.outputs.build_matrix) }}
@@ -148,7 +148,7 @@ jobs:
       version: ${{ matrix.version }}
       python_versions: ${{ inputs.python_versions || 'auto' }}
       version_postfix: ${{ needs.check-versions.outputs.version_postfix }}
-      skip_github_release: ${{ inputs.skip_github_release == '' && false || inputs.skip_github_release }}
+      skip_github_release: ${{ inputs.skip_github_release == true }}
       uv_version: "0.5"
     secrets: inherit
 
@@ -162,8 +162,8 @@ jobs:
       always() &&
       needs.check-versions.outputs.has_builds == 'true' &&
       needs.build.result == 'success' &&
-      (inputs.dry_run == '' || inputs.dry_run == false) &&
-      (inputs.skip_pypi == '' || inputs.skip_pypi == false)
+      inputs.dry_run != true &&
+      inputs.skip_pypi != true
     strategy:
       fail-fast: false
       matrix:
@@ -184,8 +184,8 @@ jobs:
       always() &&
       needs.check-versions.outputs.has_builds == 'true' &&
       needs.build.result == 'success' &&
-      (inputs.dry_run == '' || inputs.dry_run == false) &&
-      (inputs.skip_github_release == '' || inputs.skip_github_release == false)
+      inputs.dry_run != true &&
+      inputs.skip_github_release != true
     strategy:
       fail-fast: false
       matrix:
