@@ -822,6 +822,7 @@ jobs:
           # Publish each variant separately to handle partial builds
           IFS=',' read -ra VARIANTS <<< "$AVAILABLE_VARIANTS"
           FAILED=0
+          POSTFIX="${{ needs.check-versions.outputs.version_postfix }}"
           for variant in "${VARIANTS[@]}"; do
             echo "Publishing variant: $variant"
             if ! ./build_and_verify.sh \
@@ -831,7 +832,8 @@ jobs:
               --vllm-versions="${{ matrix.version }}" \
               --python-versions="${WHEEL_PY_VERSIONS:-auto}" \
               --platform=all \
-              --dist-dir=dist; then
+              --dist-dir=dist \
+              ${POSTFIX:+--version-suffix="$POSTFIX"}; then
               echo "::warning::Failed to publish $variant"
               FAILED=$((FAILED + 1))
             fi

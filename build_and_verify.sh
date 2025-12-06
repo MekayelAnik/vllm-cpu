@@ -2514,10 +2514,13 @@ run_preflight_checks() {
 
     for var in "${variants[@]}"; do
         for ver in "${vllm_versions[@]}"; do
+            # Include VERSION_SUFFIX in the version for pre-flight checks
+            # This ensures we check for the correct version on PyPI (e.g., 0.11.2.post2)
+            local full_version="${ver}${VERSION_SUFFIX}"
             for pyver in "${python_versions[@]}"; do
                 ((check_count++)) || true
-                log_info "Check $check_count/$total_checks: $var v$ver (Python $pyver)"
-                preflight_check "$var" "$ver" "$pyver"
+                log_info "Check $check_count/$total_checks: $var v$full_version (Python $pyver)"
+                preflight_check "$var" "$full_version" "$pyver"
             done
         done
     done
@@ -2999,12 +3002,15 @@ process_single_version() {
     local package_name
     package_name=$(normalize_variant "$variant") || package_name="$variant"
 
+    # Include VERSION_SUFFIX in version for local wheel checks
+    local check_version="${vllm_ver}${VERSION_SUFFIX}"
+
     # Convert python_vers to array for checking
     local py_vers_array
     IFS=',' read -ra py_vers_array <<< "$python_vers"
 
     for pyver in "${py_vers_array[@]}"; do
-        if ! check_wheel_exists_locally "$package_name" "$vllm_ver" "$pyver"; then
+        if ! check_wheel_exists_locally "$package_name" "$check_version" "$pyver"; then
             needs_build=1
             log_info "Wheel for Python $pyver not found locally - build needed"
             break
