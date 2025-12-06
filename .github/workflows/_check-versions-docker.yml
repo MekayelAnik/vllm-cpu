@@ -1,0 +1,435 @@
+# =============================================================================
+# Reusable Workflow: Check Versions for Docker Image Builds
+# =============================================================================
+# Extends _check-versions.yml with Docker-specific logic:
+# - Checks existing Docker Hub/GHCR images
+# - Determines if latest tags need updating
+# - Handles version postfix detection from PyPI
+# - Generates Docker-specific build matrix
+#
+# Usage:
+#   jobs:
+#     check-versions:
+#       uses: ./.github/workflows/_check-versions-docker.yml
+#       with:
+#         vllm_versions: "0.12.0"
+#         build_noavx512: true
+#       secrets: inherit
+# =============================================================================
+
+name: Check Versions for Docker (Reusable)
+
+on:
+  workflow_call:
+    inputs:
+      vllm_versions:
+        description: 'vLLM versions (e.g., 0.12.0 or 0.11.2,0.12.0 or 0.11.0-0.12.0) - leave empty for auto-detect'
+        required: false
+        type: string
+        default: ''
+      build_noavx512:
+        description: 'Build noavx512 (universal, AMD64+ARM64)'
+        required: false
+        type: boolean
+        default: true
+      build_avx512:
+        description: 'Build avx512 (AMD64 only)'
+        required: false
+        type: boolean
+        default: true
+      build_avx512vnni:
+        description: 'Build avx512vnni (AMD64 only)'
+        required: false
+        type: boolean
+        default: true
+      build_avx512bf16:
+        description: 'Build avx512bf16 (AMD64 only)'
+        required: false
+        type: boolean
+        default: true
+      build_amxbf16:
+        description: 'Build amxbf16 (AMD64 only)'
+        required: false
+        type: boolean
+        default: true
+      platforms:
+        description: 'Target platforms (all, linux/amd64, linux/arm64)'
+        required: false
+        type: string
+        default: 'all'
+      version_postfix:
+        description: 'Version postfix (e.g., .post1, .dev2, .rc1)'
+        required: false
+        type: string
+        default: ''
+      use_highest_postfix:
+        description: 'Auto-detect highest postfix from PyPI'
+        required: false
+        type: boolean
+        default: false
+      use_github_release:
+        description: 'Use GitHub release wheels instead of PyPI'
+        required: false
+        type: boolean
+        default: false
+      skip_dockerhub:
+        description: 'Skip Docker Hub publishing'
+        required: false
+        type: boolean
+        default: false
+      skip_ghcr:
+        description: 'Skip GitHub Container Registry publishing'
+        required: false
+        type: boolean
+        default: false
+      force_rebuild_dockerhub:
+        description: 'Force rebuild Docker Hub images'
+        required: false
+        type: boolean
+        default: false
+      force_rebuild_ghcr:
+        description: 'Force rebuild GHCR images'
+        required: false
+        type: boolean
+        default: false
+      dockerhub_image:
+        description: 'Docker Hub image name'
+        required: false
+        type: string
+        default: 'mekayelanik/vllm-cpu'
+      ghcr_image:
+        description: 'GHCR image name'
+        required: false
+        type: string
+        default: 'ghcr.io/mekayelanik/vllm-cpu'
+
+    outputs:
+      # From base _check-versions.yml
+      build_matrix:
+        description: 'JSON matrix for Docker builds'
+        value: ${{ jobs.docker-check.outputs.build_matrix }}
+      has_builds:
+        description: 'Whether there are builds to run'
+        value: ${{ jobs.docker-check.outputs.has_builds }}
+      new_versions:
+        description: 'JSON array of versions to build'
+        value: ${{ jobs.base-check.outputs.new_versions }}
+      version_postfix:
+        description: 'Normalized version postfix'
+        value: ${{ jobs.docker-check.outputs.version_postfix }}
+      build_amd64:
+        description: 'Whether AMD64 builds are enabled'
+        value: ${{ jobs.base-check.outputs.build_amd64 }}
+      build_arm64:
+        description: 'Whether ARM64 builds are enabled'
+        value: ${{ jobs.base-check.outputs.build_arm64 }}
+      # Docker-specific outputs
+      latest_version:
+        description: 'Latest vLLM version from PyPI'
+        value: ${{ jobs.docker-check.outputs.latest_version }}
+      needs_latest_update:
+        description: 'Whether latest tags need updating'
+        value: ${{ jobs.docker-check.outputs.needs_latest_update }}
+      use_github_release:
+        description: 'Whether to use GitHub release wheels'
+        value: ${{ jobs.docker-check.outputs.use_github_release }}
+      variants_matrix:
+        description: 'JSON array of variants to build'
+        value: ${{ jobs.docker-check.outputs.variants_matrix }}
+
+jobs:
+  # ==========================================================================
+  # Call base version check workflow for version parsing
+  # ==========================================================================
+  base-check:
+    name: Base Version Check
+    uses: ./.github/workflows/_check-versions.yml
+    with:
+      vllm_versions: ${{ inputs.vllm_versions }}
+      build_noavx512: ${{ inputs.build_noavx512 }}
+      build_avx512: ${{ inputs.build_avx512 }}
+      build_avx512vnni: ${{ inputs.build_avx512vnni }}
+      build_avx512bf16: ${{ inputs.build_avx512bf16 }}
+      build_amxbf16: ${{ inputs.build_amxbf16 }}
+      platforms: ${{ inputs.platforms }}
+      version_postfix: ${{ inputs.version_postfix }}
+    secrets: inherit
+
+  # ==========================================================================
+  # Docker-specific checks
+  # ==========================================================================
+  docker-check:
+    name: Docker-Specific Checks
+    needs: base-check
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    outputs:
+      build_matrix: ${{ steps.matrix.outputs.build_matrix }}
+      has_builds: ${{ steps.matrix.outputs.has_builds }}
+      latest_version: ${{ steps.latest.outputs.version }}
+      needs_latest_update: ${{ steps.latest.outputs.needs_update }}
+      version_postfix: ${{ steps.postfix.outputs.postfix }}
+      use_github_release: ${{ steps.postfix.outputs.use_github_release }}
+      variants_matrix: ${{ steps.variants.outputs.matrix }}
+
+    steps:
+      - name: Get latest version from PyPI
+        id: latest
+        shell: bash
+        run: |
+          echo "Fetching latest version from PyPI..."
+
+          # Retry logic for PyPI API
+          PYPI_LATEST=""
+          for attempt in 1 2 3; do
+            PYPI_LATEST=$(curl -sS --retry 3 --retry-delay 5 \
+              "https://pypi.org/pypi/vllm-cpu/json" | \
+              jq -r '.info.version' | \
+              grep -oE '^[0-9]+\.[0-9]+\.[0-9]+(\.[0-9]+)?' || echo "") && break
+            echo "Attempt $attempt failed, retrying..."
+            sleep 5
+          done
+
+          if [[ -z "$PYPI_LATEST" ]]; then
+            # Fallback to highest version from new_versions
+            VERSIONS='${{ needs.base-check.outputs.new_versions }}'
+            PYPI_LATEST=$(echo "$VERSIONS" | jq -r '.[]' | sort -V | tail -1)
+            echo "::warning::PyPI fetch failed, using highest from versions: $PYPI_LATEST"
+          fi
+
+          echo "Latest version: $PYPI_LATEST"
+          echo "version=$PYPI_LATEST" >> "$GITHUB_OUTPUT"
+
+          # Check if we're building the latest version
+          NEW_VERSIONS='${{ needs.base-check.outputs.new_versions }}'
+          BUILDING_LATEST="false"
+          if echo "$NEW_VERSIONS" | jq -e --arg v "$PYPI_LATEST" 'index($v) != null' > /dev/null 2>&1; then
+            BUILDING_LATEST="true"
+            echo "Building the latest version - latest tags will be updated"
+          fi
+
+          echo "needs_update=$BUILDING_LATEST" >> "$GITHUB_OUTPUT"
+
+      - name: Check existing Docker images
+        id: existing
+        if: needs.base-check.outputs.has_builds == 'true'
+        shell: bash
+        run: |
+          FORCE_DOCKERHUB="${{ inputs.force_rebuild_dockerhub }}"
+          FORCE_GHCR="${{ inputs.force_rebuild_ghcr }}"
+
+          if [[ "$FORCE_DOCKERHUB" == "true" && "$FORCE_GHCR" == "true" ]]; then
+            echo "Force rebuild enabled for both registries"
+            echo "existing_versions=" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "Checking existing Docker Hub images..."
+
+          DOCKERHUB_TAGS=""
+          for attempt in 1 2 3; do
+            DOCKERHUB_TAGS=$(curl -sS --retry 3 --retry-delay 5 \
+              "https://hub.docker.com/v2/repositories/${{ inputs.dockerhub_image }}/tags?page_size=100" | \
+              jq -r '.results[].name' 2>/dev/null || echo "") && break
+            sleep 5
+          done
+
+          EXISTING_VERSIONS=""
+          if [[ -n "$DOCKERHUB_TAGS" ]]; then
+            EXISTING_VERSIONS=$(echo "$DOCKERHUB_TAGS" | \
+              grep -oE '[0-9]+\.[0-9]+\.[0-9]+(\.[0-9]+)?' | \
+              sort -V -u | tr '\n' ',' | sed 's/,$//')
+            echo "Existing Docker versions: $EXISTING_VERSIONS"
+          fi
+
+          echo "existing_versions=$EXISTING_VERSIONS" >> "$GITHUB_OUTPUT"
+
+      - name: Determine version postfix
+        id: postfix
+        shell: bash
+        run: |
+          BASE_POSTFIX="${{ needs.base-check.outputs.version_postfix }}"
+          USE_HIGHEST="${{ inputs.use_highest_postfix }}"
+          USE_GH_RELEASE="${{ inputs.use_github_release }}"
+
+          # If base check already determined postfix, use it
+          if [[ -n "$BASE_POSTFIX" ]]; then
+            echo "Using postfix from base check: $BASE_POSTFIX"
+            echo "postfix=$BASE_POSTFIX" >> "$GITHUB_OUTPUT"
+            echo "use_github_release=$USE_GH_RELEASE" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # If use_highest_postfix is enabled, detect from PyPI
+          if [[ "$USE_HIGHEST" == "true" ]]; then
+            echo "Auto-detecting highest postfix from PyPI..."
+
+            NEW_VERSIONS='${{ needs.base-check.outputs.new_versions }}'
+            FIRST_VERSION=$(echo "$NEW_VERSIONS" | jq -r '.[0]')
+
+            if [[ -n "$FIRST_VERSION" && "$FIRST_VERSION" != "null" ]]; then
+              ALL_PYPI=$(curl -sS --retry 3 --retry-delay 5 \
+                "https://pypi.org/pypi/vllm-cpu/json" | \
+                jq -r '.releases | keys[]' 2>/dev/null || echo "")
+
+              if [[ -n "$ALL_PYPI" ]]; then
+                POSTFIX_VERSIONS=$(echo "$ALL_PYPI" | \
+                  grep -E "^${FIRST_VERSION}\.(post|dev|rc|a|b)[0-9]+$" | \
+                  sort -V)
+
+                if [[ -n "$POSTFIX_VERSIONS" ]]; then
+                  HIGHEST=$(echo "$POSTFIX_VERSIONS" | tail -1)
+                  POSTFIX_PART=$(echo "$HIGHEST" | sed "s/^${FIRST_VERSION}//")
+                  echo "Found highest postfix: $POSTFIX_PART"
+                  echo "postfix=$POSTFIX_PART" >> "$GITHUB_OUTPUT"
+                  echo "use_github_release=true" >> "$GITHUB_OUTPUT"
+                  exit 0
+                fi
+              fi
+            fi
+          fi
+
+          echo "No postfix"
+          echo "postfix=" >> "$GITHUB_OUTPUT"
+          echo "use_github_release=$USE_GH_RELEASE" >> "$GITHUB_OUTPUT"
+
+      - name: Generate variants matrix
+        id: variants
+        shell: bash
+        run: |
+          VARIANTS=""
+
+          if [[ "${{ inputs.build_noavx512 }}" == "true" ]]; then
+            VARIANTS="${VARIANTS:+$VARIANTS,}noavx512"
+          fi
+          if [[ "${{ inputs.build_avx512 }}" == "true" ]]; then
+            VARIANTS="${VARIANTS:+$VARIANTS,}avx512"
+          fi
+          if [[ "${{ inputs.build_avx512vnni }}" == "true" ]]; then
+            VARIANTS="${VARIANTS:+$VARIANTS,}avx512vnni"
+          fi
+          if [[ "${{ inputs.build_avx512bf16 }}" == "true" ]]; then
+            VARIANTS="${VARIANTS:+$VARIANTS,}avx512bf16"
+          fi
+          if [[ "${{ inputs.build_amxbf16 }}" == "true" ]]; then
+            VARIANTS="${VARIANTS:+$VARIANTS,}amxbf16"
+          fi
+
+          if [[ -z "$VARIANTS" ]]; then
+            echo "::warning::No variants selected"
+            MATRIX='[]'
+          else
+            MATRIX=$(echo "$VARIANTS" | tr ',' '\n' | jq -R . | jq -s -c .)
+          fi
+
+          echo "Variants: $MATRIX"
+          echo "matrix=$MATRIX" >> "$GITHUB_OUTPUT"
+
+      - name: Generate Docker build matrix
+        id: matrix
+        shell: bash
+        run: |
+          NEW_VERSIONS='${{ needs.base-check.outputs.new_versions }}'
+          VARIANTS='${{ steps.variants.outputs.matrix }}'
+          EXISTING="${{ steps.existing.outputs.existing_versions }}"
+          HAS_BASE_BUILDS="${{ needs.base-check.outputs.has_builds }}"
+
+          # If no versions to build, exit early
+          if [[ "$HAS_BASE_BUILDS" != "true" || "$NEW_VERSIONS" == "[]" ]]; then
+            echo "No versions to build"
+            echo "build_matrix={\"include\":[]}" >> "$GITHUB_OUTPUT"
+            echo "has_builds=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Filter out versions that already have Docker images (unless force rebuild)
+          FORCE_DOCKERHUB="${{ inputs.force_rebuild_dockerhub }}"
+          FORCE_GHCR="${{ inputs.force_rebuild_ghcr }}"
+
+          FILTERED_VERSIONS="$NEW_VERSIONS"
+          if [[ "$FORCE_DOCKERHUB" != "true" && "$FORCE_GHCR" != "true" && -n "$EXISTING" ]]; then
+            # Filter versions - keep only those not in existing
+            FILTERED_VERSIONS=$(echo "$NEW_VERSIONS" | jq -c --arg existing "$EXISTING" '
+              ($existing | split(",")) as $ex |
+              map(select(. as $v | $ex | index($v) | not))
+            ')
+          fi
+
+          if [[ "$FILTERED_VERSIONS" == "[]" ]]; then
+            echo "All versions already have Docker images"
+            echo "build_matrix={\"include\":[]}" >> "$GITHUB_OUTPUT"
+            echo "has_builds=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Generate matrix: version × variant
+          BUILD_AMD64="${{ needs.base-check.outputs.build_amd64 }}"
+          BUILD_ARM64="${{ needs.base-check.outputs.build_arm64 }}"
+
+          MATRIX=$(jq -n -c \
+            --argjson versions "$FILTERED_VERSIONS" \
+            --argjson variants "$VARIANTS" \
+            --arg build_amd64 "$BUILD_AMD64" \
+            --arg build_arm64 "$BUILD_ARM64" '
+            {
+              include: [
+                $versions[] as $ver |
+                $variants[] as $var |
+                {
+                  version: $ver,
+                  variant: $var,
+                  platforms: (
+                    if $var == "noavx512" then
+                      if $build_amd64 == "true" and $build_arm64 == "true" then "linux/amd64,linux/arm64"
+                      elif $build_amd64 == "true" then "linux/amd64"
+                      elif $build_arm64 == "true" then "linux/arm64"
+                      else ""
+                      end
+                    else
+                      if $build_amd64 == "true" then "linux/amd64" else "" end
+                    end
+                  )
+                }
+              ] | map(select(.platforms != ""))
+            }
+          ')
+
+          MATRIX_COUNT=$(echo "$MATRIX" | jq '.include | length')
+
+          if [[ "$MATRIX_COUNT" -eq 0 ]]; then
+            echo "No builds after filtering"
+            echo "build_matrix={\"include\":[]}" >> "$GITHUB_OUTPUT"
+            echo "has_builds=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "Generated $MATRIX_COUNT builds"
+            echo "build_matrix=$MATRIX" >> "$GITHUB_OUTPUT"
+            echo "has_builds=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Summary
+        shell: bash
+        run: |
+          {
+            echo "## Docker Version Check Results"
+            echo ""
+            echo "| Property | Value |"
+            echo "|----------|-------|"
+            echo "| Versions | \`${{ needs.base-check.outputs.new_versions }}\` |"
+            echo "| Postfix | \`${{ steps.postfix.outputs.postfix || '(none)' }}\` |"
+            echo "| Latest Version | ${{ steps.latest.outputs.version }} |"
+            echo "| AMD64 | ${{ needs.base-check.outputs.build_amd64 }} |"
+            echo "| ARM64 | ${{ needs.base-check.outputs.build_arm64 }} |"
+            echo "| Has Builds | ${{ steps.matrix.outputs.has_builds }} |"
+            echo "| Needs Latest Update | ${{ steps.latest.outputs.needs_update }} |"
+            echo "| Use GitHub Release | ${{ steps.postfix.outputs.use_github_release }} |"
+            echo "| Skip Docker Hub | ${{ inputs.skip_dockerhub }} |"
+            echo "| Skip GHCR | ${{ inputs.skip_ghcr }} |"
+            echo "| Variants | \`${{ steps.variants.outputs.matrix }}\` |"
+            echo ""
+            echo "### Build Matrix"
+            echo ""
+            echo "\`\`\`json"
+            echo '${{ steps.matrix.outputs.build_matrix }}' | jq .
+            echo "\`\`\`"
+          } >> "$GITHUB_STEP_SUMMARY"
