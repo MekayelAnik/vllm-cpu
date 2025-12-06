@@ -888,15 +888,37 @@ jobs:
             ["vllm_cpu_amxbf16"]="vllm-cpu-amxbf16|Sapphire Rapids+"
           )
 
+          # Debug: List all wheels in dist
+          echo "=== All wheels in dist ==="
+          find dist -name "*.whl" -type f | sort
+          echo ""
+
           for wheel_prefix in vllm_cpu vllm_cpu_avx512 vllm_cpu_avx512vnni vllm_cpu_avx512bf16 vllm_cpu_amxbf16; do
             # Find wheel for Python 3.12 x86_64
-            WHEEL=$(find dist -name "${wheel_prefix}-*-cp312-*x86_64*.whl" -type f 2>/dev/null | head -1 | xargs basename 2>/dev/null || echo "")
+            # Use grep to ensure exact prefix match (vllm_cpu should not match vllm_cpu_avx512)
+            if [[ "$wheel_prefix" == "vllm_cpu" ]]; then
+              # For base package, exclude variants with additional underscores
+              WHEEL=$(find dist -name "*.whl" -type f | xargs -I {} basename {} | grep -E "^vllm_cpu-[^_].*-cp312-.*x86_64.*\.whl$" | head -1 || echo "")
+            else
+              WHEEL=$(find dist -name "*.whl" -type f | xargs -I {} basename {} | grep -E "^${wheel_prefix}-.*-cp312-.*x86_64.*\.whl$" | head -1 || echo "")
+            fi
+
+            echo "Looking for ${wheel_prefix}: found '${WHEEL}'"
+
             if [[ -n "$WHEEL" ]]; then
               PKG_NAME=$(echo "${VARIANT_MAP[$wheel_prefix]}" | cut -d'|' -f1)
               TARGET_CPUS=$(echo "${VARIANT_MAP[$wheel_prefix]}" | cut -d'|' -f2)
               echo "| \`${PKG_NAME}\` | ${TARGET_CPUS} | \`pip install \"${PKG_NAME} @ ${BASE_URL}/${WHEEL}\" --index-url https://download.pytorch.org/whl/cpu --extra-index-url https://pypi.org/simple\` |" >> release_notes.md
+            else
+              echo "::warning::No wheel found for ${wheel_prefix} (Python 3.12 x86_64)"
             fi
           done
+
+          # Also add ARM64 row for vllm-cpu if available
+          ARM_WHEEL=$(find dist -name "*.whl" -type f | xargs -I {} basename {} | grep -E "^vllm_cpu-[^_].*-cp312-.*aarch64.*\.whl$" | head -1 || echo "")
+          if [[ -n "$ARM_WHEEL" ]]; then
+            echo "| \`vllm-cpu\` (ARM64) | ARM64/AArch64 | \`pip install \"vllm-cpu @ ${BASE_URL}/${ARM_WHEEL}\" --index-url https://download.pytorch.org/whl/cpu --extra-index-url https://pypi.org/simple\` |" >> release_notes.md
+          fi
 
           echo "" >> release_notes.md
           echo "> **Note:** Replace \`cp312\` with \`cp310\`, \`cp311\`, or \`cp313\` for other Python versions. Replace \`x86_64\` with \`aarch64\` for ARM64 (only \`vllm-cpu\` supports ARM64)." >> release_notes.md
