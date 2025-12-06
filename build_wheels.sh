@@ -95,6 +95,10 @@ readonly CONFIG_FILE="$SCRIPT_DIR/build_config.json"
 # Cleanup state tracking
 CLEANUP_DONE=0
 
+# Global array to track failed variant builds (for accurate reporting)
+# Format: "vllm_version/python_version/variant_name"
+declare -a FAILED_VARIANTS=()
+
 # Enhanced logging functions with timestamps and proper stream redirection
 log_info() {
     echo -e "$(date +"$LOG_TIMESTAMP_FORMAT") [$$] ${BLUE}[INFO]${NC} $*" >&2
@@ -1038,7 +1042,7 @@ build_variant() {
     # Validate package name format
     if ! [[ "$package_name" =~ ^[a-z0-9-]+$ ]]; then
         log_error "Invalid package name format: $package_name"
-        exit 1
+        return 1
     fi
 
     log_info "Package: $package_name"
@@ -1050,12 +1054,12 @@ build_variant() {
     # Create workspace
     if ! mkdir -p "$WORKSPACE"; then
         log_error "Failed to create workspace directory: $WORKSPACE"
-        exit 1
+        return 1
     fi
 
     if ! cd "$WORKSPACE"; then
         log_error "Failed to change to workspace directory: $WORKSPACE"
-        exit 1
+        return 1
     fi
 
     # Clone or update vLLM repository
@@ -1067,7 +1071,7 @@ build_variant() {
             if ! timeout 300 git clone https://github.com/vllm-project/vllm.git; then
                 log_error "Failed to clone vLLM repository (timeout or error)"
                 log_error "Check network connectivity or increase timeout"
-                exit 1
+                return 1
             fi
         fi
     elif [[ -d "vllm/.git" ]]; then
@@ -1083,7 +1087,7 @@ build_variant() {
         fi
     elif [[ $DRY_RUN -eq 0 ]]; then
         log_error "vllm directory exists but is not a git repository"
-        exit 1
+        return 1
     fi
 
     if [[ $DRY_RUN -eq 1 ]]; then
@@ -1091,7 +1095,7 @@ build_variant() {
     else
         if ! cd vllm; then
             log_error "Failed to enter vllm directory"
-            exit 1
+            return 1
         fi
     fi
 
@@ -1114,7 +1118,7 @@ build_variant() {
             else
                 log_error "Version $VLLM_VERSION (or v$VLLM_VERSION) not found in repository"
                 log_error "Available tags: $(git tag -l | tail -10 | tr '\n' ' ')"
-                exit 1
+                return 1
             fi
         fi
     fi
@@ -1139,7 +1143,7 @@ build_variant() {
             if ! uv venv --python "$PYTHON_VERSION" "$venv_path"; then
                 log_error "Failed to create virtual environment for Python $PYTHON_VERSION"
                 log_error "Make sure Python $PYTHON_VERSION is available"
-                exit 1
+                return 1
             fi
         fi
     else
@@ -1152,7 +1156,7 @@ build_variant() {
     else
         if ! source "$venv_path/bin/activate"; then
             log_error "Failed to activate virtual environment"
-            exit 1
+            return 1
         fi
         # Log the actual Python version being used
         log_info "Activated Python: $(python --version 2>&1)"
@@ -1166,7 +1170,7 @@ build_variant() {
     else
         if ! uv pip install --upgrade pip setuptools wheel build setuptools-scm; then
             log_error "Failed to install base build dependencies"
-            exit 1
+            return 1
         fi
     fi
 
@@ -1185,7 +1189,7 @@ build_variant() {
             --index-strategy unsafe-best-match \
             -e .; then
             log_error "Failed to install vLLM dependencies"
-            exit 1
+            return 1
         fi
     fi
 
@@ -1271,7 +1275,7 @@ build_variant() {
             # Backup original
             if ! cp pyproject.toml pyproject.toml.backup; then
                 log_error "Failed to backup pyproject.toml"
-                exit 1
+                return 1
             fi
 
             # Escape special characters for sed
@@ -1283,12 +1287,12 @@ build_variant() {
             # Update package name and description
             if ! sed -i "s/name = \"vllm\"/name = \"${safe_package_name}\"/" pyproject.toml; then
                 log_error "Failed to update package name in pyproject.toml"
-                exit 1
+                return 1
             fi
 
             if ! sed -i "s/description = .*/description = \"${safe_description}\"/" pyproject.toml; then
                 log_error "Failed to update description in pyproject.toml"
-                exit 1
+                return 1
             fi
 
             # Update license to GPL-3.0
@@ -1395,12 +1399,12 @@ build_variant() {
                 # Copy variant-specific README
                 if ! cp "$readme_path" README.md; then
                     log_error "Failed to copy README file: $readme_path"
-                    exit 1
+                    return 1
                 fi
                 log_success "Copied $readme_file to README.md"
             else
                 log_error "README file not found: $readme_path"
-                exit 1
+                return 1
             fi
 
             # Note: Index URLs are specified via command-line flags during installation (no pyproject.toml modification needed)
@@ -1461,7 +1465,7 @@ build_variant() {
             ;;
         *)
             log_error "Unsupported architecture: $platform_arch"
-            exit 1
+            return 1
             ;;
     esac
 
@@ -1485,7 +1489,7 @@ build_variant() {
     else
         if ! mkdir -p "$wheel_dir"; then
             log_error "Failed to create wheel output directory"
-            exit 1
+            return 1
         fi
 
         # Use timeout for build (3600 seconds = 1 hour)
@@ -1493,7 +1497,7 @@ build_variant() {
         if ! timeout 3600 python setup.py bdist_wheel --dist-dir="$wheel_dir" --plat-name="$platform_tag"; then
             log_error "Failed to build wheel (timeout or build error)"
             log_error "Check build logs for details or increase timeout"
-            exit 1
+            return 1
         fi
 
         # Immediately verify wheel was created
@@ -1506,7 +1510,7 @@ build_variant() {
             ls -la
             log_error "Checking for .whl files in build directory tree:"
             find . -name "*.whl" -type f 2>/dev/null || log_error "No .whl files found"
-            exit 1
+            return 1
         fi
         log_success "Wheel found in $wheel_dir"
 
@@ -1536,7 +1540,7 @@ build_variant() {
         log_info "Copying wheel to output directory: $final_output_dir"
         if ! mkdir -p "$final_output_dir"; then
             log_error "Failed to create output directory: $final_output_dir"
-            exit 1
+            return 1
         fi
 
         # Enable nullglob to handle no-match case
@@ -1549,13 +1553,13 @@ build_variant() {
             log_error "No wheels found in $wheel_dir"
             log_error "Listing $wheel_dir contents:"
             ls -la "$wheel_dir" 2>/dev/null || log_error "Directory does not exist"
-            exit 1
+            return 1
         fi
 
         log_info "Copying: ${wheels[*]}"
         if ! cp -v "${wheels[@]}" "$final_output_dir/"; then
             log_error "Failed to copy wheels to output directory"
-            exit 1
+            return 1
         fi
 
         log_info "Verifying wheel in output directory..."
@@ -1583,23 +1587,43 @@ build_all() {
     local -a variants_array
     if ! mapfile -t variants_array < <(get_all_variants); then
         log_error "Failed to read variants from config file"
-        exit 1
+        return 1
     fi
 
     if [[ ${#variants_array[@]} -eq 0 ]]; then
         log_error "No variants found in config file"
-        exit 1
+        return 1
     fi
 
     local variant
+    local any_failed=0
+    local any_succeeded=0
     for variant in "${variants_array[@]}"; do
         log_info "========================================"
-        build_variant "$variant"
+        if build_variant "$variant"; then
+            any_succeeded=1
+        else
+            any_failed=1
+            # Track this specific variant failure in global array
+            local failure_id="${VLLM_VERSION:-latest}/py${PYTHON_VERSION}/${variant}"
+            FAILED_VARIANTS+=("$failure_id")
+            log_warning "Variant $variant failed, continuing with remaining variants..."
+        fi
         log_info "========================================"
         echo ""
     done
 
-    log_success "All variants built successfully!"
+    if [[ $any_succeeded -eq 1 ]]; then
+        if [[ $any_failed -eq 1 ]]; then
+            log_warning "Some variants failed but others succeeded"
+        else
+            log_success "All variants built successfully!"
+        fi
+        return 0
+    else
+        log_error "All variants failed to build"
+        return 1
+    fi
 }
 
 # Main
@@ -1696,6 +1720,11 @@ main() {
     fi
     log_info "=========================================="
 
+    # Track failed builds to allow partial success
+    local -a failed_builds=()
+    local total_builds=0
+    local successful_builds=0
+
     # Build matrix: vLLM versions × Python versions × Variants
     for vllm_ver in "${vllm_versions_to_build[@]}"; do
         if [[ -n "$vllm_ver" ]]; then
@@ -1750,30 +1779,57 @@ main() {
             # Note: Each Python version uses its own venv (venv-3.10, venv-3.11, etc.)
             # so no need to remove existing venv - it will be reused or created as needed
 
-            # Build variant(s)
+            # Build variant(s) with failure tracking
+            # We use a subshell to catch failures without exiting the script
+            local build_failed=0
+            total_builds=$((total_builds + 1))
+
             if [[ -n "$VARIANT" ]]; then
                 if [[ "$VARIANT" == "all" ]]; then
-                    build_all
+                    if ! build_all; then
+                        build_failed=1
+                    fi
                 else
-                    build_variant "$VARIANT"
+                    if ! build_variant "$VARIANT"; then
+                        build_failed=1
+                        # Track single variant failure in global array
+                        local failure_id="${vllm_ver:-latest}/py${py_ver}/${VARIANT}"
+                        FAILED_VARIANTS+=("$failure_id")
+                    fi
                 fi
             else
-                build_all
+                if ! build_all; then
+                    build_failed=1
+                fi
+            fi
+
+            if [[ $build_failed -eq 1 ]]; then
+                local build_id="${vllm_ver:-latest}/py${py_ver}/${VARIANT:-all}"
+                failed_builds+=("$build_id")
+                log_error "Build failed: $build_id"
+                log_warning "Continuing with remaining builds..."
+            else
+                successful_builds=$((successful_builds + 1))
             fi
         done
     done
 
     # Show results
     log_info "=========================================="
-    log_info "Build Complete!"
+    log_info "Build Summary"
     log_info "=========================================="
+    log_info "Total Python version builds: $total_builds"
+    log_info "Successful Python version builds: $successful_builds"
+    log_info "Failed Python version builds: ${#failed_builds[@]}"
+    log_info "Failed variant builds: ${#FAILED_VARIANTS[@]}"
 
     shopt -s nullglob
     local all_wheels=("$OUTPUT_DIR"/**/*.whl "$OUTPUT_DIR"/*.whl)
     shopt -u nullglob
 
     if [[ ${#all_wheels[@]} -gt 0 ]]; then
-        log_info "Total wheels built: ${#all_wheels[@]}"
+        log_info ""
+        log_success "Total wheels built: ${#all_wheels[@]}"
         log_info ""
         log_info "Output structure:"
         if command -v tree &>/dev/null; then
@@ -1788,6 +1844,34 @@ main() {
     else
         log_warning "No wheels found in output directory"
     fi
+
+    # Report failed variant builds (per-variant granularity)
+    if [[ ${#FAILED_VARIANTS[@]} -gt 0 ]]; then
+        log_info ""
+        log_error "=========================================="
+        log_error "Failed variant builds (${#FAILED_VARIANTS[@]}):"
+        log_error "=========================================="
+        for failed in "${FAILED_VARIANTS[@]}"; do
+            log_error "  - $failed"
+        done
+
+        # Exit with error only if ALL builds failed (no wheels produced)
+        if [[ ${#all_wheels[@]} -eq 0 ]]; then
+            log_error ""
+            log_error "All builds failed - no wheels produced"
+            exit 1
+        else
+            log_warning ""
+            log_warning "Some variant builds failed but ${#all_wheels[@]} wheel(s) were built successfully"
+            log_warning "The successful wheels will be uploaded"
+            # Exit 0 to allow uploading successful wheels
+            # The workflow will show partial success
+            exit 0
+        fi
+    fi
+
+    log_info ""
+    log_success "All builds completed successfully!"
 }
 
 main "$@"
