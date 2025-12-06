@@ -1,0 +1,415 @@
+# =============================================================================
+# Reusable Workflow: Check Versions and Generate Build Matrix
+# =============================================================================
+# Checks for new vLLM releases and generates a unified build matrix.
+# Called by the main build-wheel.yml workflow.
+#
+# Outputs a single build_matrix JSON that can be used with fromJSON() to
+# spawn parallel build jobs for all variant/platform/version combinations.
+#
+# Usage:
+#   jobs:
+#     check-versions:
+#       uses: ./.github/workflows/_check-versions.yml
+#       with:
+#         vllm_versions: "0.12.0"
+#         build_noavx512: true
+#         build_avx512: true
+#       secrets: inherit
+# =============================================================================
+
+name: Check Versions (Reusable)
+
+on:
+  workflow_call:
+    inputs:
+      vllm_versions:
+        description: 'vLLM versions (e.g., 0.12.0 or 0.11.2,0.12.0 or 0.11.0-0.12.0) - leave empty for auto-detect'
+        required: false
+        type: string
+        default: ''
+      build_noavx512:
+        description: 'Build noavx512 (universal, AMD64+ARM64)'
+        required: false
+        type: boolean
+        default: true
+      build_avx512:
+        description: 'Build avx512 (AMD64 only)'
+        required: false
+        type: boolean
+        default: true
+      build_avx512vnni:
+        description: 'Build avx512vnni (AMD64 only)'
+        required: false
+        type: boolean
+        default: true
+      build_avx512bf16:
+        description: 'Build avx512bf16 (AMD64 only)'
+        required: false
+        type: boolean
+        default: true
+      build_amxbf16:
+        description: 'Build amxbf16 (AMD64 only)'
+        required: false
+        type: boolean
+        default: true
+      platforms:
+        description: 'Target platforms (all, linux/amd64, linux/arm64)'
+        required: false
+        type: string
+        default: 'all'
+      version_postfix:
+        description: 'Version postfix (e.g., .post1, .dev2, .rc1)'
+        required: false
+        type: string
+        default: ''
+    outputs:
+      build_matrix:
+        description: 'JSON matrix for unified build jobs (empty array [] if no builds)'
+        value: ${{ jobs.check.outputs.build_matrix }}
+      has_builds:
+        description: 'Whether there are builds to run (true/false)'
+        value: ${{ jobs.check.outputs.has_builds }}
+      new_versions:
+        description: 'JSON array of versions to build'
+        value: ${{ jobs.check.outputs.new_versions }}
+      version_postfix:
+        description: 'Normalized version postfix'
+        value: ${{ jobs.check.outputs.version_postfix }}
+      build_amd64:
+        description: 'Whether AMD64 builds are enabled'
+        value: ${{ jobs.check.outputs.build_amd64 }}
+      build_arm64:
+        description: 'Whether ARM64 builds are enabled'
+        value: ${{ jobs.check.outputs.build_arm64 }}
+
+jobs:
+  check:
+    name: Check Versions & Generate Matrix
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      build_matrix: ${{ steps.matrix.outputs.build_matrix }}
+      has_builds: ${{ steps.matrix.outputs.has_builds }}
+      new_versions: ${{ steps.compare.outputs.new_versions }}
+      version_postfix: ${{ steps.postfix.outputs.postfix }}
+      build_amd64: ${{ steps.platforms.outputs.build_amd64 }}
+      build_arm64: ${{ steps.platforms.outputs.build_arm64 }}
+
+    steps:
+      - name: Validate version postfix
+        id: postfix
+        run: |
+          POSTFIX="${{ inputs.version_postfix }}"
+
+          if [[ -z "$POSTFIX" ]]; then
+            echo "No version postfix specified"
+            echo "postfix=" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Normalize postfix: add leading dot if missing
+          # Accepts: post1, .post1, dev2, .dev2, rc1, .rc1, a1, .a1, b1, .b1
+          if [[ "$POSTFIX" =~ ^\.?(post|dev|a|b|rc)([0-9]+)$ ]]; then
+            TYPE="${BASH_REMATCH[1]}"
+            NUM="${BASH_REMATCH[2]}"
+            NORMALIZED=".${TYPE}${NUM}"
+            echo "Input postfix: $POSTFIX -> Normalized: $NORMALIZED"
+            echo "postfix=$NORMALIZED" >> "$GITHUB_OUTPUT"
+          else
+            echo "::error::Invalid version postfix '$POSTFIX'. Must match pattern: post1, .post1, dev2, .dev2, rc1, a1, b1, etc."
+            exit 1
+          fi
+
+      - name: Fetch vLLM releases from GitHub
+        id: github
+        run: |
+          echo "Fetching vLLM releases from GitHub..."
+
+          # Use GitHub token for higher rate limits (5000/hour vs 60/hour)
+          # Fetch all releases >= 0.8.5 (no older versions needed)
+          GITHUB_VERSIONS=$(curl -sfL --retry 3 --retry-delay 5 \
+            -H "Accept: application/vnd.github.v3+json" \
+            -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/vllm-project/vllm/releases?per_page=100" | \
+            jq -r '.[].tag_name' | \
+            grep -E '^v[0-9]+\.[0-9]+\.[0-9]+(\.[0-9]+)?$' | \
+            sed 's/^v//' | \
+            sort -V | \
+            awk -F. '$1 > 0 || ($1 == 0 && ($2 > 8 || ($2 == 8 && $3 >= 5)))')
+
+          if [[ -z "$GITHUB_VERSIONS" ]]; then
+            echo "::error::Failed to fetch vLLM releases from GitHub (possible rate limit)"
+            exit 1
+          fi
+
+          echo "GitHub versions (stable only):"
+          echo "$GITHUB_VERSIONS"
+
+          # Save to file for later use
+          echo "$GITHUB_VERSIONS" > /tmp/github_versions.txt
+
+      - name: Fetch existing versions from PyPI
+        id: pypi
+        run: |
+          echo "Fetching existing versions from PyPI..."
+
+          # Query PyPI for vllm-cpu package versions with retry
+          # PyPI has generous rate limits, no auth needed
+          PYPI_VERSIONS=$(curl -sfL --retry 3 --retry-delay 5 \
+            "https://pypi.org/pypi/vllm-cpu/json" | \
+            jq -r '.releases | keys[]' | \
+            grep -E '^[0-9]+\.[0-9]+\.[0-9]+(\.[0-9]+)?$' | \
+            sort -V)
+
+          if [[ -z "$PYPI_VERSIONS" ]]; then
+            echo "::warning::Failed to fetch PyPI versions, assuming no existing versions"
+            touch /tmp/pypi_versions.txt
+          else
+            echo "PyPI versions (excluding .post/.dev):"
+            echo "$PYPI_VERSIONS"
+            echo "$PYPI_VERSIONS" > /tmp/pypi_versions.txt
+          fi
+
+      - name: Compare versions
+        id: compare
+        run: |
+          echo "Comparing versions..."
+
+          # Handle vllm_versions input (supports: single, comma-separated, or range)
+          INPUT_VERSIONS="${{ inputs.vllm_versions }}"
+          if [[ -n "$INPUT_VERSIONS" ]]; then
+            echo "Manual version input: $INPUT_VERSIONS"
+
+            # Parse the input - could be single, comma-separated, or range
+            PARSED_VERSIONS=""
+
+            # Check if it's a range (e.g., "0.11.0-0.12.0" or "0.8.5-0.10.1.1")
+            # Supports both 3-part (0.8.5) and 4-part (0.10.1.1) versions
+            if [[ "$INPUT_VERSIONS" =~ ^([0-9]+\.[0-9]+\.[0-9]+(\.[0-9]+)?)-([0-9]+\.[0-9]+\.[0-9]+(\.[0-9]+)?)$ ]]; then
+              START_VER="${BASH_REMATCH[1]}"
+              END_VER="${BASH_REMATCH[3]}"
+              echo "Parsing version range: $START_VER to $END_VER"
+
+              # Get all versions from GitHub that fall within the range
+              while IFS= read -r ver; do
+                if [[ -n "$ver" ]]; then
+                  # Compare versions using sort -V
+                  if [[ $(echo -e "$START_VER\n$ver" | sort -V | head -1) == "$START_VER" ]] && \
+                     [[ $(echo -e "$ver\n$END_VER" | sort -V | head -1) == "$ver" ]]; then
+                    if [[ -n "$PARSED_VERSIONS" ]]; then
+                      PARSED_VERSIONS="$PARSED_VERSIONS,$ver"
+                    else
+                      PARSED_VERSIONS="$ver"
+                    fi
+                  fi
+                fi
+              done < /tmp/github_versions.txt
+
+              if [[ -z "$PARSED_VERSIONS" ]]; then
+                echo "No versions found in range $START_VER to $END_VER"
+                echo "new_versions=[]" >> "$GITHUB_OUTPUT"
+                exit 0
+              fi
+              echo "Versions in range: $PARSED_VERSIONS"
+            else
+              # Single version or comma-separated list - validate against available versions
+              PARSED_VERSIONS=""
+              SKIPPED_VERSIONS=""
+              IFS=',' read -ra INPUT_ARRAY <<< "$INPUT_VERSIONS"
+              for ver in "${INPUT_ARRAY[@]}"; do
+                ver=$(echo "$ver" | tr -d ' ')  # Trim whitespace
+                if grep -qx "$ver" /tmp/github_versions.txt; then
+                  if [[ -n "$PARSED_VERSIONS" ]]; then
+                    PARSED_VERSIONS="$PARSED_VERSIONS,$ver"
+                  else
+                    PARSED_VERSIONS="$ver"
+                  fi
+                else
+                  echo "::warning::vLLM version $ver not found in GitHub releases - skipping"
+                  if [[ -n "$SKIPPED_VERSIONS" ]]; then
+                    SKIPPED_VERSIONS="$SKIPPED_VERSIONS,$ver"
+                  else
+                    SKIPPED_VERSIONS="$ver"
+                  fi
+                fi
+              done
+
+              if [[ -n "$SKIPPED_VERSIONS" ]]; then
+                echo "Skipped unavailable versions: $SKIPPED_VERSIONS"
+              fi
+
+              if [[ -z "$PARSED_VERSIONS" ]]; then
+                echo "::error::No valid vLLM versions found. Requested: $INPUT_VERSIONS"
+                echo "new_versions=[]" >> "$GITHUB_OUTPUT"
+                exit 0
+              fi
+            fi
+
+            # Convert to JSON array
+            JSON_ARRAY=$(echo "$PARSED_VERSIONS" | tr ',' '\n' | jq -R . | jq -s -c .)
+            echo "Valid versions to build: $PARSED_VERSIONS"
+            echo "new_versions=$JSON_ARRAY" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Auto-detect: Find versions in GitHub but not in PyPI
+          NEW_VERSIONS=""
+          while IFS= read -r version; do
+            if [[ -n "$version" ]] && ! grep -qx "$version" /tmp/pypi_versions.txt; then
+              echo "New version found: $version"
+              if [[ -n "$NEW_VERSIONS" ]]; then
+                NEW_VERSIONS="$NEW_VERSIONS,$version"
+              else
+                NEW_VERSIONS="$version"
+              fi
+            fi
+          done < /tmp/github_versions.txt
+
+          if [[ -z "$NEW_VERSIONS" ]]; then
+            echo "No new versions found"
+            echo "new_versions=[]" >> "$GITHUB_OUTPUT"
+          else
+            echo "New versions to build: $NEW_VERSIONS"
+            # Convert comma-separated to JSON array
+            JSON_ARRAY=$(echo "$NEW_VERSIONS" | tr ',' '\n' | jq -R . | jq -s -c .)
+            echo "new_versions=$JSON_ARRAY" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Determine platforms
+        id: platforms
+        run: |
+          SELECTED_PLATFORM="${{ inputs.platforms }}"
+          echo "Selected platform: $SELECTED_PLATFORM"
+
+          if [[ "$SELECTED_PLATFORM" == "all" || "$SELECTED_PLATFORM" == "linux/amd64" ]]; then
+            echo "build_amd64=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "build_amd64=false" >> "$GITHUB_OUTPUT"
+          fi
+
+          if [[ "$SELECTED_PLATFORM" == "all" || "$SELECTED_PLATFORM" == "linux/arm64" ]]; then
+            echo "build_arm64=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "build_arm64=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Generate unified build matrix
+        id: matrix
+        run: |
+          # Read versions from previous step
+          VERSIONS_JSON='${{ steps.compare.outputs.new_versions }}'
+
+          # Check if we have any versions to build
+          if [[ "$VERSIONS_JSON" == "[]" || -z "$VERSIONS_JSON" ]]; then
+            echo "No versions to build"
+            echo "build_matrix=[]" >> "$GITHUB_OUTPUT"
+            echo "has_builds=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Platform flags
+          BUILD_AMD64="${{ steps.platforms.outputs.build_amd64 }}"
+          BUILD_ARM64="${{ steps.platforms.outputs.build_arm64 }}"
+
+          # Variant flags
+          BUILD_NOAVX512="${{ inputs.build_noavx512 }}"
+          BUILD_AVX512="${{ inputs.build_avx512 }}"
+          BUILD_AVX512VNNI="${{ inputs.build_avx512vnni }}"
+          BUILD_AVX512BF16="${{ inputs.build_avx512bf16 }}"
+          BUILD_AMXBF16="${{ inputs.build_amxbf16 }}"
+
+          echo "=== Build Configuration ==="
+          echo "Versions: $VERSIONS_JSON"
+          echo "Platforms: AMD64=$BUILD_AMD64, ARM64=$BUILD_ARM64"
+          echo "Variants: noavx512=$BUILD_NOAVX512, avx512=$BUILD_AVX512, avx512vnni=$BUILD_AVX512VNNI, avx512bf16=$BUILD_AVX512BF16, amxbf16=$BUILD_AMXBF16"
+
+          # Generate the build matrix using jq
+          # This creates a flat array of {variant, platform, version} objects
+          MATRIX=$(echo "$VERSIONS_JSON" | jq -c --arg build_amd64 "$BUILD_AMD64" \
+                                                  --arg build_arm64 "$BUILD_ARM64" \
+                                                  --arg build_noavx512 "$BUILD_NOAVX512" \
+                                                  --arg build_avx512 "$BUILD_AVX512" \
+                                                  --arg build_avx512vnni "$BUILD_AVX512VNNI" \
+                                                  --arg build_avx512bf16 "$BUILD_AVX512BF16" \
+                                                  --arg build_amxbf16 "$BUILD_AMXBF16" '
+            . as $versions |
+            [
+              # noavx512 for AMD64
+              (if ($build_noavx512 == "true" and $build_amd64 == "true") then
+                $versions[] | {variant: "noavx512", platform: "amd64", version: .}
+              else empty end),
+
+              # noavx512 for ARM64
+              (if ($build_noavx512 == "true" and $build_arm64 == "true") then
+                $versions[] | {variant: "noavx512", platform: "arm64", version: .}
+              else empty end),
+
+              # AVX512 variants (AMD64 only)
+              (if ($build_avx512 == "true" and $build_amd64 == "true") then
+                $versions[] | {variant: "avx512", platform: "amd64", version: .}
+              else empty end),
+
+              (if ($build_avx512vnni == "true" and $build_amd64 == "true") then
+                $versions[] | {variant: "avx512vnni", platform: "amd64", version: .}
+              else empty end),
+
+              (if ($build_avx512bf16 == "true" and $build_amd64 == "true") then
+                $versions[] | {variant: "avx512bf16", platform: "amd64", version: .}
+              else empty end),
+
+              (if ($build_amxbf16 == "true" and $build_amd64 == "true") then
+                $versions[] | {variant: "amxbf16", platform: "amd64", version: .}
+              else empty end)
+            ]
+          ')
+
+          echo "Generated matrix:"
+          echo "$MATRIX" | jq .
+
+          # Check if matrix is empty
+          MATRIX_LENGTH=$(echo "$MATRIX" | jq 'length')
+          if [[ "$MATRIX_LENGTH" -eq 0 ]]; then
+            echo "No builds in matrix (all variants/platforms disabled)"
+            echo "build_matrix=[]" >> "$GITHUB_OUTPUT"
+            echo "has_builds=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "Matrix has $MATRIX_LENGTH builds"
+            # Wrap in include for GitHub Actions matrix format
+            FINAL_MATRIX=$(echo "$MATRIX" | jq -c '{include: .}')
+            echo "build_matrix=$FINAL_MATRIX" >> "$GITHUB_OUTPUT"
+            echo "has_builds=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Summary
+        run: |
+          echo "=========================================="
+          echo "Version Check Summary"
+          echo "=========================================="
+          echo "New versions: ${{ steps.compare.outputs.new_versions }}"
+          echo "Version postfix: ${{ steps.postfix.outputs.postfix || '(none)' }}"
+          echo "Build AMD64: ${{ steps.platforms.outputs.build_amd64 }}"
+          echo "Build ARM64: ${{ steps.platforms.outputs.build_arm64 }}"
+          echo "Has builds: ${{ steps.matrix.outputs.has_builds }}"
+          echo "Build matrix: ${{ steps.matrix.outputs.build_matrix }}"
+          echo "=========================================="
+
+          # Add to job summary
+          {
+            echo "## Version Check Results"
+            echo ""
+            echo "| Property | Value |"
+            echo "|----------|-------|"
+            echo "| Versions | \`${{ steps.compare.outputs.new_versions }}\` |"
+            echo "| Postfix | \`${{ steps.postfix.outputs.postfix || '(none)' }}\` |"
+            echo "| AMD64 | ${{ steps.platforms.outputs.build_amd64 }} |"
+            echo "| ARM64 | ${{ steps.platforms.outputs.build_arm64 }} |"
+            echo "| Has Builds | ${{ steps.matrix.outputs.has_builds }} |"
+            echo ""
+            echo "### Build Matrix"
+            echo ""
+            echo "\`\`\`json"
+            echo '${{ steps.matrix.outputs.build_matrix }}' | jq .
+            echo "\`\`\`"
+          } >> "$GITHUB_STEP_SUMMARY"

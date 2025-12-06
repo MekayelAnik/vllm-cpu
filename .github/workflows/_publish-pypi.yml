@@ -1,0 +1,176 @@
+# =============================================================================
+# Reusable Workflow: Publish to PyPI
+# =============================================================================
+# Publishes vLLM CPU wheels to PyPI for a specific version.
+# Downloads wheel artifacts and publishes each variant separately.
+#
+# Usage:
+#   jobs:
+#     publish:
+#       uses: ./.github/workflows/_publish-pypi.yml
+#       with:
+#         version: "0.12.0"
+#         version_postfix: ".post1"
+#       secrets: inherit
+# =============================================================================
+
+name: Publish to PyPI (Reusable)
+
+on:
+  workflow_call:
+    inputs:
+      version:
+        description: 'vLLM version to publish'
+        required: true
+        type: string
+      version_postfix:
+        description: 'Version postfix (.post1, .dev2, .rc1, etc.)'
+        required: false
+        type: string
+        default: ''
+    outputs:
+      published_variants:
+        description: 'Comma-separated list of successfully published variants'
+        value: ${{ jobs.publish.outputs.published_variants }}
+      success:
+        description: 'Whether all publishes succeeded'
+        value: ${{ jobs.publish.outputs.success }}
+    secrets:
+      PYPI_TOKEN_CPU:
+        required: false
+      PYPI_TOKEN_AVX512:
+        required: false
+      PYPI_TOKEN_AVX512VNNI:
+        required: false
+      PYPI_TOKEN_AVX512BF16:
+        required: false
+      PYPI_TOKEN_AMXBF16:
+        required: false
+      PYPI_API_TOKEN:
+        required: false
+
+jobs:
+  publish:
+    name: Publish v${{ inputs.version }}${{ inputs.version_postfix }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    outputs:
+      published_variants: ${{ steps.publish.outputs.published_variants }}
+      success: ${{ steps.publish.outputs.success }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup environment
+        run: |
+          # Ensure all shell scripts are executable
+          find . -name "*.sh" -type f -exec chmod +x {} \;
+          # Create required directories
+          mkdir -p dist
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends python3 python3-pip jq
+          pip3 install --user twine
+
+      - name: Download all wheels for version ${{ inputs.version }}
+        uses: actions/download-artifact@v6
+        with:
+          path: dist/
+          pattern: wheels-*-${{ inputs.version }}${{ inputs.version_postfix }}
+          merge-multiple: true
+
+      - name: List all wheels
+        run: |
+          echo "=========================================="
+          echo "Wheels to publish for v${{ inputs.version }}${{ inputs.version_postfix }}:"
+          echo "=========================================="
+          find dist -name "*.whl" -exec ls -lh {} \;
+          echo ""
+          echo "Total: $(find dist -name '*.whl' 2>/dev/null | wc -l) wheels"
+
+      - name: Publish wheels
+        id: publish
+        run: |
+          # Detect Python versions from existing wheels
+          WHEEL_PY_VERSIONS=$(find dist -name "*.whl" -type f | sed -n 's/.*-cp\([0-9]*\)-cp.*/\1/p' | sort -u | while read v; do echo "3.${v#3}"; done | tr '\n' ',' | sed 's/,$//')
+          echo "Detected Python versions: $WHEEL_PY_VERSIONS"
+
+          # Detect which variants actually have wheels (only publish what exists)
+          AVAILABLE_VARIANTS=""
+          for variant in noavx512 avx512 avx512vnni avx512bf16 amxbf16; do
+            # Map variant name to wheel pattern
+            if [[ "$variant" == "noavx512" ]]; then
+              pattern="vllm_cpu-"
+            else
+              pattern="vllm_cpu_${variant}-"
+            fi
+            if find dist -name "${pattern}*.whl" 2>/dev/null | grep -q .; then
+              if [[ -n "$AVAILABLE_VARIANTS" ]]; then
+                AVAILABLE_VARIANTS="$AVAILABLE_VARIANTS,$variant"
+              else
+                AVAILABLE_VARIANTS="$variant"
+              fi
+            fi
+          done
+
+          if [[ -z "$AVAILABLE_VARIANTS" ]]; then
+            echo "::error::No wheels found to publish!"
+            echo "success=false" >> "$GITHUB_OUTPUT"
+            echo "published_variants=" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+          echo "Variants with wheels: $AVAILABLE_VARIANTS"
+
+          # Publish each variant separately to handle partial builds
+          IFS=',' read -ra VARIANTS <<< "$AVAILABLE_VARIANTS"
+          FAILED=0
+          PUBLISHED=""
+          POSTFIX="${{ inputs.version_postfix }}"
+
+          for variant in "${VARIANTS[@]}"; do
+            echo "Publishing variant: $variant"
+            if ./build_and_verify.sh \
+              --skip-build \
+              --skip-github \
+              --variant="$variant" \
+              --vllm-versions="${{ inputs.version }}" \
+              --python-versions="${WHEEL_PY_VERSIONS:-auto}" \
+              --platform=all \
+              --dist-dir=dist \
+              ${POSTFIX:+--version-suffix="$POSTFIX"}; then
+              if [[ -n "$PUBLISHED" ]]; then
+                PUBLISHED="$PUBLISHED,$variant"
+              else
+                PUBLISHED="$variant"
+              fi
+            else
+              echo "::warning::Failed to publish $variant"
+              FAILED=$((FAILED + 1))
+            fi
+          done
+
+          echo "published_variants=$PUBLISHED" >> "$GITHUB_OUTPUT"
+
+          if [[ $FAILED -gt 0 ]]; then
+            echo "::warning::$FAILED variant(s) failed to publish"
+            # Partial success - some variants published
+            if [[ -n "$PUBLISHED" ]]; then
+              echo "success=partial" >> "$GITHUB_OUTPUT"
+            else
+              echo "success=false" >> "$GITHUB_OUTPUT"
+              exit 1
+            fi
+          else
+            echo "success=true" >> "$GITHUB_OUTPUT"
+          fi
+        env:
+          PYPI_TOKEN_CPU: ${{ secrets.PYPI_TOKEN_CPU }}
+          PYPI_TOKEN_AVX512: ${{ secrets.PYPI_TOKEN_AVX512 }}
+          PYPI_TOKEN_AVX512VNNI: ${{ secrets.PYPI_TOKEN_AVX512VNNI }}
+          PYPI_TOKEN_AVX512BF16: ${{ secrets.PYPI_TOKEN_AVX512BF16 }}
+          PYPI_TOKEN_AMXBF16: ${{ secrets.PYPI_TOKEN_AMXBF16 }}
+          PYPI_TOKEN: ${{ secrets.PYPI_API_TOKEN }}

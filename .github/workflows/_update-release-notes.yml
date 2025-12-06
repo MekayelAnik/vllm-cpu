@@ -1,0 +1,205 @@
+# =============================================================================
+# Reusable Workflow: Update GitHub Release Notes
+# =============================================================================
+# Updates GitHub release notes with wheel download links and install commands.
+# Fetches release assets from GitHub API and generates markdown documentation.
+#
+# Usage:
+#   jobs:
+#     release-notes:
+#       uses: ./.github/workflows/_update-release-notes.yml
+#       with:
+#         version: "0.12.0"
+#         version_postfix: ".post1"
+#       secrets: inherit
+# =============================================================================
+
+name: Update Release Notes (Reusable)
+
+on:
+  workflow_call:
+    inputs:
+      version:
+        description: 'vLLM version'
+        required: true
+        type: string
+      version_postfix:
+        description: 'Version postfix (.post1, .dev2, .rc1, etc.)'
+        required: false
+        type: string
+        default: ''
+    outputs:
+      success:
+        description: 'Whether release notes were updated'
+        value: ${{ jobs.update-notes.outputs.success }}
+
+# Permissions for updating releases
+permissions:
+  contents: write
+
+jobs:
+  update-notes:
+    name: Update Notes v${{ inputs.version }}${{ inputs.version_postfix }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    outputs:
+      success: ${{ steps.status.outputs.success }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Wait for release uploads to complete
+        run: |
+          # Give some time for any in-progress uploads to complete
+          echo "Waiting 30 seconds for any in-progress uploads..."
+          sleep 30
+
+      - name: Fetch release assets from GitHub API
+        id: fetch_assets
+        run: |
+          VERSION="${{ inputs.version }}"
+          POSTFIX="${{ inputs.version_postfix }}"
+          FULL_VERSION="${VERSION}${POSTFIX}"
+          TAG="v${FULL_VERSION}"
+
+          echo "Fetching release assets for tag: ${TAG}"
+
+          # Retry fetching assets a few times in case of eventual consistency
+          MAX_RETRIES=3
+          RETRY_DELAY=10
+          ASSETS=""
+
+          for i in $(seq 1 $MAX_RETRIES); do
+            echo "Attempt $i of $MAX_RETRIES..."
+
+            ASSETS=$(curl -sS --retry 3 --retry-delay 5 \
+              -H "Accept: application/vnd.github.v3+json" \
+              -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+              "https://api.github.com/repos/${{ github.repository }}/releases/tags/${TAG}" | \
+              jq -r '.assets[].name' 2>/dev/null || echo "")
+
+            if [[ -n "$ASSETS" ]]; then
+              ASSET_COUNT=$(echo "$ASSETS" | wc -l)
+              echo "Found $ASSET_COUNT assets"
+              break
+            else
+              if [[ $i -lt $MAX_RETRIES ]]; then
+                echo "No assets found, waiting ${RETRY_DELAY}s before retry..."
+                sleep $RETRY_DELAY
+              fi
+            fi
+          done
+
+          if [[ -z "$ASSETS" ]]; then
+            echo "::warning::No assets found for release ${TAG} after $MAX_RETRIES attempts"
+            echo "assets=" >> "$GITHUB_OUTPUT"
+          else
+            echo "Found assets:"
+            echo "$ASSETS"
+            # Save to file for later use
+            echo "$ASSETS" > /tmp/release_assets.txt
+            echo "assets=found" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Generate release notes
+        id: release_notes
+        if: steps.fetch_assets.outputs.assets == 'found'
+        run: |
+          VERSION="${{ inputs.version }}"
+          POSTFIX="${{ inputs.version_postfix }}"
+          FULL_VERSION="${VERSION}${POSTFIX}"
+          TAG="v${FULL_VERSION}"
+          BASE_URL="https://github.com/${{ github.repository }}/releases/download/${TAG}"
+
+          # Read assets from file
+          ASSETS=$(cat /tmp/release_assets.txt)
+
+          echo "=== Release assets ==="
+          echo "$ASSETS"
+
+          # Generate release notes
+          {
+            echo "## vLLM CPU Wheels"
+            echo ""
+            echo "Automatically built from upstream vLLM release."
+            echo ""
+            echo "### Quick Install from GitHub Release"
+            echo ""
+          } > release_notes.md
+
+          # Find the first vllm_cpu wheel for Python 3.12 x86_64 for the quick install example
+          EXAMPLE_WHEEL=$(echo "$ASSETS" | grep -E "^vllm_cpu-[^_].*-cp312-.*x86_64.*\.whl$" | head -1 || echo "")
+          if [[ -n "$EXAMPLE_WHEEL" ]]; then
+            echo '```bash' >> release_notes.md
+            echo "pip install \"vllm-cpu @ ${BASE_URL}/${EXAMPLE_WHEEL}\" --index-url https://download.pytorch.org/whl/cpu --extra-index-url https://pypi.org/simple" >> release_notes.md
+            echo '```' >> release_notes.md
+          fi
+
+          echo "" >> release_notes.md
+          echo "### All Variants" >> release_notes.md
+          echo "" >> release_notes.md
+          echo "| Package | Target CPUs | Install Command (Python 3.12 x86_64) |" >> release_notes.md
+          echo "|---------|-------------|--------------------------------------|" >> release_notes.md
+
+          # Generate table rows for each variant
+          declare -A VARIANT_MAP=(
+            ["vllm_cpu"]="vllm-cpu|All CPUs (x86_64, ARM64)"
+            ["vllm_cpu_avx512"]="vllm-cpu-avx512|Skylake-X+"
+            ["vllm_cpu_avx512vnni"]="vllm-cpu-avx512vnni|Cascade Lake+"
+            ["vllm_cpu_avx512bf16"]="vllm-cpu-avx512bf16|Cooper Lake+"
+            ["vllm_cpu_amxbf16"]="vllm-cpu-amxbf16|Sapphire Rapids+"
+          )
+
+          for wheel_prefix in vllm_cpu vllm_cpu_avx512 vllm_cpu_avx512vnni vllm_cpu_avx512bf16 vllm_cpu_amxbf16; do
+            # Find wheel for Python 3.12 x86_64
+            if [[ "$wheel_prefix" == "vllm_cpu" ]]; then
+              WHEEL=$(echo "$ASSETS" | grep -E "^vllm_cpu-[^_].*-cp312-.*x86_64.*\.whl$" | head -1 || echo "")
+            else
+              WHEEL=$(echo "$ASSETS" | grep -E "^${wheel_prefix}-.*-cp312-.*x86_64.*\.whl$" | head -1 || echo "")
+            fi
+
+            echo "Looking for ${wheel_prefix}: found '${WHEEL}'"
+
+            if [[ -n "$WHEEL" ]]; then
+              PKG_NAME=$(echo "${VARIANT_MAP[$wheel_prefix]}" | cut -d'|' -f1)
+              TARGET_CPUS=$(echo "${VARIANT_MAP[$wheel_prefix]}" | cut -d'|' -f2)
+              echo "| \`${PKG_NAME}\` | ${TARGET_CPUS} | \`pip install \"${PKG_NAME} @ ${BASE_URL}/${WHEEL}\" --index-url https://download.pytorch.org/whl/cpu --extra-index-url https://pypi.org/simple\` |" >> release_notes.md
+            else
+              echo "::warning::No wheel found for ${wheel_prefix} (Python 3.12 x86_64)"
+            fi
+          done
+
+          # Also add ARM64 row for vllm-cpu if available
+          ARM_WHEEL=$(echo "$ASSETS" | grep -E "^vllm_cpu-[^_].*-cp312-.*aarch64.*\.whl$" | head -1 || echo "")
+          if [[ -n "$ARM_WHEEL" ]]; then
+            echo "| \`vllm-cpu\` (ARM64) | ARM64/AArch64 | \`pip install \"vllm-cpu @ ${BASE_URL}/${ARM_WHEEL}\" --index-url https://download.pytorch.org/whl/cpu --extra-index-url https://pypi.org/simple\` |" >> release_notes.md
+          fi
+
+          echo "" >> release_notes.md
+          echo "> **Note:** Replace \`cp312\` with \`cp310\`, \`cp311\`, or \`cp313\` for other Python versions. Replace \`x86_64\` with \`aarch64\` for ARM64 (only \`vllm-cpu\` supports ARM64)." >> release_notes.md
+
+          # Debug output
+          echo "=== Generated release notes ==="
+          cat release_notes.md
+
+      - name: Update Release Notes
+        if: steps.fetch_assets.outputs.assets == 'found'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ inputs.version }}${{ inputs.version_postfix }}
+          name: vLLM CPU v${{ inputs.version }}${{ inputs.version_postfix }}
+          body_path: release_notes.md
+          draft: false
+          prerelease: ${{ contains(inputs.version_postfix, 'dev') || contains(inputs.version_postfix, 'rc') || contains(inputs.version_postfix, 'a') || contains(inputs.version_postfix, 'b') }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set success status
+        id: status
+        run: |
+          if [[ "${{ steps.fetch_assets.outputs.assets }}" == "found" ]]; then
+            echo "success=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "success=false" >> "$GITHUB_OUTPUT"
+          fi

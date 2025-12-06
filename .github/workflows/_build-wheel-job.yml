@@ -1,0 +1,152 @@
+# =============================================================================
+# Reusable Workflow: Build Wheel Job
+# =============================================================================
+# Builds vLLM CPU wheels for a specific variant/platform/version combination.
+# Called by the main build-wheel.yml workflow.
+#
+# Uses the setup-build-env composite action to consolidate common setup steps.
+#
+# Usage:
+#   jobs:
+#     build:
+#       uses: ./.github/workflows/_build-wheel-job.yml
+#       with:
+#         variant: noavx512
+#         platform: amd64
+#         version: "0.12.0"
+#       secrets: inherit
+# =============================================================================
+
+name: Build Wheel Job (Reusable)
+
+on:
+  workflow_call:
+    inputs:
+      variant:
+        description: 'Variant to build (noavx512, avx512, avx512vnni, avx512bf16, amxbf16)'
+        required: true
+        type: string
+      platform:
+        description: 'Target platform (amd64, arm64)'
+        required: true
+        type: string
+      version:
+        description: 'vLLM version to build'
+        required: true
+        type: string
+      python_versions:
+        description: 'Python versions to build (e.g., "3.12" or "3.10-3.13" or "auto")'
+        required: false
+        type: string
+        default: 'auto'
+      version_postfix:
+        description: 'Version postfix (.post1, .dev2, .rc1, etc.)'
+        required: false
+        type: string
+        default: ''
+      skip_github_release:
+        description: 'Skip uploading wheels to GitHub release'
+        required: false
+        type: boolean
+        default: false
+      uv_version:
+        description: 'UV package manager version'
+        required: false
+        type: string
+        default: '0.5'
+    outputs:
+      artifact_name:
+        description: 'Name of the uploaded artifact'
+        value: ${{ jobs.build.outputs.artifact_name }}
+      wheel_count:
+        description: 'Number of wheels built'
+        value: ${{ jobs.build.outputs.wheel_count }}
+      success:
+        description: 'Whether build succeeded'
+        value: ${{ jobs.build.outputs.success }}
+
+# Permissions for uploading to GitHub releases
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build ${{ inputs.variant }} ${{ inputs.platform }}
+    runs-on: ${{ inputs.platform == 'arm64' && 'ubuntu-24.04-arm' || 'ubuntu-latest' }}
+    timeout-minutes: ${{ inputs.platform == 'arm64' && 300 || 240 }}
+    outputs:
+      artifact_name: ${{ steps.metadata.outputs.artifact_name }}
+      wheel_count: ${{ steps.count.outputs.wheel_count }}
+      success: ${{ steps.status.outputs.success }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup metadata
+        id: metadata
+        run: |
+          ARTIFACT_NAME="wheels-${{ inputs.variant }}-${{ inputs.platform }}-${{ inputs.version }}${{ inputs.version_postfix }}"
+          echo "artifact_name=$ARTIFACT_NAME" >> "$GITHUB_OUTPUT"
+          echo "Artifact name: $ARTIFACT_NAME"
+
+      - name: Setup build environment
+        uses: ./.github/actions/setup-build-env
+        with:
+          platform: ${{ inputs.platform }}
+          variant: ${{ inputs.variant }}
+          version: ${{ inputs.version }}
+          uv_version: ${{ inputs.uv_version }}
+
+      - name: Build wheels
+        id: build
+        run: |
+          echo "Building ${{ inputs.variant }} for ${{ inputs.platform }}, vLLM ${{ inputs.version }}"
+
+          POSTFIX="${{ inputs.version_postfix }}"
+
+          ./build_wheels.sh \
+            --variant=${{ inputs.variant }} \
+            --vllm-versions="${{ inputs.version }}" \
+            --python-versions="${{ inputs.python_versions }}" \
+            ${POSTFIX:+--version-suffix="$POSTFIX"} \
+            --output-dir=dist
+
+      - name: Count wheels
+        id: count
+        run: |
+          WHEEL_COUNT=$(find dist -name "*.whl" -type f | wc -l)
+          echo "wheel_count=$WHEEL_COUNT" >> "$GITHUB_OUTPUT"
+          echo "Built $WHEEL_COUNT wheels"
+
+      - name: List built wheels
+        run: |
+          echo "=== Built wheels ==="
+          find dist -name "*.whl" -exec ls -lh {} \;
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v5
+        with:
+          name: ${{ steps.metadata.outputs.artifact_name }}
+          path: dist/**/*.whl
+          retention-days: 30
+          if-no-files-found: error
+
+      - name: Upload to GitHub Release
+        if: inputs.skip_github_release != true
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ inputs.version }}${{ inputs.version_postfix }}
+          name: vLLM CPU v${{ inputs.version }}${{ inputs.version_postfix }}
+          files: dist/**/*.whl
+          draft: false
+          prerelease: ${{ contains(inputs.version_postfix, 'dev') || contains(inputs.version_postfix, 'rc') || contains(inputs.version_postfix, 'a') || contains(inputs.version_postfix, 'b') }}
+          fail_on_unmatched_files: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set success status
+        id: status
+        if: success()
+        run: |
+          echo "success=true" >> "$GITHUB_OUTPUT"

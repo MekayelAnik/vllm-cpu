@@ -290,53 +290,96 @@ During wheel building, these environment variables control CPU optimizations:
 - `VLLM_CPU_AMXBF16`: Set to 1 to enable AMX
 - `MAX_JOBS`: Number of parallel build jobs (default: CPU count)
 
-### CI/CD Pipeline (.github/workflows/build-and-publish.yml)
+### CI/CD Pipeline
 
-Comprehensive GitHub Actions workflow with the following features:
+The CI/CD system uses a modular architecture with reusable workflows and composite actions for maintainability and reduced complexity.
+
+#### Workflow Architecture
+
+```
+.github/
+├── actions/
+│   └── setup-build-env/
+│       └── action.yml              # Composite action: system deps, uv, ccache
+├── workflows/
+│   ├── build-wheel.yml             # Main orchestrator (triggers builds)
+│   ├── _check-versions.yml         # Reusable: version detection + matrix generation
+│   ├── _build-wheel-job.yml        # Reusable: single wheel build
+│   ├── _publish-pypi.yml           # Reusable: PyPI publishing
+│   ├── _update-release-notes.yml   # Reusable: GitHub release notes
+│   └── build-docker-image.yml      # Docker image builder
+```
+
+#### Main Workflow: `build-wheel.yml`
 
 **Triggers:**
-- **Manual dispatch**: Build any vLLM version with custom variant selection
-- **Version tags**: Automatically build and publish on `v*.*.*` tags
-- **Pull requests**: Build and test (without publishing) on PRs to main/develop
+- **Schedule**: Hourly check for new vLLM releases
+- **Manual dispatch**: Build specific versions with custom variant selection
 
 **Jobs:**
-1. **prepare-matrix**: Determines which variants to build and vLLM version
-2. **build-wheels**: Builds all 5 variants in parallel with caching
-3. **test-wheels**: Validates each wheel can be installed and imported
-4. **github-release**: Creates GitHub releases with wheel attachments
-5. **publish-pypi**: Publishes to PyPI/Test PyPI based on triggers
-6. **build-summary**: Reports overall build status
+1. **check-versions**: Calls `_check-versions.yml` to detect new versions and generate unified build matrix
+2. **build**: Single job with dynamic matrix - spawns parallel builds for all variant/platform/version combinations
+3. **publish**: Publishes wheels to PyPI per version
+4. **github-release**: Updates release notes per version
+5. **summary**: Reports overall build status
 
-**Features:**
-- ✅ ccache and build artifact caching for faster rebuilds
-- ✅ Selective variant building via workflow inputs
-- ✅ Automatic wheel validation with `twine check`
-- ✅ Import tests for each built wheel
-- ✅ **Automatic GitHub releases with all 5 wheels attached**
-- ✅ **Custom release notes with package table and installation instructions**
+**Key Features:**
+- ✅ **Unified dynamic build matrix** - all variants/platforms in one job definition
+- ✅ **Composite action** for build environment setup (reduces duplication)
+- ✅ **Reusable workflows** for modular, testable components
+- ✅ ccache caching for faster rebuilds
+- ✅ Selective variant/platform building via inputs
+- ✅ Automatic GitHub releases with wheel uploads
+- ✅ Custom release notes with install commands
 - ✅ 30-day artifact retention
-- ✅ Smart PyPI publishing (Test PyPI for alpha/beta, PyPI for stable)
-- ✅ Separate jobs for GitHub releases and PyPI publishing
+- ✅ Version postfix support (.post1, .dev2, .rc1, etc.)
 
 **Required GitHub Secrets:**
 - `PYPI_API_TOKEN` - Production PyPI token
-- `TEST_PYPI_API_TOKEN` - Test PyPI token (optional, for CI workflows that still use Test PyPI)
+- `PYPI_TOKEN_CPU`, `PYPI_TOKEN_AVX512`, etc. - Per-variant tokens (optional)
 
 **Manual Workflow Usage:**
 ```bash
-# Via GitHub UI: Actions → Build and Publish → Run workflow
-# Or via GitHub CLI:
-gh workflow run build-and-publish.yml \
-  -f vllm_version=v0.6.2 \
-  -f publish_to_pypi=false \
-  -f publish_to_test_pypi=true \
-  -f variants="vllm-cpu-avx512bf16,vllm-cpu-amxbf16"
+# Build specific version with all variants
+gh workflow run build-wheel.yml \
+  -f vllm_versions=0.12.0
 
-# Build with version postfix (e.g., .post1, .dev2, .rc1)
+# Build with version postfix
 gh workflow run build-wheel.yml \
   -f vllm_versions=0.12.0 \
   -f version_postfix=.post1
+
+# Build only specific variants
+gh workflow run build-wheel.yml \
+  -f vllm_versions=0.12.0 \
+  -f build_noavx512=true \
+  -f build_avx512=false \
+  -f build_avx512vnni=false \
+  -f build_avx512bf16=true \
+  -f build_amxbf16=false
+
+# Dry run (check versions only)
+gh workflow run build-wheel.yml \
+  -f vllm_versions=0.12.0 \
+  -f dry_run=true
 ```
+
+#### Reusable Workflows
+
+| Workflow | Purpose |
+|----------|---------|
+| `_check-versions.yml` | Fetches vLLM releases, compares with PyPI, generates unified build matrix JSON |
+| `_build-wheel-job.yml` | Builds wheels for a single variant/platform/version combination |
+| `_publish-pypi.yml` | Downloads artifacts and publishes to PyPI |
+| `_update-release-notes.yml` | Generates and updates GitHub release notes with install commands |
+
+#### Composite Action: `setup-build-env`
+
+Consolidates common build setup steps used across all build jobs:
+- Disk space cleanup
+- System dependencies (gcc, cmake, ninja, ccache, etc.)
+- UV package manager installation
+- ccache configuration and caching
 
 ### CPU Detector Tool (cpu_detect/)
 
