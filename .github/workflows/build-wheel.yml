@@ -90,9 +90,10 @@ on:
 
 # Concurrency control:
 # - Scheduled runs: Only one at a time, queue others (don't cancel running)
-# - Manual runs: Each gets unique group (run_id), so multiple can run in parallel
+# - Manual runs: No concurrency limits - multiple can run in parallel
+# Using run_id ensures each manual trigger gets its own unique group
 concurrency:
-  group: ${{ github.event_name == 'schedule' && format('{0}-scheduled', github.workflow) || format('{0}-manual-{1}', github.workflow, github.run_id) }}
+  group: ${{ github.event_name == 'schedule' && 'wheel-scheduled' || format('wheel-manual-{0}', github.run_id) }}
   cancel-in-progress: false
 
 # Default permissions: Read-only (principle of least privilege)
