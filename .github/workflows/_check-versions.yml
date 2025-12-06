@@ -282,8 +282,8 @@ jobs:
               exit 0
             fi
 
-            # Remove duplicates and sort versions
-            PARSED_VERSIONS=$(echo "$PARSED_VERSIONS" | tr ',' '\n' | sort -V | uniq | tr '\n' ',' | sed 's/,$//')
+            # Remove duplicates, empty lines, and sort versions
+            PARSED_VERSIONS=$(echo "$PARSED_VERSIONS" | tr ',' '\n' | grep -v '^$' | sort -V | uniq | tr '\n' ',' | sed 's/,$//')
 
             # Convert to JSON array
             JSON_ARRAY=$(echo "$PARSED_VERSIONS" | tr ',' '\n' | jq -R . | jq -s -c .)
