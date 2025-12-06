@@ -187,75 +187,102 @@ jobs:
         run: |
           echo "Comparing versions..."
 
-          # Handle vllm_versions input (supports: single, comma-separated, or range)
+          # Handle vllm_versions input
+          # Supports mixed formats with spaces:
+          #   - Single: "0.12.0"
+          #   - List: "0.11.0, 0.11.1, 0.12.0"
+          #   - Range: "0.11.0-0.12.0"
+          #   - Mixed: "0.8.5, 0.11.0-0.11.2, 0.12.0"
+          #   - Complex: "0.8.5-0.9.0, 0.9.0.1, 0.9.2-0.10.1"
           INPUT_VERSIONS="${{ inputs.vllm_versions }}"
           if [[ -n "$INPUT_VERSIONS" ]]; then
             echo "Manual version input: $INPUT_VERSIONS"
 
-            # Parse the input - could be single, comma-separated, or range
-            PARSED_VERSIONS=""
+            # Function to expand a version range into individual versions
+            expand_range() {
+              local start_ver="$1"
+              local end_ver="$2"
+              local result=""
 
-            # Check if it's a range (e.g., "0.11.0-0.12.0" or "0.8.5-0.10.1.1")
-            # Supports both 3-part (0.8.5) and 4-part (0.10.1.1) versions
-            if [[ "$INPUT_VERSIONS" =~ ^([0-9]+\.[0-9]+\.[0-9]+(\.[0-9]+)?)-([0-9]+\.[0-9]+\.[0-9]+(\.[0-9]+)?)$ ]]; then
-              START_VER="${BASH_REMATCH[1]}"
-              END_VER="${BASH_REMATCH[3]}"
-              echo "Parsing version range: $START_VER to $END_VER"
-
-              # Get all versions from GitHub that fall within the range
               while IFS= read -r ver; do
                 if [[ -n "$ver" ]]; then
-                  # Compare versions using sort -V
-                  if [[ $(echo -e "$START_VER\n$ver" | sort -V | head -1) == "$START_VER" ]] && \
-                     [[ $(echo -e "$ver\n$END_VER" | sort -V | head -1) == "$ver" ]]; then
-                    if [[ -n "$PARSED_VERSIONS" ]]; then
-                      PARSED_VERSIONS="$PARSED_VERSIONS,$ver"
+                  # Check if version is within range (inclusive)
+                  if [[ $(echo -e "$start_ver\n$ver" | sort -V | head -1) == "$start_ver" ]] && \
+                     [[ $(echo -e "$ver\n$end_ver" | sort -V | head -1) == "$ver" ]]; then
+                    if [[ -n "$result" ]]; then
+                      result="$result,$ver"
                     else
-                      PARSED_VERSIONS="$ver"
+                      result="$ver"
                     fi
                   fi
                 fi
               done < /tmp/github_versions.txt
+              echo "$result"
+            }
 
-              if [[ -z "$PARSED_VERSIONS" ]]; then
-                echo "No versions found in range $START_VER to $END_VER"
-                echo "new_versions=[]" >> "$GITHUB_OUTPUT"
-                exit 0
-              fi
-              echo "Versions in range: $PARSED_VERSIONS"
-            else
-              # Single version or comma-separated list - validate against available versions
-              PARSED_VERSIONS=""
-              SKIPPED_VERSIONS=""
-              IFS=',' read -ra INPUT_ARRAY <<< "$INPUT_VERSIONS"
-              for ver in "${INPUT_ARRAY[@]}"; do
-                ver=$(echo "$ver" | tr -d ' ')  # Trim whitespace
-                if grep -qx "$ver" /tmp/github_versions.txt; then
+            # Parse the input - supports mixed ranges and individual versions
+            PARSED_VERSIONS=""
+            SKIPPED_VERSIONS=""
+
+            # Split by comma, handling spaces
+            IFS=',' read -ra INPUT_ARRAY <<< "$INPUT_VERSIONS"
+            for item in "${INPUT_ARRAY[@]}"; do
+              # Trim leading/trailing whitespace
+              item=$(echo "$item" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+
+              # Skip empty items
+              [[ -z "$item" ]] && continue
+
+              # Check if this item is a range (e.g., "0.11.0-0.12.0")
+              # Version pattern: X.Y.Z or X.Y.Z.W
+              if [[ "$item" =~ ^([0-9]+\.[0-9]+\.[0-9]+(\.[0-9]+)?)-([0-9]+\.[0-9]+\.[0-9]+(\.[0-9]+)?)$ ]]; then
+                START_VER="${BASH_REMATCH[1]}"
+                END_VER="${BASH_REMATCH[3]}"
+                echo "Expanding range: $START_VER to $END_VER"
+
+                RANGE_VERSIONS=$(expand_range "$START_VER" "$END_VER")
+                if [[ -n "$RANGE_VERSIONS" ]]; then
+                  echo "  Found versions: $RANGE_VERSIONS"
                   if [[ -n "$PARSED_VERSIONS" ]]; then
-                    PARSED_VERSIONS="$PARSED_VERSIONS,$ver"
+                    PARSED_VERSIONS="$PARSED_VERSIONS,$RANGE_VERSIONS"
                   else
-                    PARSED_VERSIONS="$ver"
+                    PARSED_VERSIONS="$RANGE_VERSIONS"
                   fi
                 else
-                  echo "::warning::vLLM version $ver not found in GitHub releases - skipping"
-                  if [[ -n "$SKIPPED_VERSIONS" ]]; then
-                    SKIPPED_VERSIONS="$SKIPPED_VERSIONS,$ver"
+                  echo "::warning::No versions found in range $START_VER to $END_VER"
+                fi
+              else
+                # Single version - validate against available versions
+                if grep -qx "$item" /tmp/github_versions.txt; then
+                  echo "Found version: $item"
+                  if [[ -n "$PARSED_VERSIONS" ]]; then
+                    PARSED_VERSIONS="$PARSED_VERSIONS,$item"
                   else
-                    SKIPPED_VERSIONS="$ver"
+                    PARSED_VERSIONS="$item"
+                  fi
+                else
+                  echo "::warning::vLLM version $item not found in GitHub releases - skipping"
+                  if [[ -n "$SKIPPED_VERSIONS" ]]; then
+                    SKIPPED_VERSIONS="$SKIPPED_VERSIONS, $item"
+                  else
+                    SKIPPED_VERSIONS="$item"
                   fi
                 fi
-              done
-
-              if [[ -n "$SKIPPED_VERSIONS" ]]; then
-                echo "Skipped unavailable versions: $SKIPPED_VERSIONS"
               fi
+            done
 
-              if [[ -z "$PARSED_VERSIONS" ]]; then
-                echo "::error::No valid vLLM versions found. Requested: $INPUT_VERSIONS"
-                echo "new_versions=[]" >> "$GITHUB_OUTPUT"
-                exit 0
-              fi
+            if [[ -n "$SKIPPED_VERSIONS" ]]; then
+              echo "Skipped unavailable versions: $SKIPPED_VERSIONS"
             fi
+
+            if [[ -z "$PARSED_VERSIONS" ]]; then
+              echo "::error::No valid vLLM versions found. Requested: $INPUT_VERSIONS"
+              echo "new_versions=[]" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+
+            # Remove duplicates and sort versions
+            PARSED_VERSIONS=$(echo "$PARSED_VERSIONS" | tr ',' '\n' | sort -V | uniq | tr '\n' ',' | sed 's/,$//')
 
             # Convert to JSON array
             JSON_ARRAY=$(echo "$PARSED_VERSIONS" | tr ',' '\n' | jq -R . | jq -s -c .)
