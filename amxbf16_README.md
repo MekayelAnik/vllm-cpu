@@ -163,6 +163,28 @@ Install `uv` on Linux:
 curl -LsSf https://astral.sh/uv/install.sh | sh
 ```
 
+## Docker Images
+
+Pre-built Docker images are available on [Docker Hub](https://hub.docker.com/r/mekayelanik/vllm-cpu) and [GitHub Container Registry](https://ghcr.io/mekayelanik/vllm-cpu).
+
+```bash
+# Pull from Docker Hub
+docker pull mekayelanik/vllm-cpu:amxbf16-latest
+
+# Or from GitHub Container Registry
+docker pull ghcr.io/mekayelanik/vllm-cpu:amxbf16-latest
+
+# Run OpenAI-compatible API server
+docker run -p 8000:8000 \
+  -v $HOME/.cache/huggingface:/root/.cache/huggingface \
+  mekayelanik/vllm-cpu:amxbf16-latest \
+  --model facebook/opt-125m
+```
+
+**Available tags:** `amxbf16-latest`, `amxbf16-<version>` (e.g., `amxbf16-0.12.0`)
+
+**Platforms:** `linux/amd64`
+
 ## vllm-cpu
 This CPU specific vLLM has **5 optimized wheel packages** from the upstream vLLM source code:
 
