@@ -951,15 +951,15 @@ jobs:
           echo "=== Release assets ==="
           echo "$ASSETS"
 
-          # Generate release notes (no indentation to avoid markdown issues)
-          cat > release_notes.md << 'EOF'
-## vLLM CPU Wheels
-
-Automatically built from upstream vLLM release.
-
-### Quick Install from GitHub Release
-
-EOF
+          # Generate release notes
+          {
+            echo "## vLLM CPU Wheels"
+            echo ""
+            echo "Automatically built from upstream vLLM release."
+            echo ""
+            echo "### Quick Install from GitHub Release"
+            echo ""
+          } > release_notes.md
 
           # Find the first vllm_cpu wheel for Python 3.12 x86_64 for the quick install example
           EXAMPLE_WHEEL=$(echo "$ASSETS" | grep -E "^vllm_cpu-[^_].*-cp312-.*x86_64.*\.whl$" | head -1 || echo "")
