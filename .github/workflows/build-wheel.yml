@@ -882,6 +882,12 @@ jobs:
           # Create required directories
           mkdir -p dist
 
+      - name: Wait for release uploads to complete
+        run: |
+          # Give some time for any in-progress uploads to complete
+          echo "Waiting 30 seconds for any in-progress uploads..."
+          sleep 30
+
       - name: Fetch release assets from GitHub API
         id: fetch_assets
         run: |
@@ -892,15 +898,34 @@ jobs:
 
           echo "Fetching release assets for tag: ${TAG}"
 
-          # Query GitHub API for release assets
-          ASSETS=$(curl -sS --retry 3 --retry-delay 5 \
-            -H "Accept: application/vnd.github.v3+json" \
-            -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
-            "https://api.github.com/repos/${{ github.repository }}/releases/tags/${TAG}" | \
-            jq -r '.assets[].name' 2>/dev/null || echo "")
+          # Retry fetching assets a few times in case of eventual consistency
+          MAX_RETRIES=3
+          RETRY_DELAY=10
+          ASSETS=""
+
+          for i in $(seq 1 $MAX_RETRIES); do
+            echo "Attempt $i of $MAX_RETRIES..."
+
+            ASSETS=$(curl -sS --retry 3 --retry-delay 5 \
+              -H "Accept: application/vnd.github.v3+json" \
+              -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+              "https://api.github.com/repos/${{ github.repository }}/releases/tags/${TAG}" | \
+              jq -r '.assets[].name' 2>/dev/null || echo "")
+
+            if [[ -n "$ASSETS" ]]; then
+              ASSET_COUNT=$(echo "$ASSETS" | wc -l)
+              echo "Found $ASSET_COUNT assets"
+              break
+            else
+              if [[ $i -lt $MAX_RETRIES ]]; then
+                echo "No assets found, waiting ${RETRY_DELAY}s before retry..."
+                sleep $RETRY_DELAY
+              fi
+            fi
+          done
 
           if [[ -z "$ASSETS" ]]; then
-            echo "::warning::No assets found for release ${TAG}"
+            echo "::warning::No assets found for release ${TAG} after $MAX_RETRIES attempts"
             echo "assets=" >> "$GITHUB_OUTPUT"
           else
             echo "Found assets:"
@@ -926,15 +951,15 @@ jobs:
           echo "=== Release assets ==="
           echo "$ASSETS"
 
-          # Generate release notes
-          cat > release_notes.md << 'HEADER'
-          ## vLLM CPU Wheels
+          # Generate release notes (no indentation to avoid markdown issues)
+          cat > release_notes.md << 'EOF'
+## vLLM CPU Wheels
 
-          Automatically built from upstream vLLM release.
+Automatically built from upstream vLLM release.
 
-          ### Quick Install from GitHub Release
+### Quick Install from GitHub Release
 
-          HEADER
+EOF
 
           # Find the first vllm_cpu wheel for Python 3.12 x86_64 for the quick install example
           EXAMPLE_WHEEL=$(echo "$ASSETS" | grep -E "^vllm_cpu-[^_].*-cp312-.*x86_64.*\.whl$" | head -1 || echo "")
