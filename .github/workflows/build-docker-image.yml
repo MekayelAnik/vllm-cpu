@@ -71,8 +71,13 @@ on:
         required: false
         type: boolean
         default: false
+      version_postfix:
+        description: 'Version postfix (e.g., .post1, post2, .dev1) - leave empty for auto-detect highest or base'
+        required: false
+        type: string
+        default: ''
       use_highest_postfix:
-        description: 'Use highest postfix version from PyPI (e.g., .post3 if .post1,.post2,.post3 exist)'
+        description: 'Auto-detect highest postfix from PyPI (ignored if version_postfix is set)'
         required: false
         type: boolean
         default: false
@@ -452,22 +457,44 @@ jobs:
           echo "Variants matrix: $MATRIX"
           echo "matrix=$MATRIX" >> "$GITHUB_OUTPUT"
 
-      - name: Detect highest postfix version
+      - name: Determine version postfix
         id: postfix
         run: |
-          USE_POSTFIX="${{ github.event.inputs.use_highest_postfix }}"
+          MANUAL_POSTFIX="${{ github.event.inputs.version_postfix }}"
+          USE_HIGHEST_POSTFIX="${{ github.event.inputs.use_highest_postfix }}"
           USE_GH_RELEASE="${{ github.event.inputs.use_github_release || 'false' }}"
+
+          # If manual postfix is provided, normalize and use it
+          if [[ -n "$MANUAL_POSTFIX" ]]; then
+            echo "Manual postfix provided: $MANUAL_POSTFIX"
+
+            # Normalize postfix: add leading dot if missing
+            # Accepts: post1, .post1, dev2, .dev2, rc1, .rc1, a1, .a1, b1, .b1
+            if [[ "$MANUAL_POSTFIX" =~ ^\.?(post|dev|a|b|rc)([0-9]+)$ ]]; then
+              TYPE="${BASH_REMATCH[1]}"
+              NUM="${BASH_REMATCH[2]}"
+              NORMALIZED=".${TYPE}${NUM}"
+              echo "Normalized postfix: $NORMALIZED"
+              echo "postfix=$NORMALIZED" >> "$GITHUB_OUTPUT"
+              echo "use_github_release=$USE_GH_RELEASE" >> "$GITHUB_OUTPUT"
+              exit 0
+            else
+              echo "::error::Invalid version postfix '$MANUAL_POSTFIX'. Must match pattern: post1, .post1, dev2, .dev2, rc1, a1, b1, etc."
+              exit 1
+            fi
+          fi
 
           # If use_github_release is explicitly set, respect it
           echo "use_github_release=$USE_GH_RELEASE" >> "$GITHUB_OUTPUT"
 
-          if [[ "$USE_POSTFIX" != "true" ]]; then
-            echo "Postfix detection disabled"
+          # If use_highest_postfix is not enabled, use base version
+          if [[ "$USE_HIGHEST_POSTFIX" != "true" ]]; then
+            echo "Postfix detection disabled, using base version"
             echo "postfix=" >> "$GITHUB_OUTPUT"
             exit 0
           fi
 
-          echo "Checking for highest postfix versions on PyPI..."
+          echo "Auto-detecting highest postfix versions from PyPI..."
 
           # Get all versions to build
           NEW_VERSIONS='${{ steps.compare.outputs.new_versions }}'
