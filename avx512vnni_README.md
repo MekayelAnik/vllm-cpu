@@ -140,7 +140,7 @@ if v:
         print(f'Fixed: vllm version set to {v}+cpu')
 ```
 
-This creates a package alias so vLLM detects the CPU platform correctly. Only needed once per environment. Versions after 0.12.0 include this fix automatically.
+This creates a package alias so vLLM detects the CPU platform correctly. Only needed once per environment. Versions 0.8.5.post2+ and 0.12.0+ include this fix automatically.
 
 ## Getting Started
 
