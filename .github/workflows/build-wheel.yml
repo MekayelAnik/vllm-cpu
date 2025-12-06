@@ -213,10 +213,11 @@ jobs:
             # Parse the input - could be single, comma-separated, or range
             PARSED_VERSIONS=""
 
-            # Check if it's a range (e.g., "0.11.0-0.12.0")
-            if [[ "$INPUT_VERSIONS" =~ ^([0-9]+\.[0-9]+\.[0-9]+)-([0-9]+\.[0-9]+\.[0-9]+)$ ]]; then
+            # Check if it's a range (e.g., "0.11.0-0.12.0" or "0.8.5-0.10.1.1")
+            # Supports both 3-part (0.8.5) and 4-part (0.10.1.1) versions
+            if [[ "$INPUT_VERSIONS" =~ ^([0-9]+\.[0-9]+\.[0-9]+(\.[0-9]+)?)-([0-9]+\.[0-9]+\.[0-9]+(\.[0-9]+)?)$ ]]; then
               START_VER="${BASH_REMATCH[1]}"
-              END_VER="${BASH_REMATCH[2]}"
+              END_VER="${BASH_REMATCH[3]}"
               echo "Parsing version range: $START_VER to $END_VER"
 
               # Get all versions from GitHub that fall within the range
