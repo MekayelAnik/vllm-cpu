@@ -116,7 +116,7 @@ try_install_vllm() {
     echo ""
     echo "=== Attempting vLLM installation for Python ${_try_py_version} ==="
 
-    # Try PyPI first unless explicitly requesting GitHub
+    # Try PyPI first unless explicitly requesting GitHub release
     if [ "${USE_GITHUB_RELEASE}" != "true" ]; then
         echo "Attempting PyPI installation with CPU-only PyTorch..."
 
@@ -136,39 +136,105 @@ try_install_vllm() {
                 echo "Failed: ${INSTALL_VERSION}"
             fi
         done
+    else
+        echo "GitHub release mode enabled - skipping PyPI"
     fi
 
-    # Fallback to GitHub release if PyPI failed
+    # Try GitHub release if PyPI failed or GitHub release is explicitly requested
     if [ "${_install_success}" = "false" ]; then
         echo "Trying GitHub release..."
 
         PYTHON_TAG="cp$(echo "${_try_py_version}" | tr -d '.')"
         PACKAGE_NAME_UNDERSCORE=$(echo "${PACKAGE_NAME}" | tr '-' '_')
 
-        for VERSION_SUFFIX in "" ".post1" ".post2" ".post3"; do
-            INSTALL_VERSION="${VLLM_VERSION}${VERSION_SUFFIX}"
-            WHEEL_NAME="${PACKAGE_NAME_UNDERSCORE}-${INSTALL_VERSION}-${PYTHON_TAG}-${PYTHON_TAG}-manylinux_2_17_${WHEEL_ARCH}.manylinux2014_${WHEEL_ARCH}.whl"
-            WHEEL_URL="https://github.com/MekayelAnik/vllm-cpu/releases/download/v${VLLM_VERSION}/${WHEEL_NAME}"
+        # Build list of release tags to try:
+        # 1. Full version as-is (e.g., v0.12.0 or v0.12.0.post1)
+        # 2. For base versions: also try .post1, .post2, .post3 suffixes
+        # 3. For postfix versions: also try base version and other postfixes
+        BASE_VERSION=$(echo "${VLLM_VERSION}" | sed 's/\.\(post\|dev\|rc\|a\|b\)[0-9]*$//')
+        RELEASE_TAGS="v${VLLM_VERSION}"
+        # Add base version and postfix variants, avoiding duplicates
+        for tag in "v${BASE_VERSION}" "v${BASE_VERSION}.post1" "v${BASE_VERSION}.post2" "v${BASE_VERSION}.post3"; do
+            case " ${RELEASE_TAGS} " in
+                *" ${tag} "*) ;;  # Already in list, skip
+                *) RELEASE_TAGS="${RELEASE_TAGS} ${tag}" ;;
+            esac
+        done
 
-            echo "Trying wheel: ${WHEEL_NAME}"
-            if wget -q "${WHEEL_URL}" -O "/tmp/${WHEEL_NAME}" 2>/dev/null; then
-                echo "Downloaded: ${WHEEL_NAME}"
+        RELEASE_ASSETS=""
+        for RELEASE_TAG in ${RELEASE_TAGS}; do
+            echo "Querying GitHub API for release ${RELEASE_TAG}..."
 
-                # Install with CPU-only PyTorch index for dependencies
-                if uv pip install --no-progress "/tmp/${WHEEL_NAME}" \
-                    --index-url "${PYTORCH_INDEX}" \
-                    --extra-index-url "${PYPI_INDEX}" \
-                    --index-strategy unsafe-best-match 2>/dev/null; then
-                    rm -f "/tmp/${WHEEL_NAME}"
-                    echo "Successfully installed from GitHub release"
-                    _install_success=true
-                    break
-                else
-                    rm -f "/tmp/${WHEEL_NAME}"
-                    echo "Failed to install wheel dependencies"
-                fi
+            # Query GitHub API for available wheels in this release
+            RELEASE_ASSETS=$(wget -q -O - \
+                "https://api.github.com/repos/MekayelAnik/vllm-cpu/releases/tags/${RELEASE_TAG}" 2>/dev/null | \
+                grep -o '"browser_download_url"[[:space:]]*:[[:space:]]*"[^"]*"' | \
+                sed 's/"browser_download_url"[[:space:]]*:[[:space:]]*"//;s/"$//' || echo "")
+
+            if [ -n "${RELEASE_ASSETS}" ]; then
+                echo "Found release: ${RELEASE_TAG}"
+                break
+            else
+                echo "Release ${RELEASE_TAG} not found, trying next..."
             fi
         done
+
+        if [ -z "${RELEASE_ASSETS}" ]; then
+            echo "Failed to fetch release assets from GitHub API (tried: ${RELEASE_TAGS})"
+        else
+            echo "Found release assets, searching for matching wheel..."
+
+            # Find wheel matching: package name, Python version, and architecture
+            # Pattern: vllm_cpu-VERSION-cpXXX-cpXXX-*ARCH*.whl
+            WHEEL_URL=""
+            for asset_url in ${RELEASE_ASSETS}; do
+                asset_name=$(basename "${asset_url}")
+                # Check if this wheel matches our criteria
+                case "${asset_name}" in
+                    ${PACKAGE_NAME_UNDERSCORE}-*-${PYTHON_TAG}-${PYTHON_TAG}-*${WHEEL_ARCH}*.whl)
+                        WHEEL_URL="${asset_url}"
+                        WHEEL_NAME="${asset_name}"
+                        echo "Found matching wheel: ${WHEEL_NAME}"
+                        break
+                        ;;
+                esac
+            done
+
+            if [ -n "${WHEEL_URL}" ]; then
+                echo "Installing from: ${WHEEL_URL}"
+
+                # Use single pip install command with URL (PEP 440 style)
+                # This installs the wheel directly with all dependencies from CPU PyTorch index
+                if uv pip install --no-progress \
+                    "${PACKAGE_NAME} @ ${WHEEL_URL}" \
+                    --index-url "${PYTORCH_INDEX}" \
+                    --extra-index-url "${PYPI_INDEX}" \
+                    --index-strategy unsafe-best-match; then
+                    echo "Successfully installed ${PACKAGE_NAME} from GitHub release"
+                    _install_success=true
+                else
+                    echo "Failed to install from GitHub release URL, trying download method..."
+
+                    # Fallback: download wheel and install locally
+                    if wget -q "${WHEEL_URL}" -O "/tmp/${WHEEL_NAME}" 2>/dev/null; then
+                        echo "Downloaded: ${WHEEL_NAME}"
+                        if uv pip install --no-progress "/tmp/${WHEEL_NAME}" \
+                            --index-url "${PYTORCH_INDEX}" \
+                            --extra-index-url "${PYPI_INDEX}" \
+                            --index-strategy unsafe-best-match; then
+                            rm -f "/tmp/${WHEEL_NAME}"
+                            echo "Successfully installed from downloaded wheel"
+                            _install_success=true
+                        else
+                            rm -f "/tmp/${WHEEL_NAME}"
+                            echo "Failed to install downloaded wheel"
+                        fi
+                    fi
+                fi
+            else
+                echo "No matching wheel found for ${PACKAGE_NAME_UNDERSCORE} Python ${PYTHON_TAG} ${WHEEL_ARCH}"
+            fi
+        fi
     fi
 
     if [ "${_install_success}" = "true" ]; then

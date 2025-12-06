@@ -135,13 +135,16 @@ jobs:
             exit 0
           fi
 
-          # Validate PyPI-compatible postfix format
-          # Valid formats: .postN, .devN, .aN, .bN, .rcN (where N is a number)
-          if [[ "$POSTFIX" =~ ^\.(post|dev|a|b|rc)[0-9]+$ ]]; then
-            echo "Valid postfix: $POSTFIX"
-            echo "postfix=$POSTFIX" >> "$GITHUB_OUTPUT"
+          # Normalize postfix: add leading dot if missing
+          # Accepts: post1, .post1, dev2, .dev2, rc1, .rc1, a1, .a1, b1, .b1
+          if [[ "$POSTFIX" =~ ^\.?(post|dev|a|b|rc)([0-9]+)$ ]]; then
+            TYPE="${BASH_REMATCH[1]}"
+            NUM="${BASH_REMATCH[2]}"
+            NORMALIZED=".${TYPE}${NUM}"
+            echo "Input postfix: $POSTFIX -> Normalized: $NORMALIZED"
+            echo "postfix=$NORMALIZED" >> "$GITHUB_OUTPUT"
           else
-            echo "::error::Invalid version postfix '$POSTFIX'. Must match pattern: .post1, .dev2, .a1, .b1, .rc1, etc."
+            echo "::error::Invalid version postfix '$POSTFIX'. Must match pattern: post1, .post1, dev2, .dev2, rc1, a1, b1, etc."
             exit 1
           fi
 
@@ -837,35 +840,76 @@ jobs:
           pattern: wheels-*-${{ matrix.version }}${{ needs.check-versions.outputs.version_postfix }}
           merge-multiple: true
 
+      - name: Generate release notes
+        id: release_notes
+        run: |
+          VERSION="${{ matrix.version }}"
+          POSTFIX="${{ needs.check-versions.outputs.version_postfix }}"
+          FULL_VERSION="${VERSION}${POSTFIX}"
+          TAG="v${FULL_VERSION}"
+          BASE_URL="https://github.com/MekayelAnik/vllm-cpu/releases/download/${TAG}"
+
+          # Find actual wheel filenames from dist/
+          echo "=== Available wheels ==="
+          find dist -name "*.whl" -type f | sort
+
+          # Generate release notes with actual wheel filenames
+          cat > release_notes.md << EOF
+          ## vLLM CPU Wheels v${FULL_VERSION}
+
+          Automatically built from upstream vLLM release.
+
+          ### Quick Install from GitHub Release
+
+          EOF
+
+          # Find the first vllm_cpu wheel for Python 3.12 x86_64 for the quick install example
+          EXAMPLE_WHEEL=$(find dist -name "vllm_cpu-*-cp312-*x86_64*.whl" -type f | head -1 | xargs basename 2>/dev/null || echo "")
+          if [[ -n "$EXAMPLE_WHEEL" ]]; then
+            echo '```bash' >> release_notes.md
+            echo "pip install \"vllm-cpu @ ${BASE_URL}/${EXAMPLE_WHEEL}\" --index-url https://download.pytorch.org/whl/cpu --extra-index-url https://pypi.org/simple" >> release_notes.md
+            echo '```' >> release_notes.md
+          fi
+
+          echo "" >> release_notes.md
+          echo "### All Variants" >> release_notes.md
+          echo "" >> release_notes.md
+          echo "| Package | Target CPUs | Install Command (Python 3.12 x86_64) |" >> release_notes.md
+          echo "|---------|-------------|--------------------------------------|" >> release_notes.md
+
+          # Generate table rows for each variant
+          declare -A VARIANT_MAP=(
+            ["vllm_cpu"]="vllm-cpu|All CPUs (x86_64, ARM64)"
+            ["vllm_cpu_avx512"]="vllm-cpu-avx512|Skylake-X+"
+            ["vllm_cpu_avx512vnni"]="vllm-cpu-avx512vnni|Cascade Lake+"
+            ["vllm_cpu_avx512bf16"]="vllm-cpu-avx512bf16|Cooper Lake+"
+            ["vllm_cpu_amxbf16"]="vllm-cpu-amxbf16|Sapphire Rapids+"
+          )
+
+          for wheel_prefix in vllm_cpu vllm_cpu_avx512 vllm_cpu_avx512vnni vllm_cpu_avx512bf16 vllm_cpu_amxbf16; do
+            # Find wheel for Python 3.12 x86_64
+            WHEEL=$(find dist -name "${wheel_prefix}-*-cp312-*x86_64*.whl" -type f 2>/dev/null | head -1 | xargs basename 2>/dev/null || echo "")
+            if [[ -n "$WHEEL" ]]; then
+              PKG_NAME=$(echo "${VARIANT_MAP[$wheel_prefix]}" | cut -d'|' -f1)
+              TARGET_CPUS=$(echo "${VARIANT_MAP[$wheel_prefix]}" | cut -d'|' -f2)
+              echo "| \`${PKG_NAME}\` | ${TARGET_CPUS} | \`pip install \"${PKG_NAME} @ ${BASE_URL}/${WHEEL}\" --index-url https://download.pytorch.org/whl/cpu --extra-index-url https://pypi.org/simple\` |" >> release_notes.md
+            fi
+          done
+
+          echo "" >> release_notes.md
+          echo "> **Note:** Replace \`cp312\` with \`cp310\`, \`cp311\`, or \`cp313\` for other Python versions. Replace \`x86_64\` with \`aarch64\` for ARM64 (only \`vllm-cpu\` supports ARM64)." >> release_notes.md
+
+          # Debug output
+          echo "=== Generated release notes ==="
+          cat release_notes.md
+
       - name: Create Release
         uses: softprops/action-gh-release@c95fe1489396fe8a9eb87c0abf8aa5b2ef267fda # v2.2.1
         with:
           tag_name: v${{ matrix.version }}${{ needs.check-versions.outputs.version_postfix }}
           name: vLLM CPU v${{ matrix.version }}${{ needs.check-versions.outputs.version_postfix }}
           files: dist/**/*.whl
-          body: |
-            ## vLLM CPU Wheels v${{ matrix.version }}${{ needs.check-versions.outputs.version_postfix }}
-
-            Automatically built from upstream vLLM release.
-
-            ### Packages
-            | Package | Platforms | Description |
-            |---------|-----------|-------------|
-            | `vllm-cpu` | x86_64, ARM64 | Base CPU build |
-            | `vllm-cpu-avx512` | x86_64 | AVX512 optimized |
-            | `vllm-cpu-avx512vnni` | x86_64 | AVX512 + VNNI |
-            | `vllm-cpu-avx512bf16` | x86_64 | AVX512 + BF16 |
-            | `vllm-cpu-amxbf16` | x86_64 | AMX optimized |
-
-            ### Installation
-            ```bash
-            # Auto-detect best package for your CPU
-            pip install vllm-cpu-detect
-            vllm-cpu-detect
-
-            # Or install directly
-            pip install vllm-cpu==${{ matrix.version }}${{ needs.check-versions.outputs.version_postfix }}
-            ```
+          body_path: release_notes.md
           draft: false
           prerelease: ${{ contains(needs.check-versions.outputs.version_postfix, 'dev') || contains(needs.check-versions.outputs.version_postfix, 'rc') || contains(needs.check-versions.outputs.version_postfix, 'a') || contains(needs.check-versions.outputs.version_postfix, 'b') }}
         env:

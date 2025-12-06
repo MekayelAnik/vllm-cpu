@@ -144,26 +144,23 @@ This creates a package alias so vLLM detects the CPU platform correctly. Only ne
 
 ## Getting Started
 
-Install vLLM with `pip` or `uv`
+Install vLLM with a single command:
 
 ```bash
-mkdir -p /path/to/vllm
-cd /path/to/vllm
-uv venv
-uv pip install torch==2.8.0 torchvision --index-url https://download.pytorch.org/whl/cpu
-uv pip install vllm-cpu-vllm-cpu-amxbf16
+pip install vllm-cpu-amxbf16 --index-url https://download.pytorch.org/whl/cpu --extra-index-url https://pypi.org/simple
 ```
-Install `uv` on Linux environment using CURL:
+
+This installs vllm-cpu-amxbf16 with CPU-optimized PyTorch (no CUDA dependencies).
+
+### Alternative: Using uv (faster)
+
+```bash
+uv pip install vllm-cpu-amxbf16 --index-url https://download.pytorch.org/whl/cpu --extra-index-url https://pypi.org/simple
 ```
+
+Install `uv` on Linux:
+```bash
 curl -LsSf https://astral.sh/uv/install.sh | sh
-```
-or using WGET
-```
-wget -qO- https://astral.sh/uv/install.sh | sh
-```
-if you wanna install a specific version of `uv`
-```
-curl -LsSf https://astral.sh/uv/0.9.11/install.sh | sh
 ```
 
 ## vllm-cpu

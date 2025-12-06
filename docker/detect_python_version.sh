@@ -140,21 +140,42 @@ fi
 # Method 3: Check GitHub releases if PyPI failed or was skipped
 if [ -z "${PYTHON_VER}" ]; then
     echo "Checking GitHub releases for available ${WHEEL_ARCH} wheels..." >&2
-    GH_API="https://api.github.com/repos/MekayelAnik/vllm-cpu/releases/tags/v${VLLM_VERSION}"
-    GH_JSON=$(curl -sfL --max-time 15 "${GH_API}" 2>/dev/null || echo "")
-    if [ -n "${GH_JSON}" ]; then
-        PACKAGE_NAME_UNDERSCORE=$(echo "${PACKAGE_NAME}" | tr '-' '_')
-        PYTHON_VER=$(echo "${GH_JSON}" | jq -r '.assets[].name' 2>/dev/null | \
-            grep -E "^${PACKAGE_NAME_UNDERSCORE}" | \
-            grep "_${WHEEL_ARCH}" | \
-            grep -oE 'cp3[0-9]+' | \
-            sed 's/cp3/3./' | \
-            sort -t. -k2 -n -r | \
-            head -1 || echo "")
-        if [ -n "${PYTHON_VER}" ]; then
-            echo "Found highest CPython on GitHub for ${WHEEL_ARCH}: ${PYTHON_VER}" >&2
+
+    # Build list of release tags to try:
+    # 1. Full version as-is (e.g., v0.12.0 or v0.12.0.post1)
+    # 2. For base versions: also try .post1, .post2, .post3 suffixes
+    # 3. For postfix versions: also try base version and other postfixes
+    BASE_VERSION=$(echo "${VLLM_VERSION}" | sed 's/\.\(post\|dev\|rc\|a\|b\)[0-9]*$//')
+    GH_RELEASE_TAGS="v${VLLM_VERSION}"
+    # Add base version and postfix variants, avoiding duplicates
+    for tag in "v${BASE_VERSION}" "v${BASE_VERSION}.post1" "v${BASE_VERSION}.post2" "v${BASE_VERSION}.post3"; do
+        case " ${GH_RELEASE_TAGS} " in
+            *" ${tag} "*) ;;  # Already in list, skip
+            *) GH_RELEASE_TAGS="${GH_RELEASE_TAGS} ${tag}" ;;
+        esac
+    done
+
+    for GH_TAG in ${GH_RELEASE_TAGS}; do
+        echo "Trying GitHub release tag: ${GH_TAG}..." >&2
+        GH_API="https://api.github.com/repos/MekayelAnik/vllm-cpu/releases/tags/${GH_TAG}"
+        GH_JSON=$(curl -sfL --max-time 15 "${GH_API}" 2>/dev/null || echo "")
+        if [ -n "${GH_JSON}" ] && echo "${GH_JSON}" | jq -e '.assets' >/dev/null 2>&1; then
+            PACKAGE_NAME_UNDERSCORE=$(echo "${PACKAGE_NAME}" | tr '-' '_')
+            PYTHON_VER=$(echo "${GH_JSON}" | jq -r '.assets[].name' 2>/dev/null | \
+                grep -E "^${PACKAGE_NAME_UNDERSCORE}" | \
+                grep "_${WHEEL_ARCH}" | \
+                grep -oE 'cp3[0-9]+' | \
+                sed 's/cp3/3./' | \
+                sort -t. -k2 -n -r | \
+                head -1 || echo "")
+            if [ -n "${PYTHON_VER}" ]; then
+                echo "Found highest CPython on GitHub (${GH_TAG}) for ${WHEEL_ARCH}: ${PYTHON_VER}" >&2
+                break
+            fi
+        else
+            echo "Release ${GH_TAG} not found or has no assets" >&2
         fi
-    fi
+    done
 fi
 
 # Method 4: Fallback to pyproject.toml requires-python
