@@ -217,6 +217,8 @@ jobs:
           echo "- **Has builds:** ${{ needs.check-versions.outputs.has_builds }}" >> $GITHUB_STEP_SUMMARY
           echo "- **AMD64:** ${{ needs.check-versions.outputs.build_amd64 }}" >> $GITHUB_STEP_SUMMARY
           echo "- **ARM64:** ${{ needs.check-versions.outputs.build_arm64 }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Skip PyPI:** ${{ inputs.skip_pypi == true }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Skip GitHub Release:** ${{ inputs.skip_github_release == true }}" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "### Build Matrix" >> $GITHUB_STEP_SUMMARY
           echo "\`\`\`json" >> $GITHUB_STEP_SUMMARY
