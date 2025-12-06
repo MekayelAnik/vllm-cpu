@@ -440,6 +440,8 @@ jobs:
       (github.event.inputs.dry_run || 'false') != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 240
+    permissions:
+      contents: write  # Required for uploading to GitHub releases
     strategy:
       fail-fast: false
       matrix:
@@ -514,6 +516,19 @@ jobs:
           retention-days: 30
           if-no-files-found: error
 
+      - name: Upload to GitHub Release
+        if: (github.event.inputs.skip_github_release || 'false') != 'true'
+        uses: softprops/action-gh-release@c95fe1489396fe8a9eb87c0abf8aa5b2ef267fda # v2.2.1
+        with:
+          tag_name: v${{ matrix.version }}${{ needs.check-versions.outputs.version_postfix }}
+          name: vLLM CPU v${{ matrix.version }}${{ needs.check-versions.outputs.version_postfix }}
+          files: dist/**/*.whl
+          draft: false
+          prerelease: ${{ contains(needs.check-versions.outputs.version_postfix, 'dev') || contains(needs.check-versions.outputs.version_postfix, 'rc') || contains(needs.check-versions.outputs.version_postfix, 'a') || contains(needs.check-versions.outputs.version_postfix, 'b') }}
+          fail_on_unmatched_files: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
   # ==========================================================================
   # Build noavx512 (vllm-cpu) for ARM64
   # ==========================================================================
@@ -527,6 +542,8 @@ jobs:
       (github.event.inputs.dry_run || 'false') != 'true'
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 300
+    permissions:
+      contents: write  # Required for uploading to GitHub releases
     strategy:
       fail-fast: false
       matrix:
@@ -601,6 +618,19 @@ jobs:
           retention-days: 30
           if-no-files-found: error
 
+      - name: Upload to GitHub Release
+        if: (github.event.inputs.skip_github_release || 'false') != 'true'
+        uses: softprops/action-gh-release@c95fe1489396fe8a9eb87c0abf8aa5b2ef267fda # v2.2.1
+        with:
+          tag_name: v${{ matrix.version }}${{ needs.check-versions.outputs.version_postfix }}
+          name: vLLM CPU v${{ matrix.version }}${{ needs.check-versions.outputs.version_postfix }}
+          files: dist/**/*.whl
+          draft: false
+          prerelease: ${{ contains(needs.check-versions.outputs.version_postfix, 'dev') || contains(needs.check-versions.outputs.version_postfix, 'rc') || contains(needs.check-versions.outputs.version_postfix, 'a') || contains(needs.check-versions.outputs.version_postfix, 'b') }}
+          fail_on_unmatched_files: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
   # ==========================================================================
   # Build AVX512 variants for AMD64 only
   # ==========================================================================
@@ -614,6 +644,8 @@ jobs:
       (github.event.inputs.dry_run || 'false') != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 240
+    permissions:
+      contents: write  # Required for uploading to GitHub releases
     strategy:
       fail-fast: false
       matrix:
@@ -688,6 +720,19 @@ jobs:
           path: dist/**/*.whl
           retention-days: 30
           if-no-files-found: error
+
+      - name: Upload to GitHub Release
+        if: (github.event.inputs.skip_github_release || 'false') != 'true'
+        uses: softprops/action-gh-release@c95fe1489396fe8a9eb87c0abf8aa5b2ef267fda # v2.2.1
+        with:
+          tag_name: v${{ matrix.version }}${{ needs.check-versions.outputs.version_postfix }}
+          name: vLLM CPU v${{ matrix.version }}${{ needs.check-versions.outputs.version_postfix }}
+          files: dist/**/*.whl
+          draft: false
+          prerelease: ${{ contains(needs.check-versions.outputs.version_postfix, 'dev') || contains(needs.check-versions.outputs.version_postfix, 'rc') || contains(needs.check-versions.outputs.version_postfix, 'a') || contains(needs.check-versions.outputs.version_postfix, 'b') }}
+          fail_on_unmatched_files: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   # ==========================================================================
   # Publish all wheels to PyPI
@@ -804,10 +849,12 @@ jobs:
           PYPI_TOKEN: ${{ secrets.PYPI_API_TOKEN }}
 
   # ==========================================================================
-  # Create GitHub Release
+  # Update GitHub Release Notes
   # ==========================================================================
+  # Note: Wheels are uploaded by individual build jobs as they complete.
+  # This job only updates the release notes with the complete list of wheels.
   github-release:
-    name: GitHub Release (${{ matrix.version }})
+    name: Update Release Notes (${{ matrix.version }})
     needs: [check-versions, build-noavx512-amd64, build-noavx512-arm64, build-avx512-variants, publish]
     if: |
       always() &&
@@ -835,38 +882,62 @@ jobs:
           # Create required directories
           mkdir -p dist
 
-      - name: Download all wheels for version ${{ matrix.version }}
-        uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6.0.0
-        with:
-          path: dist/
-          pattern: wheels-*-${{ matrix.version }}${{ needs.check-versions.outputs.version_postfix }}
-          merge-multiple: true
-
-      - name: Generate release notes
-        id: release_notes
+      - name: Fetch release assets from GitHub API
+        id: fetch_assets
         run: |
           VERSION="${{ matrix.version }}"
           POSTFIX="${{ needs.check-versions.outputs.version_postfix }}"
           FULL_VERSION="${VERSION}${POSTFIX}"
           TAG="v${FULL_VERSION}"
-          BASE_URL="https://github.com/MekayelAnik/vllm-cpu/releases/download/${TAG}"
 
-          # Find actual wheel filenames from dist/
-          echo "=== Available wheels ==="
-          find dist -name "*.whl" -type f | sort
+          echo "Fetching release assets for tag: ${TAG}"
 
-          # Generate release notes with actual wheel filenames
-          cat > release_notes.md << EOF
-          ## vLLM CPU Wheels v${FULL_VERSION}
+          # Query GitHub API for release assets
+          ASSETS=$(curl -sS --retry 3 --retry-delay 5 \
+            -H "Accept: application/vnd.github.v3+json" \
+            -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+            "https://api.github.com/repos/${{ github.repository }}/releases/tags/${TAG}" | \
+            jq -r '.assets[].name' 2>/dev/null || echo "")
+
+          if [[ -z "$ASSETS" ]]; then
+            echo "::warning::No assets found for release ${TAG}"
+            echo "assets=" >> "$GITHUB_OUTPUT"
+          else
+            echo "Found assets:"
+            echo "$ASSETS"
+            # Save to file for later use
+            echo "$ASSETS" > /tmp/release_assets.txt
+            echo "assets=found" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Generate release notes
+        id: release_notes
+        if: steps.fetch_assets.outputs.assets == 'found'
+        run: |
+          VERSION="${{ matrix.version }}"
+          POSTFIX="${{ needs.check-versions.outputs.version_postfix }}"
+          FULL_VERSION="${VERSION}${POSTFIX}"
+          TAG="v${FULL_VERSION}"
+          BASE_URL="https://github.com/${{ github.repository }}/releases/download/${TAG}"
+
+          # Read assets from file
+          ASSETS=$(cat /tmp/release_assets.txt)
+
+          echo "=== Release assets ==="
+          echo "$ASSETS"
+
+          # Generate release notes
+          cat > release_notes.md << 'HEADER'
+          ## vLLM CPU Wheels
 
           Automatically built from upstream vLLM release.
 
           ### Quick Install from GitHub Release
 
-          EOF
+          HEADER
 
           # Find the first vllm_cpu wheel for Python 3.12 x86_64 for the quick install example
-          EXAMPLE_WHEEL=$(find dist -name "vllm_cpu-*-cp312-*x86_64*.whl" -type f | head -1 | xargs basename 2>/dev/null || echo "")
+          EXAMPLE_WHEEL=$(echo "$ASSETS" | grep -E "^vllm_cpu-[^_].*-cp312-.*x86_64.*\.whl$" | head -1 || echo "")
           if [[ -n "$EXAMPLE_WHEEL" ]]; then
             echo '```bash' >> release_notes.md
             echo "pip install \"vllm-cpu @ ${BASE_URL}/${EXAMPLE_WHEEL}\" --index-url https://download.pytorch.org/whl/cpu --extra-index-url https://pypi.org/simple" >> release_notes.md
@@ -888,19 +959,12 @@ jobs:
             ["vllm_cpu_amxbf16"]="vllm-cpu-amxbf16|Sapphire Rapids+"
           )
 
-          # Debug: List all wheels in dist
-          echo "=== All wheels in dist ==="
-          find dist -name "*.whl" -type f | sort
-          echo ""
-
           for wheel_prefix in vllm_cpu vllm_cpu_avx512 vllm_cpu_avx512vnni vllm_cpu_avx512bf16 vllm_cpu_amxbf16; do
             # Find wheel for Python 3.12 x86_64
-            # Use grep to ensure exact prefix match (vllm_cpu should not match vllm_cpu_avx512)
             if [[ "$wheel_prefix" == "vllm_cpu" ]]; then
-              # For base package, exclude variants with additional underscores
-              WHEEL=$(find dist -name "*.whl" -type f | xargs -I {} basename {} | grep -E "^vllm_cpu-[^_].*-cp312-.*x86_64.*\.whl$" | head -1 || echo "")
+              WHEEL=$(echo "$ASSETS" | grep -E "^vllm_cpu-[^_].*-cp312-.*x86_64.*\.whl$" | head -1 || echo "")
             else
-              WHEEL=$(find dist -name "*.whl" -type f | xargs -I {} basename {} | grep -E "^${wheel_prefix}-.*-cp312-.*x86_64.*\.whl$" | head -1 || echo "")
+              WHEEL=$(echo "$ASSETS" | grep -E "^${wheel_prefix}-.*-cp312-.*x86_64.*\.whl$" | head -1 || echo "")
             fi
 
             echo "Looking for ${wheel_prefix}: found '${WHEEL}'"
@@ -915,7 +979,7 @@ jobs:
           done
 
           # Also add ARM64 row for vllm-cpu if available
-          ARM_WHEEL=$(find dist -name "*.whl" -type f | xargs -I {} basename {} | grep -E "^vllm_cpu-[^_].*-cp312-.*aarch64.*\.whl$" | head -1 || echo "")
+          ARM_WHEEL=$(echo "$ASSETS" | grep -E "^vllm_cpu-[^_].*-cp312-.*aarch64.*\.whl$" | head -1 || echo "")
           if [[ -n "$ARM_WHEEL" ]]; then
             echo "| \`vllm-cpu\` (ARM64) | ARM64/AArch64 | \`pip install \"vllm-cpu @ ${BASE_URL}/${ARM_WHEEL}\" --index-url https://download.pytorch.org/whl/cpu --extra-index-url https://pypi.org/simple\` |" >> release_notes.md
           fi
@@ -927,12 +991,12 @@ jobs:
           echo "=== Generated release notes ==="
           cat release_notes.md
 
-      - name: Create Release
+      - name: Update Release Notes
+        if: steps.fetch_assets.outputs.assets == 'found'
         uses: softprops/action-gh-release@c95fe1489396fe8a9eb87c0abf8aa5b2ef267fda # v2.2.1
         with:
           tag_name: v${{ matrix.version }}${{ needs.check-versions.outputs.version_postfix }}
           name: vLLM CPU v${{ matrix.version }}${{ needs.check-versions.outputs.version_postfix }}
-          files: dist/**/*.whl
           body_path: release_notes.md
           draft: false
           prerelease: ${{ contains(needs.check-versions.outputs.version_postfix, 'dev') || contains(needs.check-versions.outputs.version_postfix, 'rc') || contains(needs.check-versions.outputs.version_postfix, 'a') || contains(needs.check-versions.outputs.version_postfix, 'b') }}
