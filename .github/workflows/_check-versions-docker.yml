@@ -172,8 +172,98 @@ jobs:
       version_postfix: ${{ steps.postfix.outputs.postfix }}
       use_github_release: ${{ steps.postfix.outputs.use_github_release }}
       variants_matrix: ${{ steps.variants.outputs.matrix }}
+      new_versions: ${{ steps.auto-detect.outputs.new_versions || needs.base-check.outputs.new_versions }}
 
     steps:
+      # ========================================================================
+      # Docker Auto-Detect: Find PyPI versions not yet in Docker Hub
+      # This overrides base-check's logic which compares GitHub vs PyPI
+      # For Docker, we need: PyPI versions NOT in Docker Hub
+      # ========================================================================
+      - name: Auto-detect versions for Docker (PyPI vs Docker Hub)
+        id: auto-detect
+        if: inputs.vllm_versions == ''
+        shell: bash
+        run: |
+          echo "Auto-detect mode: Finding PyPI versions without Docker images..."
+
+          # Fetch all versions from PyPI (vllm-cpu package)
+          echo "Fetching PyPI versions..."
+          PYPI_VERSIONS=""
+          for attempt in 1 2 3; do
+            PYPI_VERSIONS=$(curl -sS --retry 3 --retry-delay 5 \
+              "https://pypi.org/pypi/vllm-cpu/json" | \
+              jq -r '.releases | keys[]' | \
+              grep -E '^[0-9]+\.[0-9]+\.[0-9]+(\.[0-9]+)?$' | \
+              sort -V || echo "") && break
+            echo "Attempt $attempt failed, retrying..."
+            sleep 5
+          done
+
+          if [[ -z "$PYPI_VERSIONS" ]]; then
+            echo "::error::Failed to fetch PyPI versions"
+            echo "new_versions=[]" >> "$GITHUB_OUTPUT"
+            echo "is_auto_detect=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "PyPI versions found:"
+          echo "$PYPI_VERSIONS"
+          echo "$PYPI_VERSIONS" > /tmp/pypi_versions.txt
+
+          # Fetch existing Docker Hub tags
+          echo ""
+          echo "Fetching Docker Hub tags..."
+          DOCKERHUB_TAGS=""
+          for attempt in 1 2 3; do
+            DOCKERHUB_TAGS=$(curl -sS --retry 3 --retry-delay 5 \
+              "https://hub.docker.com/v2/repositories/${{ inputs.dockerhub_image }}/tags?page_size=100" | \
+              jq -r '.results[].name' 2>/dev/null || echo "") && break
+            sleep 5
+          done
+
+          # Extract version numbers from Docker tags
+          DOCKER_VERSIONS=""
+          if [[ -n "$DOCKERHUB_TAGS" ]]; then
+            DOCKER_VERSIONS=$(echo "$DOCKERHUB_TAGS" | \
+              grep -oE '[0-9]+\.[0-9]+\.[0-9]+(\.[0-9]+)?' | \
+              sort -V -u || echo "")
+            echo "Docker Hub versions found:"
+            echo "$DOCKER_VERSIONS"
+          else
+            echo "No Docker Hub tags found or failed to fetch"
+          fi
+          echo "$DOCKER_VERSIONS" > /tmp/docker_versions.txt
+
+          # Find PyPI versions not in Docker Hub
+          echo ""
+          echo "Finding versions in PyPI but not in Docker Hub..."
+          NEW_VERSIONS=""
+          while IFS= read -r version; do
+            if [[ -n "$version" ]]; then
+              if ! grep -qx "$version" /tmp/docker_versions.txt 2>/dev/null; then
+                echo "  New version: $version"
+                if [[ -n "$NEW_VERSIONS" ]]; then
+                  NEW_VERSIONS="$NEW_VERSIONS,$version"
+                else
+                  NEW_VERSIONS="$version"
+                fi
+              fi
+            fi
+          done < /tmp/pypi_versions.txt
+
+          if [[ -z "$NEW_VERSIONS" ]]; then
+            echo "No new versions found - all PyPI versions have Docker images"
+            echo "new_versions=[]" >> "$GITHUB_OUTPUT"
+          else
+            echo ""
+            echo "New versions to build: $NEW_VERSIONS"
+            JSON_ARRAY=$(echo "$NEW_VERSIONS" | tr ',' '\n' | jq -R . | jq -s -c .)
+            echo "new_versions=$JSON_ARRAY" >> "$GITHUB_OUTPUT"
+          fi
+
+          echo "is_auto_detect=true" >> "$GITHUB_OUTPUT"
+
       - name: Get latest version from PyPI
         id: latest
         shell: bash
@@ -330,25 +420,34 @@ jobs:
         id: matrix
         shell: bash
         run: |
-          NEW_VERSIONS='${{ needs.base-check.outputs.new_versions }}'
+          # Use auto-detected versions if in auto-detect mode, otherwise use base-check
+          IS_AUTO_DETECT="${{ steps.auto-detect.outputs.is_auto_detect }}"
+          if [[ "$IS_AUTO_DETECT" == "true" ]]; then
+            NEW_VERSIONS='${{ steps.auto-detect.outputs.new_versions }}'
+            echo "Using auto-detected versions (PyPI vs Docker Hub)"
+          else
+            NEW_VERSIONS='${{ needs.base-check.outputs.new_versions }}'
+            echo "Using manually specified versions"
+          fi
+
           VARIANTS='${{ steps.variants.outputs.matrix }}'
           EXISTING="${{ steps.existing.outputs.existing_versions }}"
-          HAS_BASE_BUILDS="${{ needs.base-check.outputs.has_builds }}"
 
           # If no versions to build, exit early
-          if [[ "$HAS_BASE_BUILDS" != "true" || "$NEW_VERSIONS" == "[]" ]]; then
+          if [[ -z "$NEW_VERSIONS" || "$NEW_VERSIONS" == "[]" || "$NEW_VERSIONS" == "null" ]]; then
             echo "No versions to build"
             echo "build_matrix={\"include\":[]}" >> "$GITHUB_OUTPUT"
             echo "has_builds=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
 
-          # Filter out versions that already have Docker images (unless force rebuild)
+          # For manual mode, filter out versions that already have Docker images (unless force rebuild)
+          # For auto-detect mode, this is already done in the auto-detect step
           FORCE_DOCKERHUB="${{ inputs.force_rebuild_dockerhub }}"
           FORCE_GHCR="${{ inputs.force_rebuild_ghcr }}"
 
           FILTERED_VERSIONS="$NEW_VERSIONS"
-          if [[ "$FORCE_DOCKERHUB" != "true" && "$FORCE_GHCR" != "true" && -n "$EXISTING" ]]; then
+          if [[ "$IS_AUTO_DETECT" != "true" && "$FORCE_DOCKERHUB" != "true" && "$FORCE_GHCR" != "true" && -n "$EXISTING" ]]; then
             # Filter versions - keep only those not in existing
             FILTERED_VERSIONS=$(echo "$NEW_VERSIONS" | jq -c --arg existing "$EXISTING" '
               ($existing | split(",")) as $ex |
@@ -411,11 +510,21 @@ jobs:
         shell: bash
         run: |
           {
+            IS_AUTO_DETECT="${{ steps.auto-detect.outputs.is_auto_detect }}"
+            if [[ "$IS_AUTO_DETECT" == "true" ]]; then
+              VERSIONS='${{ steps.auto-detect.outputs.new_versions }}'
+              MODE="Auto-detect (PyPI vs Docker Hub)"
+            else
+              VERSIONS='${{ needs.base-check.outputs.new_versions }}'
+              MODE="Manual"
+            fi
+
             echo "## Docker Version Check Results"
             echo ""
             echo "| Property | Value |"
             echo "|----------|-------|"
-            echo "| Versions | \`${{ needs.base-check.outputs.new_versions }}\` |"
+            echo "| Mode | $MODE |"
+            echo "| Versions | \`$VERSIONS\` |"
             echo "| Postfix | \`${{ steps.postfix.outputs.postfix || '(none)' }}\` |"
             echo "| Latest Version | ${{ steps.latest.outputs.version }} |"
             echo "| AMD64 | ${{ needs.base-check.outputs.build_amd64 }} |"
