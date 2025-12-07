@@ -368,18 +368,37 @@ fi
 # =============================================================================
 # Fix opentelemetry context issue (Python 3.12+ compatibility)
 # =============================================================================
-# The opentelemetry-api package has a StopIteration bug with Python 3.12+
-# when entry points aren't properly registered. This affects the transformers
-# import chain. Fix by reinstalling opentelemetry packages to compatible versions.
+# The opentelemetry-api package has a StopIteration bug with Python 3.12+ when
+# entry_points aren't properly registered during package installation. This
+# causes "StopIteration" errors in _load_runtime_context() when importing vLLM.
+#
+# Root cause: PEP 479 changes in Python 3.12+ convert StopIteration to RuntimeError
+# in generators. The opentelemetry context/__init__.py uses next() on entry_points
+# iterator which fails when entry_points metadata is corrupted or missing.
+#
+# Fix: Force reinstall opentelemetry packages to ensure entry_points are properly
+# registered in the package metadata (dist-info/entry_points.txt).
+#
+# References:
+# - https://github.com/open-telemetry/opentelemetry-python/issues/3857
+# - https://github.com/Azure/azure-sdk-for-python/issues/41535
 echo ""
 echo "=== Fixing opentelemetry compatibility ==="
 if uv pip show opentelemetry-api >/dev/null 2>&1; then
-    echo "Upgrading opentelemetry packages for Python 3.12+ compatibility..."
-    uv pip install --no-progress --upgrade \
+    echo "Reinstalling opentelemetry packages for Python 3.12+ compatibility..."
+    # Force reinstall to ensure entry_points are properly registered
+    uv pip install --no-progress --force-reinstall \
         "opentelemetry-api>=1.25.0" \
         "opentelemetry-sdk>=1.25.0" \
         "opentelemetry-semantic-conventions>=0.46b0" \
-        2>/dev/null || echo "opentelemetry upgrade skipped (may not be installed)"
+        2>/dev/null || echo "opentelemetry reinstall skipped (packages may not be installed)"
+
+    # Verify the fix by testing context loading
+    if python -c "from opentelemetry.context import get_current; get_current()" 2>/dev/null; then
+        echo "opentelemetry context loading: OK"
+    else
+        echo "WARNING: opentelemetry context loading may still have issues"
+    fi
 fi
 
 # =============================================================================
