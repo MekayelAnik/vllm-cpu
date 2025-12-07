@@ -366,159 +366,78 @@ else
 fi
 
 # =============================================================================
-# Fix opentelemetry context issue (Python 3.12+ compatibility)
+# Fix opentelemetry context issue (Python 3.12+ / ARM64 compatibility)
 # =============================================================================
-# The opentelemetry-api package has a StopIteration bug with Python 3.12+ when
-# entry_points aren't properly registered during package installation. This
-# causes "StopIteration" errors in _load_runtime_context() when importing vLLM.
+# The opentelemetry-api package fails with "StopIteration" when entry_points
+# metadata is missing. This happens on ARM64 Docker builds.
 #
-# Root cause: The opentelemetry context/__init__.py uses next() on entry_points
-# iterator which raises StopIteration when no entry points are found. This happens
-# when entry_points.txt is missing or corrupted in the dist-info directory.
-#
-# Fix Strategy:
-# 1. First try reinstalling opentelemetry packages
-# 2. If that fails, manually create the entry_points.txt file
-# 3. If still failing, patch the opentelemetry context/__init__.py directly
-#
-# References:
-# - https://github.com/open-telemetry/opentelemetry-python/issues/3857
-# - https://github.com/Azure/azure-sdk-for-python/issues/41535
+# Fix: Directly patch opentelemetry/context/__init__.py to not rely on entry_points
 echo ""
 echo "=== Fixing opentelemetry compatibility ==="
-if uv pip show opentelemetry-api >/dev/null 2>&1; then
-    echo "Reinstalling opentelemetry packages for Python 3.12+ compatibility..."
-    # Force reinstall to ensure entry_points are properly registered
-    uv pip install --no-progress --force-reinstall \
-        "opentelemetry-api>=1.25.0" \
-        "opentelemetry-sdk>=1.25.0" \
-        "opentelemetry-semantic-conventions>=0.46b0" \
-        2>/dev/null || echo "opentelemetry reinstall skipped (packages may not be installed)"
+SITE_PACKAGES=$(python -c "import site; print(site.getsitepackages()[0])")
+OTEL_CONTEXT_FILE="${SITE_PACKAGES}/opentelemetry/context/__init__.py"
 
-    # Test if context loading works
-    if python -c "from opentelemetry.context import get_current; get_current()" 2>/dev/null; then
-        echo "opentelemetry context loading: OK"
+if [ -f "${OTEL_CONTEXT_FILE}" ]; then
+    # Check if already patched
+    if grep -q "PATCHED_ENTRYPOINTS_FIX" "${OTEL_CONTEXT_FILE}" 2>/dev/null; then
+        echo "opentelemetry already patched"
     else
-        echo "opentelemetry context loading failed, applying manual fix..."
+        echo "Patching ${OTEL_CONTEXT_FILE}..."
 
-        # Find the opentelemetry_api dist-info directory and ensure entry_points.txt exists
-        OTEL_DIST=$(python -c "import site; import os; sp=site.getsitepackages()[0]; dirs=[d for d in os.listdir(sp) if d.startswith('opentelemetry_api') and d.endswith('.dist-info')]; print(os.path.join(sp, dirs[0]) if dirs else '')" 2>/dev/null)
-
-        if [ -n "${OTEL_DIST}" ] && [ -d "${OTEL_DIST}" ]; then
-            ENTRY_POINTS_FILE="${OTEL_DIST}/entry_points.txt"
-
-            # Check if entry_points.txt exists and has the required entry
-            if [ ! -f "${ENTRY_POINTS_FILE}" ] || ! grep -q "opentelemetry_context" "${ENTRY_POINTS_FILE}" 2>/dev/null; then
-                echo "Creating/updating entry_points.txt in ${OTEL_DIST}..."
-
-                # Create or append the required entry points
-                cat >> "${ENTRY_POINTS_FILE}" << 'ENTRY_POINTS_EOF'
-
-[opentelemetry_context]
-contextvars_context = opentelemetry.context.contextvars_context:ContextVarsRuntimeContext
-ENTRY_POINTS_EOF
-                echo "entry_points.txt updated"
-            fi
-        fi
-
-        # Verify the fix worked
-        if python -c "from opentelemetry.context import get_current; get_current()" 2>/dev/null; then
-            echo "opentelemetry context loading after manual fix: OK"
-        else
-            echo "WARNING: entry_points fix didn't work, patching context module directly..."
-
-            # Final fix: Patch the opentelemetry/context/__init__.py file directly
-            # This replaces the _load_runtime_context function with a robust version
-            # Note: We can't import opentelemetry.context (it fails), so find the path manually
-            OTEL_CONTEXT_INIT=$(python -c "import site; import os; sp=site.getsitepackages()[0]; p=os.path.join(sp,'opentelemetry','context'); print(p if os.path.isdir(p) else '')" 2>/dev/null || echo "")
-
-            if [ -n "${OTEL_CONTEXT_INIT}" ] && [ -f "${OTEL_CONTEXT_INIT}/__init__.py" ]; then
-                echo "Patching ${OTEL_CONTEXT_INIT}/__init__.py..."
-
-                # Create a patched version that doesn't rely on entry_points
-                python << PATCH_SCRIPT
-import os
+        # Create the patched function that doesn't rely on entry_points
+        python3 << 'PATCH_EOF'
 import sys
 
-init_file = "${OTEL_CONTEXT_INIT}/__init__.py"
+otel_file = sys.argv[1] if len(sys.argv) > 1 else None
+if not otel_file:
+    import site
+    otel_file = site.getsitepackages()[0] + "/opentelemetry/context/__init__.py"
 
-try:
-    with open(init_file, 'r') as f:
-        content = f.read()
+with open(otel_file, 'r') as f:
+    content = f.read()
 
-    # Check if already patched
-    if '_PATCHED_FOR_ENTRYPOINTS_' in content:
-        print("Already patched")
-        sys.exit(0)
+# Skip if already patched
+if 'PATCHED_ENTRYPOINTS_FIX' in content:
+    print("Already patched")
+    sys.exit(0)
 
-    # The robust replacement function that handles missing entry_points
-    patched_function = '''
-# _PATCHED_FOR_ENTRYPOINTS_ - Patched to handle missing entry_points on ARM64/Python 3.12+
+# New robust function that doesn't depend on entry_points
+new_function = '''
+# PATCHED_ENTRYPOINTS_FIX - Direct instantiation to avoid entry_points issues on ARM64
 def _load_runtime_context() -> _RuntimeContext:
-    """Initialize the RuntimeContext with fallback for missing entry_points."""
+    """Initialize RuntimeContext directly without entry_points dependency."""
     from opentelemetry.context.contextvars_context import ContextVarsRuntimeContext
-
-    default_context = "contextvars_context"
-    configured_context = environ.get(OTEL_PYTHON_CONTEXT, default_context)
-
-    # Try entry_points first
-    try:
-        eps = list(entry_points(group="opentelemetry_context", name=configured_context))
-        if eps:
-            return eps[0].load()()
-    except Exception:
-        pass
-
-    # Fallback: directly instantiate ContextVarsRuntimeContext
     return ContextVarsRuntimeContext()
 
 '''
 
-    # Find and replace the existing _load_runtime_context function
-    import re
+# Find where to insert - right before _RUNTIME_CONTEXT = _load_runtime_context()
+marker = '_RUNTIME_CONTEXT = _load_runtime_context()'
+if marker in content:
+    # Find the start of the old function
+    old_func_start = content.find('def _load_runtime_context()')
+    if old_func_start != -1:
+        # Find where old function ends (at the _RUNTIME_CONTEXT line)
+        old_func_end = content.find(marker)
+        # Replace old function with new one
+        content = content[:old_func_start] + new_function + content[old_func_end:]
 
-    # Pattern to match the entire function definition
-    # Matches from 'def _load_runtime_context' to just before '_RUNTIME_CONTEXT ='
-    pattern = r'def _load_runtime_context\(\)[^\n]*\n(?:.*?\n)*?(?=_RUNTIME_CONTEXT\s*=)'
+with open(otel_file, 'w') as f:
+    f.write(content)
 
-    if re.search(pattern, content):
-        content = re.sub(pattern, patched_function, content)
-        print(f"Replaced _load_runtime_context function")
-    else:
-        # Alternative: just insert our function before _RUNTIME_CONTEXT and comment out old one
-        old_func_start = content.find('def _load_runtime_context()')
-        if old_func_start != -1:
-            # Comment out the old function by adding # to each line until _RUNTIME_CONTEXT
-            runtime_ctx_pos = content.find('_RUNTIME_CONTEXT = _load_runtime_context()')
-            if runtime_ctx_pos > old_func_start:
-                old_func = content[old_func_start:runtime_ctx_pos]
-                commented = '\n'.join('# ' + line for line in old_func.split('\n'))
-                content = content[:old_func_start] + patched_function + commented + content[runtime_ctx_pos:]
-                print("Inserted patched function and commented old one")
+print("Patched successfully")
+PATCH_EOF
 
-    with open(init_file, 'w') as f:
-        f.write(content)
-
-    print(f"Successfully patched {init_file}")
-
-except Exception as e:
-    print(f"Patch failed: {e}")
-    import traceback
-    traceback.print_exc()
-    sys.exit(1)
-PATCH_SCRIPT
-
-                # Verify the patch worked
-                if python -c "from opentelemetry.context import get_current; get_current()" 2>/dev/null; then
-                    echo "opentelemetry context loading after direct patch: OK"
-                else
-                    echo "ERROR: All opentelemetry fixes failed"
-                fi
-            else
-                echo "ERROR: Could not locate opentelemetry context module"
-            fi
+        # Verify the fix
+        if python -c "from opentelemetry.context import get_current; get_current()" 2>/dev/null; then
+            echo "opentelemetry context loading: OK"
+        else
+            echo "ERROR: opentelemetry fix failed"
+            exit 1
         fi
     fi
+else
+    echo "opentelemetry not installed, skipping fix"
 fi
 
 # =============================================================================
