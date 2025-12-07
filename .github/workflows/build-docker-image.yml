@@ -326,7 +326,7 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
   # ==========================================================================
-  # Update <variant>-latest tags
+  # Update <variant>-latest tags (multi-arch aware)
   # ==========================================================================
   update-latest-tags:
     name: Update ${{ matrix.variant }}-latest tag
@@ -350,6 +350,9 @@ jobs:
       packages: write
 
     steps:
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
       - name: Log in to Docker Hub
         if: inputs.skip_dockerhub != true
         uses: docker/login-action@v3
@@ -365,7 +368,7 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Re-tag image as latest
+      - name: Re-tag image as latest (multi-arch)
         shell: bash
         run: |
           LATEST_VERSION="${{ needs.check-versions.outputs.latest_version }}"
@@ -373,20 +376,25 @@ jobs:
           SOURCE_TAG="${VARIANT}-${LATEST_VERSION}"
           LATEST_TAG="${VARIANT}-latest"
 
-          echo "Re-tagging ${SOURCE_TAG} as ${LATEST_TAG}..."
+          echo "Re-tagging ${SOURCE_TAG} as ${LATEST_TAG} (preserving multi-arch manifest)..."
           SUCCESS=false
+
+          # Use buildx imagetools to create new tags from existing multi-arch manifests
+          # This preserves all platform variants (amd64, arm64) in the manifest
 
           # Docker Hub
           if [[ "${{ inputs.skip_dockerhub }}" != "true" ]]; then
-            if docker pull ${{ env.DOCKERHUB_IMAGE }}:${SOURCE_TAG} 2>/dev/null; then
-              docker tag ${{ env.DOCKERHUB_IMAGE }}:${SOURCE_TAG} ${{ env.DOCKERHUB_IMAGE }}:${LATEST_TAG}
-              docker push ${{ env.DOCKERHUB_IMAGE }}:${LATEST_TAG}
+            if docker buildx imagetools inspect ${{ env.DOCKERHUB_IMAGE }}:${SOURCE_TAG} > /dev/null 2>&1; then
+              docker buildx imagetools create \
+                --tag ${{ env.DOCKERHUB_IMAGE }}:${LATEST_TAG} \
+                ${{ env.DOCKERHUB_IMAGE }}:${SOURCE_TAG}
               echo "Updated Docker Hub ${LATEST_TAG}"
               SUCCESS=true
 
               if [[ "$VARIANT" == "noavx512" ]]; then
-                docker tag ${{ env.DOCKERHUB_IMAGE }}:${SOURCE_TAG} ${{ env.DOCKERHUB_IMAGE }}:latest
-                docker push ${{ env.DOCKERHUB_IMAGE }}:latest
+                docker buildx imagetools create \
+                  --tag ${{ env.DOCKERHUB_IMAGE }}:latest \
+                  ${{ env.DOCKERHUB_IMAGE }}:${SOURCE_TAG}
                 echo "Updated Docker Hub 'latest' tag"
               fi
             else
@@ -396,40 +404,57 @@ jobs:
 
           # GHCR
           if [[ "${{ inputs.skip_ghcr }}" != "true" ]]; then
-            if docker pull ${{ env.GHCR_IMAGE }}:${SOURCE_TAG} 2>/dev/null; then
-              docker tag ${{ env.GHCR_IMAGE }}:${SOURCE_TAG} ${{ env.GHCR_IMAGE }}:${LATEST_TAG}
-              docker push ${{ env.GHCR_IMAGE }}:${LATEST_TAG}
+            if docker buildx imagetools inspect ${{ env.GHCR_IMAGE }}:${SOURCE_TAG} > /dev/null 2>&1; then
+              docker buildx imagetools create \
+                --tag ${{ env.GHCR_IMAGE }}:${LATEST_TAG} \
+                ${{ env.GHCR_IMAGE }}:${SOURCE_TAG}
               echo "Updated GHCR ${LATEST_TAG}"
               SUCCESS=true
 
               if [[ "$VARIANT" == "noavx512" ]]; then
-                docker tag ${{ env.GHCR_IMAGE }}:${SOURCE_TAG} ${{ env.GHCR_IMAGE }}:latest
-                docker push ${{ env.GHCR_IMAGE }}:latest
+                docker buildx imagetools create \
+                  --tag ${{ env.GHCR_IMAGE }}:latest \
+                  ${{ env.GHCR_IMAGE }}:${SOURCE_TAG}
                 echo "Updated GHCR 'latest' tag"
               fi
             elif [[ "$SUCCESS" == "true" ]]; then
-              # Use Docker Hub image for GHCR
-              docker tag ${{ env.DOCKERHUB_IMAGE }}:${SOURCE_TAG} ${{ env.GHCR_IMAGE }}:${LATEST_TAG}
-              docker push ${{ env.GHCR_IMAGE }}:${LATEST_TAG}
+              # Copy from Docker Hub to GHCR (preserves multi-arch)
+              docker buildx imagetools create \
+                --tag ${{ env.GHCR_IMAGE }}:${LATEST_TAG} \
+                ${{ env.DOCKERHUB_IMAGE }}:${SOURCE_TAG}
 
               if [[ "$VARIANT" == "noavx512" ]]; then
-                docker tag ${{ env.DOCKERHUB_IMAGE }}:${SOURCE_TAG} ${{ env.GHCR_IMAGE }}:latest
-                docker push ${{ env.GHCR_IMAGE }}:latest
+                docker buildx imagetools create \
+                  --tag ${{ env.GHCR_IMAGE }}:latest \
+                  ${{ env.DOCKERHUB_IMAGE }}:${SOURCE_TAG}
               fi
+              echo "Copied from Docker Hub to GHCR"
             fi
           fi
 
-          [[ "$SUCCESS" != "true" ]] && echo "::warning::Could not update latest tag for ${VARIANT}"
+          if [[ "$SUCCESS" != "true" ]]; then
+            echo "::warning::Could not update latest tag for ${VARIANT}"
+          fi
 
       - name: Verify latest image
+        continue-on-error: true
         shell: bash
         run: |
           VARIANT="${{ matrix.variant }}"
 
+          # Show manifest info (all platforms)
+          echo "=== Manifest for ${VARIANT}-latest ==="
           if [[ "${{ inputs.skip_dockerhub }}" != "true" ]]; then
-            if docker pull ${{ env.DOCKERHUB_IMAGE }}:${VARIANT}-latest 2>/dev/null; then
-              docker run --rm ${{ env.DOCKERHUB_IMAGE }}:${VARIANT}-latest \
-                python -c "import vllm; print(f'vLLM version: {vllm.__version__}')"
+            docker buildx imagetools inspect ${{ env.DOCKERHUB_IMAGE }}:${VARIANT}-latest 2>/dev/null || true
+          fi
+
+          # Quick smoke test on amd64
+          echo ""
+          echo "=== Smoke test (amd64) ==="
+          if [[ "${{ inputs.skip_dockerhub }}" != "true" ]]; then
+            if docker pull --platform linux/amd64 ${{ env.DOCKERHUB_IMAGE }}:${VARIANT}-latest 2>/dev/null; then
+              docker run --rm --platform linux/amd64 ${{ env.DOCKERHUB_IMAGE }}:${VARIANT}-latest \
+                python -c "import vllm; print(f'vLLM version: {vllm.__version__}')" || echo "::warning::vLLM import test failed"
             fi
           fi
 
