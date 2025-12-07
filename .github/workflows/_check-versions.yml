@@ -335,6 +335,7 @@ jobs:
 
       - name: Generate unified build matrix
         id: matrix
+        shell: bash
         run: |
           # Read versions from previous step
           VERSIONS_JSON='${{ steps.compare.outputs.new_versions }}'
@@ -362,6 +363,46 @@ jobs:
           echo "Versions: $VERSIONS_JSON"
           echo "Platforms: AMD64=$BUILD_AMD64, ARM64=$BUILD_ARM64"
           echo "Variants: noavx512=$BUILD_NOAVX512, avx512=$BUILD_AVX512, avx512vnni=$BUILD_AVX512VNNI, avx512bf16=$BUILD_AVX512BF16, amxbf16=$BUILD_AMXBF16"
+
+          # Function to check if platform-specific wheel exists on PyPI
+          # Args: $1=package_name, $2=version, $3=platform_tag (x86_64 or aarch64)
+          check_wheel_exists() {
+            local pkg="$1"
+            local ver="$2"
+            local plat="$3"
+
+            # Query PyPI JSON API for this version
+            local response
+            response=$(curl -sf "https://pypi.org/pypi/${pkg}/${ver}/json" 2>/dev/null) || return 1
+
+            # Check if wheel for this platform exists (any Python version)
+            # Pattern: vllm_cpu-0.11.0-cp3XX-cp3XX-manylinux*_${plat}.whl
+            if echo "$response" | grep -qE "\"filename\":\s*\"${pkg//-/_}-[^\"]*${plat}"; then
+              return 0  # Wheel exists
+            fi
+            return 1  # Wheel doesn't exist
+          }
+
+          # Map variant to package name
+          variant_to_package() {
+            case "$1" in
+              noavx512) echo "vllm-cpu" ;;
+              avx512) echo "vllm-cpu-avx512" ;;
+              avx512vnni) echo "vllm-cpu-avx512vnni" ;;
+              avx512bf16) echo "vllm-cpu-avx512bf16" ;;
+              amxbf16) echo "vllm-cpu-amxbf16" ;;
+              *) echo "vllm-cpu" ;;
+            esac
+          }
+
+          # Map platform to wheel tag
+          platform_to_tag() {
+            case "$1" in
+              amd64) echo "x86_64" ;;
+              arm64) echo "aarch64" ;;
+              *) echo "x86_64" ;;
+            esac
+          }
 
           # Generate the build matrix using jq
           # This creates a flat array of {variant, platform, version} objects
@@ -403,19 +444,44 @@ jobs:
             ]
           ')
 
-          echo "Generated matrix:"
+          echo "Initial matrix (before platform wheel check):"
           echo "$MATRIX" | jq .
 
+          # Filter matrix: remove entries where platform-specific wheel already exists on PyPI
+          echo ""
+          echo "=== Checking for existing platform-specific wheels on PyPI ==="
+          FILTERED_MATRIX="[]"
+
+          for entry in $(echo "$MATRIX" | jq -c '.[]'); do
+            variant=$(echo "$entry" | jq -r '.variant')
+            platform=$(echo "$entry" | jq -r '.platform')
+            version=$(echo "$entry" | jq -r '.version')
+
+            package=$(variant_to_package "$variant")
+            plat_tag=$(platform_to_tag "$platform")
+
+            if check_wheel_exists "$package" "$version" "$plat_tag"; then
+              echo "SKIP: $package v$version ($plat_tag) - wheel exists on PyPI"
+            else
+              echo "BUILD: $package v$version ($plat_tag) - wheel not found on PyPI"
+              FILTERED_MATRIX=$(echo "$FILTERED_MATRIX" | jq -c --argjson entry "$entry" '. + [$entry]')
+            fi
+          done
+
+          echo ""
+          echo "Filtered matrix (after platform wheel check):"
+          echo "$FILTERED_MATRIX" | jq .
+
           # Check if matrix is empty
-          MATRIX_LENGTH=$(echo "$MATRIX" | jq 'length')
+          MATRIX_LENGTH=$(echo "$FILTERED_MATRIX" | jq 'length')
           if [[ "$MATRIX_LENGTH" -eq 0 ]]; then
-            echo "No builds in matrix (all variants/platforms disabled)"
+            echo "No builds in matrix (all wheels already exist or variants/platforms disabled)"
             echo "build_matrix=[]" >> "$GITHUB_OUTPUT"
             echo "has_builds=false" >> "$GITHUB_OUTPUT"
           else
             echo "Matrix has $MATRIX_LENGTH builds"
             # Wrap in include for GitHub Actions matrix format
-            FINAL_MATRIX=$(echo "$MATRIX" | jq -c '{include: .}')
+            FINAL_MATRIX=$(echo "$FILTERED_MATRIX" | jq -c '{include: .}')
             echo "build_matrix=$FINAL_MATRIX" >> "$GITHUB_OUTPUT"
             echo "has_builds=true" >> "$GITHUB_OUTPUT"
           fi
