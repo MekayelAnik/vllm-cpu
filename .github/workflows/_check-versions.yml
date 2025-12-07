@@ -454,8 +454,12 @@ jobs:
 
           # Get version postfix (e.g., .post2)
           VERSION_POSTFIX="${{ steps.postfix.outputs.postfix }}"
+          echo "DEBUG: Raw postfix from input: '${{ inputs.version_postfix }}'"
+          echo "DEBUG: Normalized postfix from step: '$VERSION_POSTFIX'"
           if [[ -n "$VERSION_POSTFIX" ]]; then
             echo "Using version postfix: $VERSION_POSTFIX"
+          else
+            echo "No version postfix specified - checking base versions on PyPI"
           fi
 
           for entry in $(echo "$MATRIX" | jq -c '.[]'); do
