@@ -6,13 +6,11 @@
   </picture>
 </p>
 
-<h3 align="center">
-Easy, fast, and cheap LLM serving for everyone
-</h3>
-
-<h4 align="center">
-Docker Images for CPU-Only Inference
-</h4>
+<p align="center">
+  <b>Easy, fast, and cheap LLM serving for everyone</b>
+  <br>
+  <i>Docker Images for CPU-Only Inference</i>
+</p>
 
 <p align="center">
   <a href="https://github.com/MekayelAnik/vllm-cpu/stargazers">
