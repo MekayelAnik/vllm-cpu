@@ -441,6 +441,39 @@ else
 fi
 
 # =============================================================================
+# Fix aimv2 config registration conflict (vLLM <0.11 with transformers 4.47+)
+# =============================================================================
+# Older vLLM versions try to register 'aimv2' config which now exists in
+# transformers 4.47+. This causes: ValueError: 'aimv2' is already used by a
+# Transformers config. Fix: Patch ovis.py to use exist_ok=True
+echo ""
+echo "=== Fixing transformers config compatibility ==="
+OVIS_FILE="${SITE_PACKAGES}/vllm/transformers_utils/configs/ovis.py"
+
+if [ -f "${OVIS_FILE}" ]; then
+    # Check if file contains the problematic registration without exist_ok
+    if grep -q 'AutoConfig.register.*aimv2.*AIMv2Config' "${OVIS_FILE}" 2>/dev/null; then
+        # Check if already fixed (has exist_ok=True)
+        if grep -q 'register.*aimv2.*exist_ok=True' "${OVIS_FILE}" 2>/dev/null; then
+            echo "ovis.py already patched for aimv2"
+        else
+            echo "Patching ${OVIS_FILE} for aimv2 compatibility..."
+            # Replace the registration to use exist_ok=True
+            sed -i 's/AutoConfig\.register("aimv2", AIMv2Config)/AutoConfig.register("aimv2", AIMv2Config, exist_ok=True)/g' "${OVIS_FILE}"
+
+            # Also fix OvisConfig registration if present
+            sed -i 's/AutoConfig\.register("ovis", OvisConfig)/AutoConfig.register("ovis", OvisConfig, exist_ok=True)/g' "${OVIS_FILE}"
+
+            echo "Patched ovis.py to use exist_ok=True"
+        fi
+    else
+        echo "ovis.py does not contain aimv2 registration (newer vLLM version)"
+    fi
+else
+    echo "ovis.py not found (may be older vLLM version without this file)"
+fi
+
+# =============================================================================
 # Verify installation
 # =============================================================================
 echo ""
