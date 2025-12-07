@@ -12,7 +12,7 @@
 # - Reuses _check-versions.yml internally for consistent version parsing
 # - Supports mixed version formats: ranges, lists, and combinations
 #
-# Security: Actions use @latest for automatic updates
+# Security: Actions use major version tags for automatic security updates
 # Performance: GitHub Actions cache, concurrency control, parallel builds
 # ==============================================================================
 

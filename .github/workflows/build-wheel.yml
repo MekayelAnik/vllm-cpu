@@ -9,7 +9,7 @@
 # - Minimal permissions per job (principle of least privilege)
 # - Concurrency control to prevent duplicate runs
 # - Timeout limits to prevent runaway jobs
-# - Action pinning with SHA hashes for supply chain security
+# - Actions use major version tags for automatic security updates
 #
 # Architecture:
 # - Uses _check-versions.yml to generate unified build matrix
