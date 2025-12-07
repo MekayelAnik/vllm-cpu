@@ -366,6 +366,23 @@ else
 fi
 
 # =============================================================================
+# Fix opentelemetry context issue (Python 3.12+ compatibility)
+# =============================================================================
+# The opentelemetry-api package has a StopIteration bug with Python 3.12+
+# when entry points aren't properly registered. This affects the transformers
+# import chain. Fix by reinstalling opentelemetry packages to compatible versions.
+echo ""
+echo "=== Fixing opentelemetry compatibility ==="
+if uv pip show opentelemetry-api >/dev/null 2>&1; then
+    echo "Upgrading opentelemetry packages for Python 3.12+ compatibility..."
+    uv pip install --no-progress --upgrade \
+        "opentelemetry-api>=1.25.0" \
+        "opentelemetry-sdk>=1.25.0" \
+        "opentelemetry-semantic-conventions>=0.46b0" \
+        2>/dev/null || echo "opentelemetry upgrade skipped (may not be installed)"
+fi
+
+# =============================================================================
 # Verify installation
 # =============================================================================
 echo ""
