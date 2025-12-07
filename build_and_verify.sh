@@ -1966,8 +1966,63 @@ check_pypi_platform_wheel_exists() {
             platform_tag="x86_64"
             ;;
         all|auto|"")
-            # For all/auto, check if ANY wheel exists (use old behavior)
-            return $(check_pypi_version_exists "$package_name" "$version" "$pypi_url"; echo $?)
+            # For all/auto, check if ALL supported platform wheels exist
+            # Look up supported platforms from build_config.json
+            local config_file="$SCRIPT_DIR/build_config.json"
+            local supported_platforms=()
+
+            if [[ -f "$config_file" ]]; then
+                # Get platforms array for this package from config
+                local platforms_json
+                platforms_json=$(jq -r --arg pkg "$package_name" \
+                    '.builds[$pkg].platforms // empty' "$config_file" 2>/dev/null)
+
+                if [[ -n "$platforms_json" && "$platforms_json" != "null" ]]; then
+                    # Parse JSON array to bash array
+                    while IFS= read -r plat; do
+                        [[ -n "$plat" ]] && supported_platforms+=("$plat")
+                    done < <(echo "$platforms_json" | jq -r '.[]' 2>/dev/null)
+                fi
+            fi
+
+            # Default to x86_64 only if no config found
+            if [[ ${#supported_platforms[@]} -eq 0 ]]; then
+                supported_platforms=("x86_64")
+            fi
+
+            log_info "Checking all platforms for $package_name: ${supported_platforms[*]}"
+
+            # Query PyPI once for this version
+            local response
+            response=$(curl -s "$pypi_url/pypi/$package_name/$version/json" 2>/dev/null)
+
+            if [[ -z "$response" ]] || echo "$response" | grep -q '"message"'; then
+                log_info "Version $version not found on $(basename "$pypi_url")"
+                return 1  # Version doesn't exist at all
+            fi
+
+            # Check each supported platform - ALL must have wheels
+            local pyver_tag="cp${python_ver//./}"
+            local all_exist=true
+            local missing_platforms=()
+
+            for plat in "${supported_platforms[@]}"; do
+                # Check if wheel for this platform exists
+                local wheel_pattern="${package_name//-/_}-${version}.*${pyver_tag}.*${plat}"
+
+                if ! echo "$response" | grep -qE "\"filename\":\s*\"${wheel_pattern}"; then
+                    all_exist=false
+                    missing_platforms+=("$plat")
+                fi
+            done
+
+            if [[ "$all_exist" == "true" ]]; then
+                log_warning "All platform wheels exist for $package_name v$version"
+                return 0  # All platform wheels exist
+            else
+                log_info "Missing platform wheels for $package_name v$version: ${missing_platforms[*]}"
+                return 1  # At least one platform wheel is missing
+            fi
             ;;
         *)
             log_warning "Unknown platform: $platform, using version-only check"
