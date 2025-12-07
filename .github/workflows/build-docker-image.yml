@@ -22,7 +22,7 @@ on:
   # Run every hour to check for new vLLM releases
   # Note: Actual builds only run when new versions are detected
   schedule:
-    - cron: '30 * * * *'
+    - cron: '35 * * * *'
 
   # Allow manual trigger
   workflow_dispatch:
