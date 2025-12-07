@@ -2,6 +2,35 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## IMPORTANT: Git Commit Guidelines
+
+**NEVER include any of the following in commit messages:**
+- References to Claude, AI, or any AI assistant
+- "Generated with Claude Code" or similar phrases
+- "Co-Authored-By: Claude" or any AI co-author attribution
+- Emojis (unless explicitly requested by user)
+
+**Commit messages MUST be:**
+- Concise: Max 50 chars for title, 72 chars per line for body
+- Clear: Describe WHAT changed and WHY
+- Conventional: Use prefixes like `feat:`, `fix:`, `refactor:`, `docs:`, `chore:`
+- Technical: Focus on the actual changes, not who/what made them
+
+**Good examples:**
+```
+feat: Add Docker image check to version workflow
+fix: Handle empty version strings in parser
+refactor: Extract version parsing to reusable workflow
+docs: Update CI/CD architecture diagram
+```
+
+**Bad examples:**
+```
+🤖 Generated with Claude Code
+feat: Add feature (with AI assistance)
+Co-Authored-By: Claude <noreply@anthropic.com>
+```
+
 ## Project Overview
 
 This repository builds and publishes **5 CPU-optimized vLLM wheel packages** to PyPI, each compiled with different instruction set extensions for optimal performance on different Intel/AMD CPUs. The project clones the upstream vLLM repository, builds custom wheels with CPU-specific compiler flags, and publishes them as separate PyPI packages.
@@ -300,15 +329,23 @@ The CI/CD system uses a modular architecture with reusable workflows and composi
 .github/
 ├── actions/
 │   └── setup-build-env/
-│       └── action.yml              # Composite action: system deps, uv, ccache
+│       └── action.yml               # Composite action: system deps, uv, ccache
 ├── workflows/
-│   ├── build-wheel.yml             # Main orchestrator (triggers builds)
-│   ├── _check-versions.yml         # Reusable: version detection + matrix generation
-│   ├── _build-wheel-job.yml        # Reusable: single wheel build
-│   ├── _publish-pypi.yml           # Reusable: PyPI publishing
-│   ├── _update-release-notes.yml   # Reusable: GitHub release notes
-│   └── build-docker-image.yml      # Docker image builder
+│   ├── build-wheel.yml              # Wheel builder orchestrator
+│   ├── build-docker-image.yml       # Docker image builder orchestrator
+│   ├── _check-versions.yml          # Reusable: version detection + matrix generation
+│   ├── _check-versions-docker.yml   # Reusable: Docker-specific version checks (chains to _check-versions.yml)
+│   ├── _build-wheel-job.yml         # Reusable: single wheel build
+│   ├── _publish-pypi.yml            # Reusable: PyPI publishing
+│   └── _update-release-notes.yml    # Reusable: GitHub release notes
 ```
+
+**Version Input Formats:**
+The workflows support flexible version input formats:
+- Single version: `0.12.0`
+- Comma-separated list: `0.11.0,0.11.1,0.12.0`
+- Version range: `0.11.0-0.12.0` (expands to all versions in range)
+- Mixed format: `0.8.5, 0.11.0-0.11.2, 0.12.0` (ranges + individual versions + spaces)
 
 #### Main Workflow: `build-wheel.yml`
 
@@ -369,6 +406,7 @@ gh workflow run build-wheel.yml \
 | Workflow | Purpose |
 |----------|---------|
 | `_check-versions.yml` | Fetches vLLM releases, compares with PyPI, generates unified build matrix JSON |
+| `_check-versions-docker.yml` | Chains to `_check-versions.yml`, adds Docker-specific checks (existing images, latest tags, postfix detection) |
 | `_build-wheel-job.yml` | Builds wheels for a single variant/platform/version combination |
 | `_publish-pypi.yml` | Downloads artifacts and publishes to PyPI |
 | `_update-release-notes.yml` | Generates and updates GitHub release notes with install commands |
@@ -717,13 +755,15 @@ gh workflow run build-docker-image.yml \
 ```
 
 **Workflow features:**
-- Builds all 5 variants in parallel
+- Uses `_check-versions-docker.yml` reusable workflow for version detection
+- Builds all 5 variants in parallel with unified build matrix
 - Publishes to both Docker Hub and GHCR
 - Multi-platform support (amd64 + arm64 for noavx512)
 - Automatic Python version detection from vLLM's requirements
 - Falls back to GitHub release wheels if PyPI unavailable
 - **Version postfix support**: Auto-detect highest postfix from PyPI (`.post1`, `.post2`, etc.)
 - Triggered on schedule (hourly check), release creation, or manual dispatch
+- Actions use major version tags (@v3, @v5, @v6) for automatic minor/patch updates
 
 **Required GitHub Secrets:**
 - `DOCKERHUB_USERNAME` - Docker Hub username
