@@ -1,0 +1,102 @@
+# =============================================================================
+# Schedule Keeper - Triggers main workflows on a schedule
+# =============================================================================
+# GitHub Actions scheduled workflows can silently stop working. This simple
+# workflow acts as a backup trigger mechanism.
+#
+# Runs hourly and dispatches the main build workflows if they haven't run
+# recently from a schedule event.
+# =============================================================================
+
+name: Schedule Keeper
+
+on:
+  schedule:
+    # Run at minute 10 and 40 of each hour
+    - cron: '10,40 * * * *'
+
+  workflow_dispatch:
+    inputs:
+      trigger_wheels:
+        description: 'Trigger wheel build workflow'
+        type: boolean
+        default: true
+      trigger_docker:
+        description: 'Trigger docker build workflow'
+        type: boolean
+        default: true
+
+permissions:
+  actions: write
+  contents: read
+
+jobs:
+  trigger-workflows:
+    name: Trigger Build Workflows
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Check last scheduled runs
+        id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          echo "Checking last scheduled runs..."
+
+          # Get timestamp from 2 hours ago
+          TWO_HOURS_AGO=$(date -u -d '2 hours ago' +%Y-%m-%dT%H:%M:%SZ)
+
+          # Check wheel workflow
+          WHEEL_SCHEDULE=$(gh api repos/${{ github.repository }}/actions/runs \
+            --jq ".workflow_runs | map(select(.event == \"schedule\" and .name == \"Auto-Build vLLM CPU Wheels\" and .created_at > \"$TWO_HOURS_AGO\")) | length")
+
+          # Check docker workflow
+          DOCKER_SCHEDULE=$(gh api repos/${{ github.repository }}/actions/runs \
+            --jq ".workflow_runs | map(select(.event == \"schedule\" and .name == \"Auto-Build vLLM CPU Docker Images\" and .created_at > \"$TWO_HOURS_AGO\")) | length")
+
+          echo "Wheel scheduled runs in last 2 hours: $WHEEL_SCHEDULE"
+          echo "Docker scheduled runs in last 2 hours: $DOCKER_SCHEDULE"
+
+          # If no recent schedule runs, we should trigger
+          if [[ "$WHEEL_SCHEDULE" == "0" ]]; then
+            echo "trigger_wheels=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "trigger_wheels=false" >> "$GITHUB_OUTPUT"
+          fi
+
+          if [[ "$DOCKER_SCHEDULE" == "0" ]]; then
+            echo "trigger_docker=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "trigger_docker=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Trigger Wheel Build
+        if: |
+          (github.event_name == 'schedule' && steps.check.outputs.trigger_wheels == 'true') ||
+          (github.event_name == 'workflow_dispatch' && inputs.trigger_wheels)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          echo "Triggering Auto-Build vLLM CPU Wheels..."
+          gh workflow run build-wheel.yml --repo ${{ github.repository }}
+          echo "Triggered wheel build workflow"
+
+      - name: Trigger Docker Build
+        if: |
+          (github.event_name == 'schedule' && steps.check.outputs.trigger_docker == 'true') ||
+          (github.event_name == 'workflow_dispatch' && inputs.trigger_docker)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          echo "Triggering Auto-Build vLLM CPU Docker Images..."
+          gh workflow run build-docker-image.yml --repo ${{ github.repository }}
+          echo "Triggered docker build workflow"
+
+      - name: Summary
+        run: |
+          echo "## Schedule Keeper Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- Event: ${{ github.event_name }}" >> $GITHUB_STEP_SUMMARY
+          echo "- Wheel trigger needed: ${{ steps.check.outputs.trigger_wheels }}" >> $GITHUB_STEP_SUMMARY
+          echo "- Docker trigger needed: ${{ steps.check.outputs.trigger_docker }}" >> $GITHUB_STEP_SUMMARY
