@@ -287,8 +287,9 @@ jobs:
             local image="${{ inputs.dockerhub_image }}"
             local tag="${variant}-${base_ver}"
 
+            # Note: Docker Hub API requires trailing slash for tag endpoint
             curl -sS --retry 2 --retry-delay 3 \
-              "https://hub.docker.com/v2/repositories/${image}/tags/${tag}" 2>/dev/null | \
+              "https://hub.docker.com/v2/repositories/${image}/tags/${tag}/" 2>/dev/null | \
               jq -r '.last_updated // ""' 2>/dev/null
           }
 
@@ -547,7 +548,8 @@ jobs:
                   POSTFIX_PART=$(echo "$HIGHEST" | sed "s/^${FIRST_VERSION}//")
                   echo "Found highest postfix: $POSTFIX_PART"
                   echo "postfix=$POSTFIX_PART" >> "$GITHUB_OUTPUT"
-                  echo "use_github_release=true" >> "$GITHUB_OUTPUT"
+                  # Postfix wheels are on PyPI, NOT GitHub releases
+                  echo "use_github_release=false" >> "$GITHUB_OUTPUT"
                   exit 0
                 fi
               fi
