@@ -272,8 +272,28 @@ jobs:
             return 1  # No wheel in GitHub release
           }
 
+          # Function to get PyPI release date for a version
+          get_pypi_release_date() {
+            local version="$1"
+            curl -sS --retry 2 --retry-delay 3 \
+              "https://pypi.org/pypi/vllm-cpu/${version}/json" 2>/dev/null | \
+              jq -r '.urls[0].upload_time_iso_8601 // ""' 2>/dev/null
+          }
+
+          # Function to get Docker image last updated date
+          get_docker_last_updated() {
+            local base_ver="$1"
+            local variant="noavx512"
+            local image="${{ inputs.dockerhub_image }}"
+            local tag="${variant}-${base_ver}"
+
+            curl -sS --retry 2 --retry-delay 3 \
+              "https://hub.docker.com/v2/repositories/${image}/tags/${tag}" 2>/dev/null | \
+              jq -r '.last_updated // ""' 2>/dev/null
+          }
+
           # Find PyPI base versions not in Docker Hub
-          # Also check for versions that need rebuild (newer .postN available)
+          # Also check for versions that need rebuild (newer .postN available after image was built)
           # And check GitHub releases for versions not on PyPI
           echo ""
           echo "Finding versions to build..."
@@ -297,15 +317,32 @@ jobs:
                 fi
               else
                 # Docker image exists - check if rebuild needed
-                # For now, we'll mark for rebuild if a .postN version exists
-                # (More sophisticated: check Docker label vs highest wheel)
                 if [[ -n "$HIGHEST_WHEEL" && "$HIGHEST_WHEEL" != "$base_version" ]]; then
-                  echo "  REBUILD: $base_version (newer wheel: $HIGHEST_WHEEL)"
-                  if [[ -n "$REBUILD_VERSIONS" ]]; then
-                    REBUILD_VERSIONS="$REBUILD_VERSIONS,$base_version"
+                  # A .postN wheel exists - check if it's newer than the Docker image
+                  DOCKER_DATE=$(get_docker_last_updated "$base_version")
+                  WHEEL_DATE=$(get_pypi_release_date "$HIGHEST_WHEEL")
+
+                  if [[ -n "$DOCKER_DATE" && -n "$WHEEL_DATE" ]]; then
+                    # Compare dates - rebuild if wheel is newer
+                    DOCKER_TS=$(date -d "$DOCKER_DATE" +%s 2>/dev/null || echo "0")
+                    WHEEL_TS=$(date -d "$WHEEL_DATE" +%s 2>/dev/null || echo "0")
+
+                    if [[ "$WHEEL_TS" -gt "$DOCKER_TS" ]]; then
+                      echo "  REBUILD: $base_version (wheel $HIGHEST_WHEEL released after Docker image)"
+                      echo "           Docker: $DOCKER_DATE, Wheel: $WHEEL_DATE"
+                      if [[ -n "$REBUILD_VERSIONS" ]]; then
+                        REBUILD_VERSIONS="$REBUILD_VERSIONS,$base_version"
+                      else
+                        REBUILD_VERSIONS="$base_version"
+                      fi
+                    else
+                      echo "  EXISTS: $base_version (Docker image up-to-date with wheel $HIGHEST_WHEEL)"
+                    fi
                   else
-                    REBUILD_VERSIONS="$base_version"
+                    echo "  EXISTS: $base_version (cannot determine dates, skipping rebuild check)"
                   fi
+                else
+                  echo "  EXISTS: $base_version (no .postN wheel available)"
                 fi
               fi
             fi
