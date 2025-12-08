@@ -261,17 +261,47 @@ jobs:
         shell: bash
         run: |
           BASE_VERSION="${{ matrix.version }}"
-          POSTFIX="${{ needs.check-versions.outputs.version_postfix }}"
-          USE_GH_RELEASE="${{ needs.check-versions.outputs.use_github_release }}"
+          WHEEL_VERSION="${{ matrix.wheel_version }}"
+          # Per-version flag from matrix (for versions only in GitHub releases)
+          MATRIX_USE_GH_RELEASE="${{ matrix.use_github_release }}"
+          # Global flag from inputs/check-versions (for manual override)
+          GLOBAL_USE_GH_RELEASE="${{ needs.check-versions.outputs.use_github_release }}"
 
-          if [[ -n "$POSTFIX" ]]; then
-            FULL_VERSION="${BASE_VERSION}${POSTFIX}"
+          # Use wheel_version from matrix (includes highest .postN if available)
+          # Falls back to base version if wheel_version is not set
+          if [[ -n "$WHEEL_VERSION" ]]; then
+            FULL_VERSION="$WHEEL_VERSION"
           else
-            FULL_VERSION="$BASE_VERSION"
+            # Legacy fallback: use postfix from check-versions output
+            POSTFIX="${{ needs.check-versions.outputs.version_postfix }}"
+            if [[ -n "$POSTFIX" ]]; then
+              FULL_VERSION="${BASE_VERSION}${POSTFIX}"
+            else
+              FULL_VERSION="$BASE_VERSION"
+            fi
           fi
 
+          # Determine if we should use GitHub release:
+          # 1. Per-version flag (version only exists in GitHub releases, not PyPI)
+          # 2. Global flag (user explicitly requested GitHub release)
+          # Note: .postN wheels are published to PyPI, so they don't require GitHub release
+          USE_GH_RELEASE="false"
+          if [[ "$MATRIX_USE_GH_RELEASE" == "true" ]]; then
+            USE_GH_RELEASE="true"
+            echo "Using GitHub release: version $BASE_VERSION not on PyPI"
+          elif [[ "$GLOBAL_USE_GH_RELEASE" == "true" ]]; then
+            USE_GH_RELEASE="true"
+            echo "Using GitHub release: global flag set"
+          fi
+
+          echo "base_version=$BASE_VERSION" >> "$GITHUB_OUTPUT"
           echo "full_version=$FULL_VERSION" >> "$GITHUB_OUTPUT"
-          echo "use_github_release=${USE_GH_RELEASE:-false}" >> "$GITHUB_OUTPUT"
+          echo "use_github_release=$USE_GH_RELEASE" >> "$GITHUB_OUTPUT"
+
+          # Log for debugging
+          echo "Docker tag: $BASE_VERSION"
+          echo "Wheel version to install: $FULL_VERSION"
+          echo "Use GitHub release: $USE_GH_RELEASE"
 
       - name: Build and push
         uses: docker/build-push-action@v6
@@ -281,7 +311,12 @@ jobs:
           platforms: ${{ matrix.platforms }}
           push: true
           tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
+          labels: |
+            ${{ steps.meta.outputs.labels }}
+            org.opencontainers.image.version=${{ steps.build-vars.outputs.full_version }}
+            org.opencontainers.image.base-version=${{ steps.build-vars.outputs.base_version }}
+            com.vllm-cpu.wheel-version=${{ steps.build-vars.outputs.full_version }}
+            com.vllm-cpu.variant=${{ matrix.variant }}
           build-args: |
             VLLM_VERSION=${{ steps.build-vars.outputs.full_version }}
             VARIANT=${{ matrix.variant }}
@@ -311,14 +346,17 @@ jobs:
         shell: bash
         run: |
           {
-            FULL_VERSION="${{ steps.build-vars.outputs.full_version }}"
-            echo "### ${{ matrix.variant }} @ ${FULL_VERSION:-${{ matrix.version }}}"
+            BASE_VERSION="${{ steps.build-vars.outputs.base_version }}"
+            WHEEL_VERSION="${{ steps.build-vars.outputs.full_version }}"
+            echo "### ${{ matrix.variant }} @ ${BASE_VERSION}"
             echo ""
             echo "| Property | Value |"
             echo "|----------|-------|"
-            echo "| Version | ${FULL_VERSION:-${{ matrix.version }}} |"
-            POSTFIX="${{ needs.check-versions.outputs.version_postfix }}"
-            [[ -n "$POSTFIX" ]] && echo "| Postfix | $POSTFIX |"
+            echo "| Docker Tag | ${BASE_VERSION} |"
+            echo "| Wheel Version | ${WHEEL_VERSION} |"
+            if [[ "$WHEEL_VERSION" != "$BASE_VERSION" ]]; then
+              echo "| Wheel Postfix | .post$(echo "$WHEEL_VERSION" | grep -oE 'post[0-9]+' | sed 's/post//') |"
+            fi
             echo "| Platforms | ${{ matrix.platforms }} |"
             echo "| GitHub Release | ${{ steps.build-vars.outputs.use_github_release }} |"
             echo "| Docker Hub | ${{ inputs.skip_dockerhub != true && 'Yes' || 'Skipped' }} |"

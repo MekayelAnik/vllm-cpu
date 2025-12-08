@@ -166,20 +166,32 @@ jobs:
           echo "Fetching existing versions from PyPI..."
 
           # Query PyPI for vllm-cpu package versions with retry
-          # PyPI has generous rate limits, no auth needed
-          PYPI_VERSIONS=$(curl -sfL --retry 3 --retry-delay 5 \
+          # Fetch ALL versions including .postN suffixes for accurate detection
+          PYPI_ALL_VERSIONS=$(curl -sfL --retry 3 --retry-delay 5 \
             "https://pypi.org/pypi/vllm-cpu/json" | \
             jq -r '.releases | keys[]' | \
-            grep -E '^[0-9]+\.[0-9]+\.[0-9]+(\.[0-9]+)?$' | \
+            grep -E '^[0-9]+\.[0-9]+\.[0-9]+(\.[0-9]+)?(\.post[0-9]+)?$' | \
             sort -V)
 
-          if [[ -z "$PYPI_VERSIONS" ]]; then
+          if [[ -z "$PYPI_ALL_VERSIONS" ]]; then
             echo "::warning::Failed to fetch PyPI versions, assuming no existing versions"
-            touch /tmp/pypi_versions.txt
+            touch /tmp/pypi_all_versions.txt
+            touch /tmp/pypi_base_versions.txt
           else
-            echo "PyPI versions (excluding .post/.dev):"
-            echo "$PYPI_VERSIONS"
-            echo "$PYPI_VERSIONS" > /tmp/pypi_versions.txt
+            echo "$PYPI_ALL_VERSIONS" > /tmp/pypi_all_versions.txt
+
+            # Extract unique base versions (strip .postN suffix)
+            # e.g., 0.12.0.post2 -> 0.12.0
+            PYPI_BASE_VERSIONS=$(echo "$PYPI_ALL_VERSIONS" | \
+              sed 's/\.post[0-9]*$//' | \
+              sort -V -u)
+            echo "$PYPI_BASE_VERSIONS" > /tmp/pypi_base_versions.txt
+
+            echo "PyPI versions (all, including .postN):"
+            echo "$PYPI_ALL_VERSIONS"
+            echo ""
+            echo "PyPI base versions (unique):"
+            echo "$PYPI_BASE_VERSIONS"
           fi
 
       - name: Compare versions
@@ -292,15 +304,36 @@ jobs:
             exit 0
           fi
 
-          # Auto-detect: Find versions in GitHub but not in PyPI
+          # Function to check if a base version OR any .postN version exists on PyPI
+          # Returns 0 (success/true) if version exists, 1 (failure/false) otherwise
+          version_exists_on_pypi() {
+            local base_ver="$1"
+            # Check exact base version
+            if grep -qx "$base_ver" /tmp/pypi_all_versions.txt 2>/dev/null; then
+              return 0
+            fi
+            # Check any postfix version (base.post1, base.post2, etc.)
+            if grep -qE "^${base_ver}\.post[0-9]+$" /tmp/pypi_all_versions.txt 2>/dev/null; then
+              return 0
+            fi
+            return 1
+          }
+
+          # Auto-detect: Find versions in GitHub but not in PyPI (base or postfix)
           NEW_VERSIONS=""
           while IFS= read -r version; do
-            if [[ -n "$version" ]] && ! grep -qx "$version" /tmp/pypi_versions.txt; then
-              echo "New version found: $version"
-              if [[ -n "$NEW_VERSIONS" ]]; then
-                NEW_VERSIONS="$NEW_VERSIONS,$version"
+            if [[ -n "$version" ]]; then
+              if ! version_exists_on_pypi "$version"; then
+                echo "New version found: $version (no base or .postN on PyPI)"
+                if [[ -n "$NEW_VERSIONS" ]]; then
+                  NEW_VERSIONS="$NEW_VERSIONS,$version"
+                else
+                  NEW_VERSIONS="$version"
+                fi
               else
-                NEW_VERSIONS="$version"
+                # Log what exists for debugging
+                EXISTING=$(grep -E "^${version}(\.post[0-9]+)?$" /tmp/pypi_all_versions.txt 2>/dev/null | tr '\n' ', ' | sed 's/,$//')
+                echo "Skipping $version - already on PyPI as: $EXISTING"
               fi
             fi
           done < /tmp/github_versions.txt
@@ -365,22 +398,38 @@ jobs:
           echo "Variants: noavx512=$BUILD_NOAVX512, avx512=$BUILD_AVX512, avx512vnni=$BUILD_AVX512VNNI, avx512bf16=$BUILD_AVX512BF16, amxbf16=$BUILD_AMXBF16"
 
           # Function to check if platform-specific wheel exists on PyPI
-          # Args: $1=package_name, $2=version, $3=platform_tag (x86_64 or aarch64)
+          # Checks both base version AND any .postN versions
+          # Args: $1=package_name, $2=base_version, $3=platform_tag (x86_64 or aarch64)
           check_wheel_exists() {
             local pkg="$1"
-            local ver="$2"
+            local base_ver="$2"
             local plat="$3"
+            local pkg_underscore="${pkg//-/_}"
 
-            # Query PyPI JSON API for this version
+            # First try exact base version
             local response
-            response=$(curl -sf "https://pypi.org/pypi/${pkg}/${ver}/json" 2>/dev/null) || return 1
-
-            # Check if wheel for this platform exists (any Python version)
-            # Pattern: vllm_cpu-0.11.0-cp3XX-cp3XX-manylinux*_${plat}.whl
-            if echo "$response" | grep -qE "\"filename\":\s*\"${pkg//-/_}-[^\"]*${plat}"; then
-              return 0  # Wheel exists
+            response=$(curl -sf "https://pypi.org/pypi/${pkg}/${base_ver}/json" 2>/dev/null)
+            if [[ $? -eq 0 ]] && echo "$response" | grep -qE "\"filename\":\s*\"${pkg_underscore}-[^\"]*${plat}"; then
+              return 0  # Wheel exists for base version
             fi
-            return 1  # Wheel doesn't exist
+
+            # Try postfix versions (.post1, .post2, etc.)
+            # Get all versions of this package that match base.postN
+            local all_versions
+            all_versions=$(curl -sf "https://pypi.org/pypi/${pkg}/json" 2>/dev/null | \
+              jq -r '.releases | keys[]' 2>/dev/null | \
+              grep -E "^${base_ver}\.post[0-9]+$" | \
+              sort -V)
+
+            local postfix_ver
+            for postfix_ver in $all_versions; do
+              response=$(curl -sf "https://pypi.org/pypi/${pkg}/${postfix_ver}/json" 2>/dev/null)
+              if [[ $? -eq 0 ]] && echo "$response" | grep -qE "\"filename\":\s*\"${pkg_underscore}-[^\"]*${plat}"; then
+                return 0  # Wheel exists for postfix version
+              fi
+            done
+
+            return 1  # No wheel found for base or any postfix version
           }
 
           # Map variant to package name
@@ -448,18 +497,20 @@ jobs:
           echo "$MATRIX" | jq .
 
           # Filter matrix: remove entries where platform-specific wheel already exists on PyPI
+          # Now checks for BOTH base version AND any .postN versions
           echo ""
           echo "=== Checking for existing platform-specific wheels on PyPI ==="
           FILTERED_MATRIX="[]"
 
-          # Get version postfix (e.g., .post2)
+          # Get version postfix (e.g., .post2) if manually specified
           VERSION_POSTFIX="${{ steps.postfix.outputs.postfix }}"
           echo "DEBUG: Raw postfix from input: '${{ inputs.version_postfix }}'"
           echo "DEBUG: Normalized postfix from step: '$VERSION_POSTFIX'"
           if [[ -n "$VERSION_POSTFIX" ]]; then
-            echo "Using version postfix: $VERSION_POSTFIX"
+            echo "Using specific version postfix: $VERSION_POSTFIX"
+            echo "Will only check for this exact version on PyPI"
           else
-            echo "No version postfix specified - checking base versions on PyPI"
+            echo "No version postfix specified - will check base AND any .postN versions on PyPI"
           fi
 
           for entry in $(echo "$MATRIX" | jq -c '.[]'); do
@@ -467,17 +518,27 @@ jobs:
             platform=$(echo "$entry" | jq -r '.platform')
             base_version=$(echo "$entry" | jq -r '.version')
 
-            # Apply postfix to version for PyPI check
-            pypi_version="${base_version}${VERSION_POSTFIX}"
-
             package=$(variant_to_package "$variant")
             plat_tag=$(platform_to_tag "$platform")
 
-            if check_wheel_exists "$package" "$pypi_version" "$plat_tag"; then
-              echo "SKIP: $package v$pypi_version ($plat_tag) - wheel exists on PyPI"
+            if [[ -n "$VERSION_POSTFIX" ]]; then
+              # Specific postfix requested - check only that exact version
+              pypi_version="${base_version}${VERSION_POSTFIX}"
+              if check_wheel_exists "$package" "$pypi_version" "$plat_tag"; then
+                echo "SKIP: $package v$pypi_version ($plat_tag) - wheel exists on PyPI"
+              else
+                echo "BUILD: $package v$pypi_version ($plat_tag) - wheel not found on PyPI"
+                FILTERED_MATRIX=$(echo "$FILTERED_MATRIX" | jq -c --argjson entry "$entry" '. + [$entry]')
+              fi
             else
-              echo "BUILD: $package v$pypi_version ($plat_tag) - wheel not found on PyPI"
-              FILTERED_MATRIX=$(echo "$FILTERED_MATRIX" | jq -c --argjson entry "$entry" '. + [$entry]')
+              # No postfix - check base version AND any .postN versions
+              # check_wheel_exists already handles this (checks base + all .postN)
+              if check_wheel_exists "$package" "$base_version" "$plat_tag"; then
+                echo "SKIP: $package v$base_version ($plat_tag) - wheel exists on PyPI (base or .postN)"
+              else
+                echo "BUILD: $package v$base_version ($plat_tag) - no wheel found on PyPI"
+                FILTERED_MATRIX=$(echo "$FILTERED_MATRIX" | jq -c --argjson entry "$entry" '. + [$entry]')
+              fi
             fi
           done
 
