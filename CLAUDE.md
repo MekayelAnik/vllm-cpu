@@ -592,9 +592,9 @@ done
 ```
 dist/
 ├── linux_amd64/
-│   └── vllm_cpu-0.11.2-cp312-cp312-linux_x86_64.whl
+│   └── vllm_cpu-0.11.2-cp312-cp312-manylinux_2_28_x86_64.whl
 └── linux_arm64/
-    └── vllm_cpu-0.11.2-cp312-cp312-linux_aarch64.whl
+    └── vllm_cpu-0.11.2-cp312-cp312-manylinux_2_28_aarch64.whl
 ```
 
 **How it works:**
