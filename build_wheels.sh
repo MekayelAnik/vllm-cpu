@@ -1141,12 +1141,28 @@ build_variant() {
     # Set up virtual environment (shared across all variants)
     log_info "Creating build environment for Python $PYTHON_VERSION..."
     local venv_path="$WORKSPACE/venv-$PYTHON_VERSION"  # Separate venv per Python version
+
+    # Determine Python interpreter path
+    # In manylinux containers, explicitly use CPython (not PyPy)
+    local python_spec="$PYTHON_VERSION"
+    if [[ -d "/opt/python" ]]; then
+        # Manylinux container: construct explicit CPython path
+        local py_major_minor="${PYTHON_VERSION//./}"  # "3.11" -> "311"
+        local cpython_dir="/opt/python/cp${py_major_minor}-cp${py_major_minor}"
+        if [[ -d "$cpython_dir" ]]; then
+            python_spec="$cpython_dir/bin/python${PYTHON_VERSION}"
+            log_info "Using manylinux CPython: $python_spec"
+        else
+            log_warning "CPython $PYTHON_VERSION not found at $cpython_dir, falling back to uv discovery"
+        fi
+    fi
+
     if [[ ! -d "$venv_path" ]] || [[ $DRY_RUN -eq 1 ]]; then
         if [[ $DRY_RUN -eq 1 ]]; then
-            log_info "[DRY RUN] Would execute: uv venv --python $PYTHON_VERSION $venv_path"
+            log_info "[DRY RUN] Would execute: uv venv --python $python_spec $venv_path"
         else
             log_info "Creating virtual environment with Python $PYTHON_VERSION..."
-            if ! uv venv --python "$PYTHON_VERSION" "$venv_path"; then
+            if ! uv venv --python "$python_spec" "$venv_path"; then
                 log_error "Failed to create virtual environment for Python $PYTHON_VERSION"
                 log_error "Make sure Python $PYTHON_VERSION is available"
                 return 1
