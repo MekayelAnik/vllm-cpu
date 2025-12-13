@@ -186,19 +186,32 @@ try_install_vllm() {
 
             # Find wheel matching: package name, Python version, and architecture
             # Pattern: vllm_cpu-VERSION-cpXXX-cpXXX-*ARCH*.whl
+            # If multiple manylinux versions exist, pick the highest (e.g., manylinux_2_28 > manylinux_2_17)
             WHEEL_URL=""
+            MATCHING_WHEELS=""
             for asset_url in ${RELEASE_ASSETS}; do
                 asset_name=$(basename "${asset_url}")
                 # Check if this wheel matches our criteria
                 case "${asset_name}" in
                     ${PACKAGE_NAME_UNDERSCORE}-*-${PYTHON_TAG}-${PYTHON_TAG}-*${WHEEL_ARCH}*.whl)
-                        WHEEL_URL="${asset_url}"
-                        WHEEL_NAME="${asset_name}"
-                        echo "Found matching wheel: ${WHEEL_NAME}"
-                        break
+                        MATCHING_WHEELS="${MATCHING_WHEELS}${asset_url} "
+                        echo "Found matching wheel: ${asset_name}"
                         ;;
                 esac
             done
+
+            # Select wheel with highest manylinux version
+            if [ -n "${MATCHING_WHEELS}" ]; then
+                WHEEL_URL=$(echo "${MATCHING_WHEELS}" | tr ' ' '\n' | grep -v '^$' | \
+                    while read -r url; do
+                        name=$(basename "${url}")
+                        # Extract manylinux version number (e.g., 2_28 -> 228, 2_17 -> 217)
+                        manylinux_ver=$(echo "${name}" | grep -oE 'manylinux_[0-9]+_[0-9]+' | sed 's/manylinux_//' | tr -d '_')
+                        echo "${manylinux_ver:-0} ${url}"
+                    done | sort -rn | head -1 | cut -d' ' -f2-)
+                WHEEL_NAME=$(basename "${WHEEL_URL}")
+                echo "Selected wheel (highest manylinux): ${WHEEL_NAME}"
+            fi
 
             if [ -n "${WHEEL_URL}" ]; then
                 echo "Installing from: ${WHEEL_URL}"
