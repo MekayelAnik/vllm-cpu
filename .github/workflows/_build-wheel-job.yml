@@ -180,6 +180,11 @@ jobs:
               # Note: manylinux has gcc, cmake pre-installed but we add ninja and other tools
               dnf install -q -y numactl-devel ccache jq git ninja-build
 
+              # Install and enable gcc-toolset-14 for GCC 14 (fixes LTO warnings on arm64)
+              dnf install -q -y gcc-toolset-14-gcc gcc-toolset-14-gcc-c++
+              source /opt/rh/gcc-toolset-14/enable
+              echo "GCC version (after toolset): $(gcc --version | head -1)"
+
               # Install uv package manager
               UV_VERSION="${{ inputs.uv_version }}"
               if [[ "$UV_VERSION" == "latest" ]]; then
