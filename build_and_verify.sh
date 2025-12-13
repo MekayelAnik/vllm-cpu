@@ -2049,7 +2049,7 @@ check_pypi_platform_wheel_exists() {
     fi
 
     # Check if a wheel for this platform exists
-    # Look for pattern like: vllm_cpu-0.11.0-cp310-cp310-manylinux_2_17_aarch64.whl
+    # Look for pattern like: vllm_cpu-0.11.0-cp310-cp310-manylinux_2_28_aarch64.whl
     local wheel_pattern="${package_name//-/_}-${version}.*${pyver_tag}.*${platform_tag}"
 
     if echo "$response" | grep -qE "\"filename\":\s*\"${wheel_pattern}"; then

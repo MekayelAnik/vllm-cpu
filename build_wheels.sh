@@ -138,6 +138,12 @@ detect_distro() {
 
 # Check and install dependencies
 check_and_install_dependencies() {
+    # Allow skipping dependency check (useful for pre-configured environments like manylinux)
+    if [[ "${VLLM_SKIP_DEPS_CHECK:-0}" == "1" ]]; then
+        log_info "Skipping dependency check (VLLM_SKIP_DEPS_CHECK=1)"
+        return 0
+    fi
+
     log_info "Checking build dependencies..."
 
     local distro
@@ -1458,10 +1464,10 @@ build_variant() {
     local platform_tag
     case "$platform_arch" in
         x86_64)
-            platform_tag="manylinux_2_17_x86_64"
+            platform_tag="manylinux_2_28_x86_64"
             ;;
         aarch64|arm64)
-            platform_tag="manylinux_2_17_aarch64"
+            platform_tag="manylinux_2_28_aarch64"
             ;;
         *)
             log_error "Unsupported architecture: $platform_arch"

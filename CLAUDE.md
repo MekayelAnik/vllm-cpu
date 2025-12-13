@@ -321,23 +321,20 @@ During wheel building, these environment variables control CPU optimizations:
 
 ### CI/CD Pipeline
 
-The CI/CD system uses a modular architecture with reusable workflows and composite actions for maintainability and reduced complexity.
+The CI/CD system uses a modular architecture with reusable workflows for maintainability and reduced complexity. All wheel builds run inside manylinux_2_28 containers to ensure glibc 2.28 compatibility (Ubuntu 20.04+, Debian 10+).
 
 #### Workflow Architecture
 
 ```
 .github/
-├── actions/
-│   └── setup-build-env/
-│       └── action.yml               # Composite action: system deps, uv, ccache
-├── workflows/
-│   ├── build-wheel.yml              # Wheel builder orchestrator
-│   ├── build-docker-image.yml       # Docker image builder orchestrator
-│   ├── _check-versions.yml          # Reusable: version detection + matrix generation
-│   ├── _check-versions-docker.yml   # Reusable: Docker-specific version checks (chains to _check-versions.yml)
-│   ├── _build-wheel-job.yml         # Reusable: single wheel build
-│   ├── _publish-pypi.yml            # Reusable: PyPI publishing
-│   └── _update-release-notes.yml    # Reusable: GitHub release notes
+└── workflows/
+    ├── build-wheel.yml              # Wheel builder orchestrator
+    ├── build-docker-image.yml       # Docker image builder orchestrator
+    ├── _check-versions.yml          # Reusable: version detection + matrix generation
+    ├── _check-versions-docker.yml   # Reusable: Docker-specific version checks (chains to _check-versions.yml)
+    ├── _build-wheel-job.yml         # Reusable: single wheel build (manylinux_2_28 container)
+    ├── _publish-pypi.yml            # Reusable: PyPI publishing
+    └── _update-release-notes.yml    # Reusable: GitHub release notes
 ```
 
 **Version Input Formats:**
@@ -362,11 +359,12 @@ The workflows support flexible version input formats:
 
 **Key Features:**
 - ✅ **Unified dynamic build matrix** - all variants/platforms in one job definition
-- ✅ **Composite action** for build environment setup (reduces duplication)
+- ✅ **manylinux_2_28 containers** - glibc 2.28 compatibility for broad OS support
 - ✅ **Reusable workflows** for modular, testable components
-- ✅ ccache caching for faster rebuilds
+- ✅ ccache and uv caching for faster rebuilds
 - ✅ Selective variant/platform building via inputs
 - ✅ Automatic GitHub releases with wheel uploads
+- ✅ Build timing and ccache stats for performance monitoring
 - ✅ Custom release notes with install commands
 - ✅ 30-day artifact retention
 - ✅ Version postfix support (.post1, .dev2, .rc1, etc.)
@@ -411,13 +409,17 @@ gh workflow run build-wheel.yml \
 | `_publish-pypi.yml` | Downloads artifacts and publishes to PyPI |
 | `_update-release-notes.yml` | Generates and updates GitHub release notes with install commands |
 
-#### Composite Action: `setup-build-env`
+#### Build Environment: manylinux_2_28
 
-Consolidates common build setup steps used across all build jobs:
-- Disk space cleanup
-- System dependencies (gcc, cmake, ninja, ccache, etc.)
-- UV package manager installation
-- ccache configuration and caching
+All wheel builds run inside official manylinux_2_28 containers for consistent glibc 2.28 compatibility:
+- **x86_64**: `quay.io/pypa/manylinux_2_28_x86_64`
+- **aarch64**: `quay.io/pypa/manylinux_2_28_aarch64`
+
+Build environment setup inside containers:
+- System dependencies via dnf (numactl-devel, ccache, ninja-build, etc.)
+- UV package manager for fast dependency resolution
+- ccache for compilation caching
+- All Python versions available at `/opt/python/cpXY-cpXY/bin/`
 
 ### CPU Detector Tool (cpu_detect/)
 

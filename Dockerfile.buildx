@@ -1,0 +1,216 @@
+# Dockerfile.buildx - Multi-architecture wheel builder for vLLM CPU
+#
+# This Dockerfile uses Docker buildx to build vLLM CPU wheels for multiple
+# architectures (amd64/arm64) using manylinux_2_28 containers for glibc 2.28
+# compatibility (Ubuntu 20.04+, Debian 10+).
+#
+# Usage:
+#   docker buildx build \
+#     --platform linux/amd64,linux/arm64 \
+#     --build-arg VARIANT=vllm-cpu \
+#     --build-arg VLLM_VERSION=0.12.0 \
+#     --output type=local,dest=./dist \
+#     -f Dockerfile.buildx .
+#
+# Output structure:
+#   dist/
+#      linux_amd64/
+#         vllm_cpu-0.12.0-cp312-cp312-manylinux_2_28_x86_64.whl
+#      linux_arm64/
+#          vllm_cpu-0.12.0-cp312-cp312-manylinux_2_28_aarch64.whl
+
+# ==============================================================================
+# Build Arguments (declared before FROM for base image selection)
+# ==============================================================================
+ARG PYTHON_VERSION=3.12
+
+# ==============================================================================
+# Stage 1: Base image selection based on target architecture
+# ==============================================================================
+# manylinux_2_28 provides glibc 2.28 (AlmaLinux 8 based)
+# This ensures compatibility with Ubuntu 20.04+, Debian 10+, RHEL 8+
+FROM quay.io/pypa/manylinux_2_28_x86_64 AS base-amd64
+FROM quay.io/pypa/manylinux_2_28_aarch64 AS base-arm64
+
+# ==============================================================================
+# Stage 2: Builder - Build vLLM wheel for CPU
+# ==============================================================================
+ARG TARGETARCH=amd64
+FROM base-${TARGETARCH} AS builder
+
+# Build arguments
+ARG TARGETPLATFORM
+ARG TARGETARCH
+ARG VARIANT=vllm-cpu
+ARG VLLM_VERSION=0.12.0
+ARG PYTHON_VERSION=3.12
+ARG MAX_JOBS=4
+ARG VERSION_SUFFIX=""
+
+# Labels for build metadata
+LABEL org.opencontainers.image.title="vLLM CPU Wheel Builder"
+LABEL org.opencontainers.image.description="Builds vLLM CPU wheels using manylinux_2_28"
+LABEL vllm.variant="${VARIANT}"
+LABEL vllm.version="${VLLM_VERSION}"
+
+# Install system dependencies (AlmaLinux 8 uses dnf)
+RUN dnf install -q -y numactl-devel ccache jq git ninja-build && \
+    dnf clean all
+
+# Install uv package manager
+RUN curl -LsSf https://astral.sh/uv/install.sh | sh && \
+    mv /root/.local/bin/uv /usr/local/bin/uv && \
+    mv /root/.local/bin/uvx /usr/local/bin/uvx 2>/dev/null || true && \
+    uv --version
+
+# Set up Python path based on version
+# manylinux Python is at /opt/python/cpXY-cpXY/bin/
+ARG PYTHON_VERSION
+ENV PYTHON_BIN=/opt/python/cp${PYTHON_VERSION/./}-cp${PYTHON_VERSION/./}/bin/python
+
+# Verify Python is available
+RUN echo "Using Python: ${PYTHON_BIN}" && \
+    ${PYTHON_BIN} --version
+
+# Set working directory
+WORKDIR /build
+
+# Copy configuration, README files, and patches
+COPY build_config.json .
+COPY *.md ./
+COPY patches/ ./patches/
+
+# Clone vLLM repository at specific version
+RUN echo "Cloning vLLM v${VLLM_VERSION}..." && \
+    git clone --depth 1 --branch "v${VLLM_VERSION}" \
+    https://github.com/vllm-project/vllm.git || \
+    git clone --depth 1 --branch "${VLLM_VERSION}" \
+    https://github.com/vllm-project/vllm.git
+
+WORKDIR /build/vllm
+
+# Patch CMake for ARM64 (when running under QEMU)
+RUN if [ "$TARGETARCH" = "arm64" ]; then \
+        echo "Applying ARM64 cross-compilation patch..."; \
+        bash /build/patches/arm64_cmake_patch.sh || true; \
+    fi
+
+# Create virtual environment with manylinux Python
+RUN uv venv --python ${PYTHON_BIN} /venv && \
+    . /venv/bin/activate && \
+    uv pip install --upgrade pip setuptools wheel build setuptools-scm
+
+# Environment variables for uv
+ENV UV_HTTP_TIMEOUT=300
+ENV UV_CONCURRENT_DOWNLOADS=4
+ENV VLLM_SKIP_DEPS_CHECK=1
+
+# For ARM64: Force use of system cmake/ninja (pip versions may not work under QEMU)
+ENV CMAKE_MAKE_PROGRAM=/usr/bin/ninja
+
+RUN if [ "$TARGETARCH" = "arm64" ]; then \
+        echo "Setting up ARM64 binary overrides..."; \
+        mkdir -p /usr/local/arm64-overrides; \
+        echo '#!/bin/sh' > /usr/local/arm64-overrides/ninja && \
+        echo 'exec /usr/bin/ninja "$@"' >> /usr/local/arm64-overrides/ninja && \
+        chmod +x /usr/local/arm64-overrides/ninja; \
+        echo '#!/bin/sh' > /usr/local/arm64-overrides/cmake && \
+        echo 'exec /usr/bin/cmake "$@"' >> /usr/local/arm64-overrides/cmake && \
+        chmod +x /usr/local/arm64-overrides/cmake; \
+    fi
+
+# Install vLLM dependencies with CPU-only PyTorch
+RUN . /venv/bin/activate && \
+    if [ "$TARGETARCH" = "arm64" ]; then \
+        export PATH="/usr/local/arm64-overrides:$PATH"; \
+        echo "ARM64: Installing build deps without cmake/ninja from pip..."; \
+        uv pip install packaging setuptools setuptools-scm wheel build jinja2; \
+        uv pip install \
+            --index-url https://download.pytorch.org/whl/cpu \
+            --extra-index-url https://pypi.org/simple \
+            torch; \
+        echo "ARM64: Installing vLLM with --no-build-isolation..."; \
+        UV_NO_BUILD_ISOLATION=1 uv pip install \
+            --index-url https://download.pytorch.org/whl/cpu \
+            --extra-index-url https://pypi.org/simple \
+            --index-strategy unsafe-best-match \
+            -e .; \
+    else \
+        uv pip install \
+            --index-url https://download.pytorch.org/whl/cpu \
+            --extra-index-url https://pypi.org/simple \
+            --index-strategy unsafe-best-match \
+            -e .; \
+    fi
+
+# Modify package metadata based on variant
+RUN PACKAGE_NAME=$(jq -r ".builds.\"${VARIANT}\".package_name" /build/build_config.json) && \
+    DESCRIPTION=$(jq -r ".builds.\"${VARIANT}\".description" /build/build_config.json) && \
+    README_FILE=$(jq -r ".builds.\"${VARIANT}\".readme_file" /build/build_config.json) && \
+    echo "Configuring package: ${PACKAGE_NAME}" && \
+    cp pyproject.toml pyproject.toml.backup && \
+    sed -i "s/name = \"vllm\"/name = \"${PACKAGE_NAME}\"/" pyproject.toml && \
+    SAFE_DESC=$(echo "$DESCRIPTION" | sed 's/[&/\]/\\&/g') && \
+    sed -i "s/description = .*/description = \"${SAFE_DESC}\"/" pyproject.toml && \
+    sed -i '/classifiers = \[/a\    "Programming Language :: Python :: 3.10",\n    "Programming Language :: Python :: 3.11",\n    "Programming Language :: Python :: 3.12",\n    "Programming Language :: Python :: 3.13",' pyproject.toml && \
+    cp "/build/${README_FILE}" README.md
+
+# Patch setup.py to disable version suffix (+cpu)
+RUN if [ -f setup.py ]; then \
+    sed -i 's/^            version += f"{sep}cpu"/            pass  # Disabled: exact version/' setup.py && \
+    echo "Patched setup.py to use exact version"; \
+    fi
+
+# Build wheel with platform-specific optimizations
+RUN . /venv/bin/activate && \
+    if [ "$TARGETARCH" = "arm64" ]; then \
+        export PATH="/usr/local/arm64-overrides:$PATH"; \
+    fi && \
+    DISABLE_AVX512=$(jq -r ".builds.\"${VARIANT}\".flags.disable_avx512" /build/build_config.json) && \
+    ENABLE_VNNI=$(jq -r ".builds.\"${VARIANT}\".flags.enable_avx512vnni" /build/build_config.json) && \
+    ENABLE_BF16=$(jq -r ".builds.\"${VARIANT}\".flags.enable_avx512bf16" /build/build_config.json) && \
+    ENABLE_AMX=$(jq -r ".builds.\"${VARIANT}\".flags.enable_amxbf16" /build/build_config.json) && \
+    export VLLM_TARGET_DEVICE=cpu && \
+    export MAX_JOBS=${MAX_JOBS} && \
+    export CMAKE_ARGS="-DCMAKE_BUILD_WITH_INSTALL_RPATH=ON" && \
+    export SETUPTOOLS_SCM_PRETEND_VERSION="${VLLM_VERSION}${VERSION_SUFFIX}" && \
+    if [ "$DISABLE_AVX512" = "true" ]; then export VLLM_CPU_DISABLE_AVX512=1; else export VLLM_CPU_DISABLE_AVX512=0; fi && \
+    if [ "$ENABLE_VNNI" = "true" ]; then export VLLM_CPU_AVX512VNNI=1; else export VLLM_CPU_AVX512VNNI=0; fi && \
+    if [ "$ENABLE_BF16" = "true" ]; then export VLLM_CPU_AVX512BF16=1; else export VLLM_CPU_AVX512BF16=0; fi && \
+    if [ "$ENABLE_AMX" = "true" ]; then export VLLM_CPU_AMXBF16=1; else export VLLM_CPU_AMXBF16=0; fi && \
+    if [ "$TARGETARCH" = "arm64" ]; then \
+        export VLLM_CPU_DISABLE_AVX512=1; \
+        export VLLM_CPU_AVX512VNNI=0; \
+        export VLLM_CPU_AVX512BF16=0; \
+        export VLLM_CPU_AMXBF16=0; \
+        echo "ARM64: Disabled x86-specific CPU features"; \
+    fi && \
+    echo "=== Build Configuration ===" && \
+    echo "Platform: ${TARGETPLATFORM}" && \
+    echo "Architecture: ${TARGETARCH}" && \
+    echo "Variant: ${VARIANT}" && \
+    echo "vLLM Version: ${VLLM_VERSION}" && \
+    echo "Python: $(python --version)" && \
+    echo "glibc: $(ldd --version | head -1)" && \
+    echo "VLLM_CPU_DISABLE_AVX512: ${VLLM_CPU_DISABLE_AVX512}" && \
+    echo "===========================" && \
+    if [ "$TARGETARCH" = "arm64" ]; then \
+        PLAT_TAG="manylinux_2_28_aarch64"; \
+    else \
+        PLAT_TAG="manylinux_2_28_x86_64"; \
+    fi && \
+    echo "Building wheel with platform tag: ${PLAT_TAG}" && \
+    mkdir -p /wheels && \
+    python setup.py bdist_wheel --dist-dir=/wheels --plat-name="${PLAT_TAG}"
+
+# Verify wheel was created
+RUN ls -la /wheels/ && \
+    echo "Built wheel(s):" && \
+    ls /wheels/*.whl
+
+# ==============================================================================
+# Stage 3: Export - Empty image with only wheel files
+# ==============================================================================
+FROM scratch AS export
+
+COPY --from=builder /wheels/*.whl /

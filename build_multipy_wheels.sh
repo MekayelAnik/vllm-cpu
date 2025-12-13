@@ -75,7 +75,8 @@ fi
 export CIBW_BUILD="cp39-* cp310-* cp311-* cp312-* cp313-*"
 export CIBW_SKIP="*-musllinux_*"  # Skip musl-based Linux (Alpine)
 export CIBW_PLATFORM="linux"
-export CIBW_MANYLINUX_X86_64_IMAGE="manylinux_2_17"
+export CIBW_MANYLINUX_X86_64_IMAGE="manylinux_2_28"
+export CIBW_MANYLINUX_AARCH64_IMAGE="manylinux_2_28"
 export CIBW_BUILD_VERBOSITY=1
 export CIBW_ENVIRONMENT="MAX_JOBS=$MAX_JOBS VLLM_TARGET_DEVICE=cpu"
 

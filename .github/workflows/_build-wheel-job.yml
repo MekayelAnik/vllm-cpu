@@ -4,7 +4,8 @@
 # Builds vLLM CPU wheels for a specific variant/platform/version combination.
 # Called by the main build-wheel.yml workflow.
 #
-# Uses the setup-build-env composite action to consolidate common setup steps.
+# All builds run inside manylinux_2_28 containers to ensure glibc 2.28
+# compatibility, enabling wheels to work on Ubuntu 20.04+, Debian 10+, etc.
 #
 # Usage:
 #   jobs:
@@ -49,11 +50,16 @@ on:
         required: false
         type: boolean
         default: false
+      skip_glibc_verify:
+        description: 'Skip glibc compatibility verification (faster builds)'
+        required: false
+        type: boolean
+        default: false
       uv_version:
-        description: 'UV package manager version'
+        description: 'UV package manager version (e.g., 0.9.17, latest)'
         required: false
         type: string
-        default: '0.5'
+        default: 'latest'
     outputs:
       artifact_name:
         description: 'Name of the uploaded artifact'
@@ -68,6 +74,11 @@ on:
 # Permissions for uploading to GitHub releases
 permissions:
   contents: write
+
+# Prevent cache conflicts from parallel runs of same variant/platform
+concurrency:
+  group: build-wheel-${{ github.workflow }}-${{ github.ref }}-${{ inputs.variant }}-${{ inputs.platform }}
+  cancel-in-progress: false
 
 jobs:
   build:
@@ -85,44 +96,182 @@ jobs:
 
       - name: Setup metadata
         id: metadata
+        shell: bash
         run: |
           ARTIFACT_NAME="wheels-${{ inputs.variant }}-${{ inputs.platform }}-${{ inputs.version }}${{ inputs.version_postfix }}"
           echo "artifact_name=$ARTIFACT_NAME" >> "$GITHUB_OUTPUT"
           echo "Artifact name: $ARTIFACT_NAME"
 
-      - name: Setup build environment
-        uses: ./.github/actions/setup-build-env
-        with:
-          platform: ${{ inputs.platform }}
-          variant: ${{ inputs.variant }}
-          version: ${{ inputs.version }}
-          uv_version: ${{ inputs.uv_version }}
+          # Set manylinux image based on platform
+          if [[ "${{ inputs.platform }}" == "arm64" ]]; then
+            echo "manylinux_image=quay.io/pypa/manylinux_2_28_aarch64" >> "$GITHUB_OUTPUT"
+          else
+            echo "manylinux_image=quay.io/pypa/manylinux_2_28_x86_64" >> "$GITHUB_OUTPUT"
+          fi
 
-      - name: Build wheels
+      - name: Free disk space
+        shell: bash
+        run: |
+          # Remove unnecessary large packages to free disk space
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc 2>/dev/null || true
+          df -h
+
+      - name: Setup cache directories
+        shell: bash
+        run: |
+          mkdir -p ~/.cache/ccache
+          mkdir -p ~/.cache/uv
+          mkdir -p dist
+
+      - name: Cache ccache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ccache
+          # Optimized key: removed SHA for better cache hit rate
+          key: ccache-manylinux-${{ inputs.platform }}-${{ inputs.variant }}-${{ inputs.version }}
+          restore-keys: |
+            ccache-manylinux-${{ inputs.platform }}-${{ inputs.variant }}-
+            ccache-manylinux-${{ inputs.platform }}-
+
+      - name: Cache uv
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/uv
+          key: uv-manylinux-${{ inputs.platform }}-${{ inputs.version }}-${{ hashFiles('**/pyproject.toml') }}
+          restore-keys: |
+            uv-manylinux-${{ inputs.platform }}-${{ inputs.version }}-
+            uv-manylinux-${{ inputs.platform }}-
+
+      - name: Pull manylinux image
+        shell: bash
+        run: |
+          echo "Pulling manylinux image: ${{ steps.metadata.outputs.manylinux_image }}"
+          docker pull "${{ steps.metadata.outputs.manylinux_image }}"
+
+      - name: Build wheels in manylinux container
         id: build
+        shell: bash
         run: |
           echo "Building ${{ inputs.variant }} for ${{ inputs.platform }}, vLLM ${{ inputs.version }}"
+          echo "Using manylinux image: ${{ steps.metadata.outputs.manylinux_image }}"
 
-          POSTFIX="${{ inputs.version_postfix }}"
+          # Run build inside manylinux_2_28 container for glibc 2.28 compatibility
+          docker run --rm \
+            -v "${{ github.workspace }}:/workspace" \
+            -v "$HOME/.cache/ccache:/root/.cache/ccache" \
+            -v "$HOME/.cache/uv:/root/.cache/uv" \
+            -w /workspace \
+            -e VLLM_TARGET_DEVICE=cpu \
+            -e CCACHE_DIR=/root/.cache/ccache \
+            -e UV_CACHE_DIR=/root/.cache/uv \
+            -e VLLM_SKIP_DEPS_CHECK=1 \
+            "${{ steps.metadata.outputs.manylinux_image }}" \
+            bash -c '
+              set -euo pipefail
 
-          ./build_wheels.sh \
-            --variant=${{ inputs.variant }} \
-            --vllm-versions="${{ inputs.version }}" \
-            --python-versions="${{ inputs.python_versions }}" \
-            ${POSTFIX:+--version-suffix="$POSTFIX"} \
-            --output-dir=dist
+              echo "=== Environment Info ==="
+              echo "glibc version: $(ldd --version | head -1)"
+              echo "GCC version: $(gcc --version | head -1)"
+              uname -a
+
+              echo ""
+              echo "=== Installing build dependencies ==="
+              # Install system dependencies quietly (AlmaLinux 8 / manylinux_2_28 uses dnf)
+              # Note: manylinux has gcc, cmake pre-installed but we add ninja and other tools
+              dnf install -q -y numactl-devel ccache jq git ninja-build
+
+              # Install uv package manager
+              UV_VERSION="${{ inputs.uv_version }}"
+              if [[ "$UV_VERSION" == "latest" ]]; then
+                echo "Installing uv (latest)..."
+                curl -LsSf https://astral.sh/uv/install.sh | sh
+              else
+                echo "Installing uv $UV_VERSION..."
+                curl -LsSf "https://astral.sh/uv/$UV_VERSION/install.sh" | sh
+              fi
+              export PATH="$HOME/.local/bin:$PATH"
+
+              # Verify uv installation
+              uv --version
+
+              echo ""
+              echo "=== Setting up build environment ==="
+              # Add manylinux Python directories to PATH for uv discovery
+              for pydir in /opt/python/*/bin; do
+                export PATH="$pydir:$PATH"
+              done
+
+              # Make scripts executable
+              chmod +x build_wheels.sh
+
+              # Create output directory
+              mkdir -p dist
+
+              # Show ccache stats before build
+              echo ""
+              echo "=== ccache stats (before) ==="
+              ccache -s 2>/dev/null || echo "ccache stats not available"
+
+              echo ""
+              echo "=== Running build ==="
+              POSTFIX="${{ inputs.version_postfix }}"
+              BUILD_START=$(date +%s)
+
+              ./build_wheels.sh \
+                --variant=${{ inputs.variant }} \
+                --vllm-versions="${{ inputs.version }}" \
+                --python-versions="${{ inputs.python_versions }}" \
+                ${POSTFIX:+--version-suffix=$POSTFIX} \
+                --output-dir=dist
+
+              BUILD_END=$(date +%s)
+              BUILD_DURATION=$((BUILD_END - BUILD_START))
+
+              echo ""
+              echo "=== Build complete ==="
+              echo "Build duration: ${BUILD_DURATION}s ($(( BUILD_DURATION / 60 ))m $(( BUILD_DURATION % 60 ))s)"
+              echo "Built wheels:"
+              find dist -name "*.whl" -exec ls -lh {} \;
+
+              # Show ccache stats after build
+              echo ""
+              echo "=== ccache stats (after) ==="
+              ccache -s 2>/dev/null || echo "ccache stats not available"
+
+              # Fix ownership for GitHub Actions (container runs as root)
+              chown -R $(stat -c "%u:%g" /workspace) dist/
+            '
 
       - name: Count wheels
         id: count
+        shell: bash
         run: |
           WHEEL_COUNT=$(find dist -name "*.whl" -type f | wc -l)
           echo "wheel_count=$WHEEL_COUNT" >> "$GITHUB_OUTPUT"
           echo "Built $WHEEL_COUNT wheels"
 
       - name: List built wheels
+        shell: bash
         run: |
           echo "=== Built wheels ==="
           find dist -name "*.whl" -exec ls -lh {} \;
+
+      - name: Verify glibc compatibility
+        if: inputs.skip_glibc_verify != true
+        shell: bash
+        run: |
+          echo "=== Verifying glibc compatibility ==="
+          while IFS= read -r whl; do
+            if [[ -f "$whl" ]]; then
+              echo "Checking: $(basename "$whl")"
+              unzip -q -o "$whl" -d /tmp/wheel_check
+              if [[ -f /tmp/wheel_check/vllm/_C.abi3.so ]]; then
+                MAX_GLIBC=$(objdump -T /tmp/wheel_check/vllm/_C.abi3.so 2>/dev/null | grep -oE 'GLIBC_[0-9.]+' | sort -V | tail -1 || echo "N/A")
+                echo "  Max GLIBC required: $MAX_GLIBC"
+              fi
+              rm -rf /tmp/wheel_check
+            fi
+          done < <(find dist -name "*.whl" -type f)
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v5
@@ -148,5 +297,6 @@ jobs:
       - name: Set success status
         id: status
         if: success()
+        shell: bash
         run: |
           echo "success=true" >> "$GITHUB_OUTPUT"

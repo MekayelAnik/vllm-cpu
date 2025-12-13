@@ -106,10 +106,6 @@ concurrency:
 permissions:
   contents: write
 
-env:
-  # Use consistent UV version across all jobs
-  UV_VERSION: "0.5"
-
 jobs:
   # ==========================================================================
   # Check for new vLLM versions and generate unified build matrix
@@ -151,7 +147,6 @@ jobs:
       python_versions: ${{ inputs.python_versions || 'auto' }}
       version_postfix: ${{ needs.check-versions.outputs.version_postfix }}
       skip_github_release: ${{ inputs.skip_github_release == true }}
-      uv_version: "0.5"
     secrets: inherit
 
   # ==========================================================================

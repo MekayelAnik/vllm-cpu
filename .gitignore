@@ -3,6 +3,7 @@ resources/build_data
 resources/build-timestamp
 resources/tag
 Dockerfile.*
+!Dockerfile.buildx
 dist/
 *.whl
 .vs
