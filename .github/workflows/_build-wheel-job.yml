@@ -124,7 +124,7 @@ jobs:
           mkdir -p dist
 
       - name: Cache ccache
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: ~/.cache/ccache
           # Optimized key: removed SHA for better cache hit rate
@@ -134,7 +134,7 @@ jobs:
             ccache-manylinux-${{ inputs.platform }}-
 
       - name: Cache uv
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: ~/.cache/uv
           key: uv-manylinux-${{ inputs.platform }}-${{ inputs.version }}-${{ hashFiles('**/pyproject.toml') }}
@@ -279,7 +279,7 @@ jobs:
           done < <(find dist -name "*.whl" -type f)
 
       - name: Upload artifacts
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v6
         with:
           name: ${{ steps.metadata.outputs.artifact_name }}
           path: dist/**/*.whl
