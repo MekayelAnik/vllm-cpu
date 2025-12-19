@@ -76,7 +76,7 @@ jobs:
           pip3 install --user twine
 
       - name: Download all wheels for version ${{ inputs.version }}
-        uses: actions/download-artifact@v6
+        uses: actions/download-artifact@v7
         with:
           path: dist/
           pattern: wheels-*-${{ inputs.version }}${{ inputs.version_postfix }}
