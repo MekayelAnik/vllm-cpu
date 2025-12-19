@@ -96,9 +96,9 @@ RUN if [ "$TARGETARCH" = "arm64" ]; then \
         bash /build/patches/arm64_cmake_patch.sh || true; \
     fi
 
-# Patch CMake to force AVX512 detection for cross-compilation (AVX512 variants only)
-# This enables SGL kernels and other AVX512 optimizations when building on non-AVX512 hardware
-# Note: No || true here - AVX512 patch failure should fail the build since SGL kernels are critical
+# Patch CMake to enable AVX512 code compilation (AVX512 variants only)
+# This compiles SGL kernels and other AVX512 code when building on non-AVX512 hardware
+# Note: No || true here - patch failure should fail the build since SGL kernels are critical
 RUN DISABLE_AVX512=$(jq -r ".builds.\"${VARIANT}\".flags.disable_avx512" /build/build_config.json) && \
     if [ "$DISABLE_AVX512" != "true" ] && [ "$TARGETARCH" = "amd64" ]; then \
         echo "Applying AVX512 force patch for variant: ${VARIANT}..."; \

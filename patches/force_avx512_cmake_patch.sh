@@ -1,12 +1,12 @@
 #!/bin/bash
-# force_avx512_cmake_patch.sh - Patch vLLM's CMake to support forcing AVX512 for cross-compilation
+# force_avx512_cmake_patch.sh - Patch vLLM's CMake to enable AVX512 code compilation
 #
-# Problem: vLLM's cmake/cpu_extension.cmake detects AVX512 by checking /proc/cpuinfo.
-# When building in containers (manylinux) on non-AVX512 hardware, detection fails
+# Problem: vLLM's cmake/cpu_extension.cmake checks /proc/cpuinfo for AVX512 support.
+# When building in containers (manylinux) on non-AVX512 hardware, this check fails
 # and AVX512-specific code (including SGL kernels) is not compiled.
 #
-# This patch adds VLLM_CPU_FORCE_AVX512 environment variable support that forces
-# AVX512_FOUND=ON, enabling cross-compilation of AVX512-optimized wheels.
+# This patch adds VLLM_CPU_FORCE_AVX512 environment variable support that enables
+# AVX512 code compilation regardless of build machine capabilities.
 #
 # IMPORTANT: This patch should ONLY be applied to AVX512 variants:
 #   - vllm-cpu-avx512
@@ -56,9 +56,9 @@ if ! grep -q 'set(ENABLE_AMXBF16 \$ENV{VLLM_CPU_AMXBF16})' "$CMAKE_FILE"; then
         if [ -n "$LAST_ENABLE_LINE" ]; then
             sed -i "${LAST_ENABLE_LINE}a\\
 \\
-# Force AVX512 detection for cross-compilation (added by vllm-cpu build system)\\
+# Enable AVX512 code compilation (added by vllm-cpu build system)\\
 # When building on non-AVX512 hardware (e.g., manylinux containers),\\
-# set VLLM_CPU_FORCE_AVX512=1 to enable AVX512 code paths\\
+# set VLLM_CPU_FORCE_AVX512=1 to compile AVX512 code paths\\
 set(FORCE_AVX512 \$ENV{VLLM_CPU_FORCE_AVX512})" "$CMAKE_FILE"
             echo "Inserted FORCE_AVX512 definition after line $LAST_ENABLE_LINE"
         else
@@ -73,9 +73,9 @@ else
     # Primary approach: insert after ENABLE_AMXBF16 definition
     sed -i '/^set(ENABLE_AMXBF16 \$ENV{VLLM_CPU_AMXBF16})/a\
 \
-# Force AVX512 detection for cross-compilation (added by vllm-cpu build system)\
+# Enable AVX512 code compilation (added by vllm-cpu build system)\
 # When building on non-AVX512 hardware (e.g., manylinux containers),\
-# set VLLM_CPU_FORCE_AVX512=1 to enable AVX512 code paths\
+# set VLLM_CPU_FORCE_AVX512=1 to compile AVX512 code paths\
 set(FORCE_AVX512 $ENV{VLLM_CPU_FORCE_AVX512})' "$CMAKE_FILE"
     echo "Inserted FORCE_AVX512 definition after ENABLE_AMXBF16"
 fi
@@ -91,7 +91,7 @@ if ! grep -q 'find_isa(\${CPUINFO} "avx512f" AVX512_FOUND)' "$CMAKE_FILE"; then
         AVX512_LINE=$(grep -n 'find_isa.*avx512.*AVX512_FOUND\|AVX512_FOUND' "$CMAKE_FILE" | head -1 | cut -d: -f1)
         if [ -n "$AVX512_LINE" ]; then
             sed -i "${AVX512_LINE}a\\
-    # Override AVX512 detection if FORCE_AVX512 is set (for cross-compilation)\\
+    # Enable AVX512 compilation if FORCE_AVX512 is set (for cross-compilation)\\
     if (FORCE_AVX512)\\
         set(AVX512_FOUND ON)\\
         message(STATUS \"Forcing AVX512 support via VLLM_CPU_FORCE_AVX512 environment variable\")\\
@@ -108,7 +108,7 @@ if ! grep -q 'find_isa(\${CPUINFO} "avx512f" AVX512_FOUND)' "$CMAKE_FILE"; then
 else
     # Primary approach: insert after find_isa call
     sed -i '/find_isa(\${CPUINFO} "avx512f" AVX512_FOUND)/a\
-    # Override AVX512 detection if FORCE_AVX512 is set (for cross-compilation)\
+    # Enable AVX512 compilation if FORCE_AVX512 is set (for cross-compilation)\
     if (FORCE_AVX512)\
         set(AVX512_FOUND ON)\
         message(STATUS "Forcing AVX512 support via VLLM_CPU_FORCE_AVX512 environment variable")\

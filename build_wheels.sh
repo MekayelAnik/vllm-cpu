@@ -1262,8 +1262,8 @@ build_variant() {
         export VLLM_CPU_AMXBF16=0
     fi
 
-    # Force AVX512 detection for cross-compilation (x86_64 AVX512 variants only)
-    # This enables SGL kernels and other AVX512 optimizations when building on non-AVX512 hardware
+    # Enable AVX512 code compilation (x86_64 AVX512 variants only)
+    # This compiles SGL kernels and other AVX512 code when building on non-AVX512 hardware
     local arch
     arch=$(uname -m)
     if [[ "$disable_avx512" != "true" ]] && [[ "$arch" == "x86_64" ]]; then
@@ -1462,8 +1462,8 @@ build_variant() {
         log_warning "setup.py not found, skipping version patch"
     fi
 
-    # Patch CMake to force AVX512 detection for cross-compilation (x86_64 AVX512 variants only)
-    # This enables SGL kernels and other AVX512 optimizations when building on non-AVX512 hardware
+    # Patch CMake to enable AVX512 code compilation (x86_64 AVX512 variants only)
+    # This compiles SGL kernels and other AVX512 code when building on non-AVX512 hardware
     # Note: Patch failure should fail the build since SGL kernels are critical for AVX512 variants
     # Reuses $arch from earlier in the function
     if [[ "$disable_avx512" != "true" ]] && [[ "$arch" == "x86_64" ]]; then
