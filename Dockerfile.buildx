@@ -90,9 +90,21 @@ RUN echo "Cloning vLLM v${VLLM_VERSION}..." && \
 WORKDIR /build/vllm
 
 # Patch CMake for ARM64 (when running under QEMU)
+# Note: Uses || true because ARM64 cross-compilation is experimental and may fail
 RUN if [ "$TARGETARCH" = "arm64" ]; then \
         echo "Applying ARM64 cross-compilation patch..."; \
         bash /build/patches/arm64_cmake_patch.sh || true; \
+    fi
+
+# Patch CMake to force AVX512 detection for cross-compilation (AVX512 variants only)
+# This enables SGL kernels and other AVX512 optimizations when building on non-AVX512 hardware
+# Note: No || true here - AVX512 patch failure should fail the build since SGL kernels are critical
+RUN DISABLE_AVX512=$(jq -r ".builds.\"${VARIANT}\".flags.disable_avx512" /build/build_config.json) && \
+    if [ "$DISABLE_AVX512" != "true" ] && [ "$TARGETARCH" = "amd64" ]; then \
+        echo "Applying AVX512 force patch for variant: ${VARIANT}..."; \
+        bash /build/patches/force_avx512_cmake_patch.sh; \
+    else \
+        echo "Skipping AVX512 patch (variant=${VARIANT}, arch=${TARGETARCH})"; \
     fi
 
 # Create virtual environment with manylinux Python
@@ -178,6 +190,7 @@ RUN . /venv/bin/activate && \
     if [ "$ENABLE_VNNI" = "true" ]; then export VLLM_CPU_AVX512VNNI=1; else export VLLM_CPU_AVX512VNNI=0; fi && \
     if [ "$ENABLE_BF16" = "true" ]; then export VLLM_CPU_AVX512BF16=1; else export VLLM_CPU_AVX512BF16=0; fi && \
     if [ "$ENABLE_AMX" = "true" ]; then export VLLM_CPU_AMXBF16=1; else export VLLM_CPU_AMXBF16=0; fi && \
+    if [ "$DISABLE_AVX512" != "true" ] && [ "$TARGETARCH" = "amd64" ]; then export VLLM_CPU_FORCE_AVX512=1; fi && \
     if [ "$TARGETARCH" = "arm64" ]; then \
         export VLLM_CPU_DISABLE_AVX512=1; \
         export VLLM_CPU_AVX512VNNI=0; \
@@ -193,6 +206,10 @@ RUN . /venv/bin/activate && \
     echo "Python: $(python --version)" && \
     echo "glibc: $(ldd --version | head -1)" && \
     echo "VLLM_CPU_DISABLE_AVX512: ${VLLM_CPU_DISABLE_AVX512}" && \
+    echo "VLLM_CPU_FORCE_AVX512: ${VLLM_CPU_FORCE_AVX512:-0}" && \
+    echo "VLLM_CPU_AVX512VNNI: ${VLLM_CPU_AVX512VNNI}" && \
+    echo "VLLM_CPU_AVX512BF16: ${VLLM_CPU_AVX512BF16}" && \
+    echo "VLLM_CPU_AMXBF16: ${VLLM_CPU_AMXBF16}" && \
     echo "===========================" && \
     if [ "$TARGETARCH" = "arm64" ]; then \
         PLAT_TAG="manylinux_2_28_aarch64"; \

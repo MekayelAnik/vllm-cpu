@@ -1262,12 +1262,27 @@ build_variant() {
         export VLLM_CPU_AMXBF16=0
     fi
 
+    # Force AVX512 detection for cross-compilation (x86_64 AVX512 variants only)
+    # This enables SGL kernels and other AVX512 optimizations when building on non-AVX512 hardware
+    local arch
+    arch=$(uname -m)
+    if [[ "$disable_avx512" != "true" ]] && [[ "$arch" == "x86_64" ]]; then
+        export VLLM_CPU_FORCE_AVX512=1
+        log_info "Enabling VLLM_CPU_FORCE_AVX512=1 for cross-compilation support"
+    else
+        export VLLM_CPU_FORCE_AVX512=0
+        if [[ "$arch" != "x86_64" ]]; then
+            log_info "Skipping VLLM_CPU_FORCE_AVX512 (architecture: $arch)"
+        fi
+    fi
+
     if [[ $DRY_RUN -eq 1 ]]; then
         log_info "[DRY RUN] Build environment:"
         log_info "  VLLM_TARGET_DEVICE=cpu"
         log_info "  MAX_JOBS=$MAX_JOBS"
         log_info "  CMAKE_ARGS=$CMAKE_ARGS"
         log_info "  VLLM_CPU_DISABLE_AVX512=$VLLM_CPU_DISABLE_AVX512"
+        log_info "  VLLM_CPU_FORCE_AVX512=$VLLM_CPU_FORCE_AVX512"
         log_info "  VLLM_CPU_AVX512VNNI=$VLLM_CPU_AVX512VNNI"
         log_info "  VLLM_CPU_AVX512BF16=$VLLM_CPU_AVX512BF16"
         log_info "  VLLM_CPU_AMXBF16=$VLLM_CPU_AMXBF16"
@@ -1445,6 +1460,31 @@ build_variant() {
         log_info "Version suffix disabled for PyPI compatibility"
     else
         log_warning "setup.py not found, skipping version patch"
+    fi
+
+    # Patch CMake to force AVX512 detection for cross-compilation (x86_64 AVX512 variants only)
+    # This enables SGL kernels and other AVX512 optimizations when building on non-AVX512 hardware
+    # Note: Patch failure should fail the build since SGL kernels are critical for AVX512 variants
+    # Reuses $arch from earlier in the function
+    if [[ "$disable_avx512" != "true" ]] && [[ "$arch" == "x86_64" ]]; then
+        log_info "Applying AVX512 force patch for CMake..."
+        local cmake_patch="$SCRIPT_DIR/patches/force_avx512_cmake_patch.sh"
+        if [[ -f "$cmake_patch" ]]; then
+            if ! bash "$cmake_patch"; then
+                log_error "AVX512 force patch failed - SGL kernels will not be available"
+                return 1
+            fi
+            log_success "AVX512 force patch applied successfully"
+        else
+            log_error "AVX512 force patch not found at $cmake_patch"
+            return 1
+        fi
+    else
+        if [[ "$disable_avx512" == "true" ]]; then
+            log_info "Skipping AVX512 force patch (variant has AVX512 disabled)"
+        else
+            log_info "Skipping AVX512 force patch (architecture: $arch)"
+        fi
     fi
 
     # Inject CPU platform fix into vllm/__init__.py
