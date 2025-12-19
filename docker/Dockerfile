@@ -30,7 +30,9 @@ ARG VARIANT=noavx512
 ARG USE_GITHUB_RELEASE=false
 
 COPY detect_python_version.sh /detect_python_version.sh
-RUN chmod +x /detect_python_version.sh && \
+RUN --mount=type=secret,id=GITHUB_TOKEN,required=false \
+    chmod +x /detect_python_version.sh && \
+    export GITHUB_TOKEN=$(cat /run/secrets/GITHUB_TOKEN 2>/dev/null || echo "") && \
     case "${VARIANT}" in \
         noavx512) PACKAGE_NAME="vllm-cpu" ;; \
         avx512) PACKAGE_NAME="vllm-cpu-avx512" ;; \
@@ -227,7 +229,9 @@ ENV UV_LINK_MODE=copy \
 # Install Python, vLLM, and cleanup in single layer to minimize image size
 COPY setup_vllm.sh cleanup.sh /tmp/
 RUN --mount=type=cache,id=uv-${VARIANT},target=/root/.cache/uv,sharing=locked \
+    --mount=type=secret,id=GITHUB_TOKEN,required=false \
     chmod +x /tmp/setup_vllm.sh /tmp/cleanup.sh && \
+    export GITHUB_TOKEN=$(cat /run/secrets/GITHUB_TOKEN 2>/dev/null || echo "") && \
     /tmp/setup_vllm.sh "${VARIANT}" "${VLLM_VERSION}" "${USE_GITHUB_RELEASE}" && \
     /tmp/cleanup.sh && \
     rm -f /tmp/setup_vllm.sh /tmp/cleanup.sh

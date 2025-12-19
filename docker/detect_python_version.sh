@@ -155,10 +155,21 @@ if [ -z "${PYTHON_VER}" ]; then
         esac
     done
 
+    # Build auth header if GITHUB_TOKEN is available (avoids rate limiting)
+    GH_AUTH_HEADER=""
+    if [ -n "${GITHUB_TOKEN}" ]; then
+        GH_AUTH_HEADER="-H \"Authorization: Bearer ${GITHUB_TOKEN}\""
+        echo "Using GitHub token for API requests" >&2
+    fi
+
     for GH_TAG in ${GH_RELEASE_TAGS}; do
         echo "Trying GitHub release tag: ${GH_TAG}..." >&2
         GH_API="https://api.github.com/repos/MekayelAnik/vllm-cpu/releases/tags/${GH_TAG}"
-        GH_JSON=$(curl -sfL --max-time 15 "${GH_API}" 2>/dev/null || echo "")
+        if [ -n "${GITHUB_TOKEN}" ]; then
+            GH_JSON=$(curl -sfL --max-time 15 -H "Authorization: Bearer ${GITHUB_TOKEN}" "${GH_API}" 2>/dev/null || echo "")
+        else
+            GH_JSON=$(curl -sfL --max-time 15 "${GH_API}" 2>/dev/null || echo "")
+        fi
         if [ -n "${GH_JSON}" ] && echo "${GH_JSON}" | jq -e '.assets' >/dev/null 2>&1; then
             PACKAGE_NAME_UNDERSCORE=$(echo "${PACKAGE_NAME}" | tr '-' '_')
             PYTHON_VER=$(echo "${GH_JSON}" | jq -r '.assets[].name' 2>/dev/null | \

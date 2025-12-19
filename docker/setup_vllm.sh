@@ -166,10 +166,19 @@ try_install_vllm() {
             echo "Querying GitHub API for release ${RELEASE_TAG}..."
 
             # Query GitHub API for available wheels in this release
-            RELEASE_ASSETS=$(wget -q -O - \
-                "https://api.github.com/repos/MekayelAnik/vllm-cpu/releases/tags/${RELEASE_TAG}" 2>/dev/null | \
-                grep -o '"browser_download_url"[[:space:]]*:[[:space:]]*"[^"]*"' | \
-                sed 's/"browser_download_url"[[:space:]]*:[[:space:]]*"//;s/"$//' || echo "")
+            # Use GITHUB_TOKEN if available (avoids rate limiting)
+            if [ -n "${GITHUB_TOKEN}" ]; then
+                RELEASE_ASSETS=$(wget -q -O - \
+                    --header="Authorization: Bearer ${GITHUB_TOKEN}" \
+                    "https://api.github.com/repos/MekayelAnik/vllm-cpu/releases/tags/${RELEASE_TAG}" 2>/dev/null | \
+                    grep -o '"browser_download_url"[[:space:]]*:[[:space:]]*"[^"]*"' | \
+                    sed 's/"browser_download_url"[[:space:]]*:[[:space:]]*"//;s/"$//' || echo "")
+            else
+                RELEASE_ASSETS=$(wget -q -O - \
+                    "https://api.github.com/repos/MekayelAnik/vllm-cpu/releases/tags/${RELEASE_TAG}" 2>/dev/null | \
+                    grep -o '"browser_download_url"[[:space:]]*:[[:space:]]*"[^"]*"' | \
+                    sed 's/"browser_download_url"[[:space:]]*:[[:space:]]*"//;s/"$//' || echo "")
+            fi
 
             if [ -n "${RELEASE_ASSETS}" ]; then
                 echo "Found release: ${RELEASE_TAG}"

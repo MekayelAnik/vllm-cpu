@@ -323,6 +323,8 @@ jobs:
             VLLM_VERSION=${{ steps.build-vars.outputs.full_version }}
             VARIANT=${{ matrix.variant }}
             USE_GITHUB_RELEASE=${{ steps.build-vars.outputs.use_github_release }}
+          secrets: |
+            GITHUB_TOKEN=${{ secrets.GITHUB_TOKEN }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
           outputs: ${{ steps.compression.outputs.output_opts }}
