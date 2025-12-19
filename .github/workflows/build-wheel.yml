@@ -115,11 +115,13 @@ jobs:
     uses: ./.github/workflows/_check-versions.yml
     with:
       vllm_versions: ${{ inputs.vllm_versions || '' }}
-      build_noavx512: ${{ inputs.build_noavx512 != false }}
-      build_avx512: ${{ inputs.build_avx512 != false }}
-      build_avx512vnni: ${{ inputs.build_avx512vnni != false }}
-      build_avx512bf16: ${{ inputs.build_avx512bf16 != false }}
-      build_amxbf16: ${{ inputs.build_amxbf16 != false }}
+      # For scheduled runs, inputs context is empty, so default to true
+      # For manual runs, only disable if explicitly set to false
+      build_noavx512: ${{ github.event_name == 'schedule' || inputs.build_noavx512 != false }}
+      build_avx512: ${{ github.event_name == 'schedule' || inputs.build_avx512 != false }}
+      build_avx512vnni: ${{ github.event_name == 'schedule' || inputs.build_avx512vnni != false }}
+      build_avx512bf16: ${{ github.event_name == 'schedule' || inputs.build_avx512bf16 != false }}
+      build_amxbf16: ${{ github.event_name == 'schedule' || inputs.build_amxbf16 != false }}
       platforms: ${{ inputs.platforms || 'all' }}
       version_postfix: ${{ inputs.version_postfix || '' }}
       skip_pypi: ${{ inputs.skip_pypi == true }}
