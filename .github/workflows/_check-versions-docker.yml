@@ -293,6 +293,62 @@ jobs:
               jq -r '.last_updated // ""' 2>/dev/null
           }
 
+          # Function to check if Docker image has a specific platform in its manifest
+          # Returns 0 if platform exists, 1 if not
+          check_docker_platform() {
+            local base_ver="$1"
+            local variant="$2"
+            local platform="$3"  # amd64 or arm64
+            local image="${{ inputs.dockerhub_image }}"
+            local tag="${variant}-${base_ver}"
+
+            # Docker Hub manifest API - check if platform exists
+            # The images array contains platform-specific digests
+            local manifest
+            manifest=$(curl -sS --retry 2 --retry-delay 3 \
+              "https://hub.docker.com/v2/repositories/${image}/tags/${tag}/" 2>/dev/null)
+
+            if [[ -z "$manifest" ]] || ! echo "$manifest" | jq -e '.images' > /dev/null 2>&1; then
+              return 1  # Tag doesn't exist
+            fi
+
+            # Check if any image in the manifest matches the platform
+            if echo "$manifest" | jq -e --arg arch "$platform" '.images[] | select(.architecture == $arch)' > /dev/null 2>&1; then
+              return 0  # Platform exists
+            fi
+            return 1  # Platform not found
+          }
+
+          # Function to check if all required platforms exist for a variant
+          # Returns: "complete", "partial", or "missing"
+          check_variant_platforms() {
+            local base_ver="$1"
+            local variant="$2"
+
+            if [[ "$variant" == "noavx512" ]]; then
+              # noavx512 requires both amd64 and arm64
+              local has_amd64=false
+              local has_arm64=false
+              check_docker_platform "$base_ver" "$variant" "amd64" && has_amd64=true
+              check_docker_platform "$base_ver" "$variant" "arm64" && has_arm64=true
+
+              if [[ "$has_amd64" == "true" && "$has_arm64" == "true" ]]; then
+                echo "complete"
+              elif [[ "$has_amd64" == "true" || "$has_arm64" == "true" ]]; then
+                echo "partial"
+              else
+                echo "missing"
+              fi
+            else
+              # Other variants only need amd64
+              if check_docker_platform "$base_ver" "$variant" "amd64"; then
+                echo "complete"
+              else
+                echo "missing"
+              fi
+            fi
+          }
+
           # Find PyPI base versions not in Docker Hub
           # Also check for versions that need rebuild (newer .postN available after image was built)
           # And check GitHub releases for versions not on PyPI
@@ -306,8 +362,11 @@ jobs:
             if [[ -n "$base_version" ]]; then
               HIGHEST_WHEEL=$(get_highest_wheel_version "$base_version")
 
+              # Check noavx512 platforms specifically (it's the only multi-platform variant)
+              NOAVX512_STATUS=$(check_variant_platforms "$base_version" "noavx512")
+
               if ! grep -qx "$base_version" /tmp/docker_versions.txt 2>/dev/null; then
-                # Docker image doesn't exist for this base version
+                # No Docker image exists for this base version at all
                 if [[ -n "$HIGHEST_WHEEL" ]]; then
                   echo "  NEW: $base_version (PyPI wheel: $HIGHEST_WHEEL)"
                   if [[ -n "$NEW_VERSIONS" ]]; then
@@ -316,8 +375,16 @@ jobs:
                     NEW_VERSIONS="$base_version"
                   fi
                 fi
+              elif [[ "$NOAVX512_STATUS" == "partial" ]]; then
+                # Docker image exists but is missing platforms (e.g., arm64)
+                echo "  PARTIAL: $base_version (noavx512 missing some platforms - needs rebuild)"
+                if [[ -n "$REBUILD_VERSIONS" ]]; then
+                  REBUILD_VERSIONS="$REBUILD_VERSIONS,$base_version"
+                else
+                  REBUILD_VERSIONS="$base_version"
+                fi
               else
-                # Docker image exists - check if rebuild needed
+                # Docker image exists with all platforms - check if rebuild needed for newer wheel
                 if [[ -n "$HIGHEST_WHEEL" && "$HIGHEST_WHEEL" != "$base_version" ]]; then
                   # A .postN wheel exists - check if it's newer than the Docker image
                   DOCKER_DATE=$(get_docker_last_updated "$base_version")
@@ -343,7 +410,7 @@ jobs:
                     echo "  EXISTS: $base_version (cannot determine dates, skipping rebuild check)"
                   fi
                 else
-                  echo "  EXISTS: $base_version (no .postN wheel available)"
+                  echo "  EXISTS: $base_version (all platforms present, no .postN wheel available)"
                 fi
               fi
             fi
@@ -361,16 +428,30 @@ jobs:
             sort -V -u || echo "")
 
           for gh_version in $GH_RELEASES; do
-            # Skip if already in our lists or has Docker image
+            # Skip if already in our lists
             if echo "$NEW_VERSIONS,$REBUILD_VERSIONS" | tr ',' '\n' | grep -qx "$gh_version" 2>/dev/null; then
-              continue
-            fi
-            if grep -qx "$gh_version" /tmp/docker_versions.txt 2>/dev/null; then
               continue
             fi
             # Skip if PyPI has this version (already handled above)
             if grep -qx "$gh_version" /tmp/pypi_base_versions.txt 2>/dev/null; then
               continue
+            fi
+
+            # Check if Docker image exists with all platforms
+            if grep -qx "$gh_version" /tmp/docker_versions.txt 2>/dev/null; then
+              # Check if noavx512 has all required platforms
+              GH_NOAVX512_STATUS=$(check_variant_platforms "$gh_version" "noavx512")
+              if [[ "$GH_NOAVX512_STATUS" == "complete" ]]; then
+                continue  # All platforms exist, skip
+              elif [[ "$GH_NOAVX512_STATUS" == "partial" ]]; then
+                echo "  PARTIAL (GitHub Release): $gh_version (noavx512 missing some platforms)"
+                if [[ -n "$GITHUB_RELEASE_VERSIONS" ]]; then
+                  GITHUB_RELEASE_VERSIONS="$GITHUB_RELEASE_VERSIONS,$gh_version"
+                else
+                  GITHUB_RELEASE_VERSIONS="$gh_version"
+                fi
+                continue
+              fi
             fi
 
             # Check if this GitHub release has wheels
