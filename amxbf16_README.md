@@ -199,9 +199,14 @@ This CPU specific vLLM has **5 optimized wheel packages** from the upstream vLLM
 Each package is compiled with specific CPU instruction set flags for optimal inference performance.
 
 
-## Check available CPU instruction sets
-```
-lscpu | grep -i flags
+## Check Your CPU & Get Install Command
+```bash
+pkg=vllm-cpu
+grep -q avx512f /proc/cpuinfo && pkg=vllm-cpu-avx512
+grep -q avx512_vnni /proc/cpuinfo && pkg=vllm-cpu-avx512vnni
+grep -q avx512_bf16 /proc/cpuinfo && pkg=vllm-cpu-avx512bf16
+grep -q amx_bf16 /proc/cpuinfo && pkg=vllm-cpu-amxbf16
+printf "\n\tRUN:\n\t\tuv pip install $pkg\n"
 ```
 ## Example list of CPUs with their supported instruction sets
  | CPU Architecture (Intel/AMD) | AVX2 | AVX-512 F (Base) | VNNI (INT8) | BF16 (BFloat16) (via AVX-512) | AMX-BF16 (via Tile Unit) |

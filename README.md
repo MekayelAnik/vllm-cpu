@@ -128,12 +128,13 @@ This project provides **5 CPU-optimized PyPI packages** built from the upstream 
 ### 1. Detect Your CPU's Optimal Package
 
 ```bash
-# Check your CPU instruction sets
-lscpu | grep -E "avx512|vnni|bf16|amx"
-
-# Or install the detector tool
-pip install vllm-cpu-detect
-vllm-cpu-detect
+# Detect CPU features and get install command
+pkg=vllm-cpu
+grep -q avx512f /proc/cpuinfo && pkg=vllm-cpu-avx512
+grep -q avx512_vnni /proc/cpuinfo && pkg=vllm-cpu-avx512vnni
+grep -q avx512_bf16 /proc/cpuinfo && pkg=vllm-cpu-avx512bf16
+grep -q amx_bf16 /proc/cpuinfo && pkg=vllm-cpu-amxbf16
+printf "\n\tRUN:\n\t\tuv pip install $pkg\n"
 ```
 
 ### 2. Install the Right Package
@@ -202,21 +203,21 @@ Is your CPU ARM64 (Graviton, Apple Silicon, Pi)?
 
 ### Automatic Detection
 
-Install the CPU detector tool for automatic recommendations:
+Run this to detect your CPU features and get the install command:
 
 ```bash
-pip install vllm-cpu-detect
-vllm-cpu-detect
+pkg=vllm-cpu
+grep -q avx512f /proc/cpuinfo && pkg=vllm-cpu-avx512
+grep -q avx512_vnni /proc/cpuinfo && pkg=vllm-cpu-avx512vnni
+grep -q avx512_bf16 /proc/cpuinfo && pkg=vllm-cpu-avx512bf16
+grep -q amx_bf16 /proc/cpuinfo && pkg=vllm-cpu-amxbf16
+printf "\n\tRUN:\n\t\tuv pip install $pkg\n"
 ```
 
 Output example:
 ```
-Detected CPU: Intel(R) Xeon(R) w9-3495X
-Instruction Sets: AVX2, AVX512F, AVX512VNNI, AVX512BF16, AMX-BF16
-
-Recommended package: vllm-cpu-amxbf16
-Install command:
-  pip install vllm-cpu-amxbf16 --index-url https://download.pytorch.org/whl/cpu --extra-index-url https://pypi.org/simple
+	RUN:
+		uv pip install vllm-cpu-amxbf16
 ```
 
 ---
@@ -712,10 +713,14 @@ if v:
 
 **Cause:** Using a package with instructions your CPU doesn't support.
 
-**Solution:** Use the CPU detector to find the right package:
+**Solution:** Detect your CPU features and install the right package:
 ```bash
-pip install vllm-cpu-detect
-vllm-cpu-detect
+pkg=vllm-cpu
+grep -q avx512f /proc/cpuinfo && pkg=vllm-cpu-avx512
+grep -q avx512_vnni /proc/cpuinfo && pkg=vllm-cpu-avx512vnni
+grep -q avx512_bf16 /proc/cpuinfo && pkg=vllm-cpu-avx512bf16
+grep -q amx_bf16 /proc/cpuinfo && pkg=vllm-cpu-amxbf16
+printf "\n\tRUN:\n\t\tuv pip install $pkg\n"
 ```
 
 ### Out of Memory (OOM)
@@ -1356,7 +1361,6 @@ See [GitHub Releases](https://github.com/MekayelAnik/vllm-cpu/releases) for vers
 | vllm-cpu-avx512vnni | [pypi.org/project/vllm-cpu-avx512vnni](https://pypi.org/project/vllm-cpu-avx512vnni/) |
 | vllm-cpu-avx512bf16 | [pypi.org/project/vllm-cpu-avx512bf16](https://pypi.org/project/vllm-cpu-avx512bf16/) |
 | vllm-cpu-amxbf16 | [pypi.org/project/vllm-cpu-amxbf16](https://pypi.org/project/vllm-cpu-amxbf16/) |
-| vllm-cpu-detect | [pypi.org/project/vllm-cpu-detect](https://pypi.org/project/vllm-cpu-detect/) |
 
 ---
 

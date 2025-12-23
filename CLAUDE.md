@@ -215,14 +215,6 @@ The `test_and_publish.sh` script (v3.0.0) implements a streamlined Build-Verify-
 
 **Note**: Test PyPI verification was removed in v3.0.0. Wheels are verified locally before publishing directly to production PyPI.
 
-### Building CPU Detector Tool
-
-```bash
-cd cpu_detect
-python -m build
-twine upload dist/* --username __token__ --password $PYPI_API_TOKEN
-```
-
 ### Testing Locally
 
 ```bash
@@ -421,15 +413,6 @@ Build environment setup inside containers:
 - ccache for compilation caching
 - All Python versions available at `/opt/python/cpXY-cpXY/bin/`
 
-### CPU Detector Tool (cpu_detect/)
-
-Python package `vllm-cpu-detect` that:
-- Detects CPU instruction set features using `cpuinfo`
-- Recommends the optimal vLLM CPU package variant
-- Provides installation command
-
-Users can run: `vllm-cpu-detect` to get recommendations.
-
 ## Dependency Management
 
 All dependencies are managed through **pyproject.toml** in the upstream vLLM repository. The build script:
@@ -548,9 +531,13 @@ done
 # Uninstall all vllm packages
 pip uninstall vllm vllm-cpu vllm-cpu-avx512 vllm-cpu-avx512vnni vllm-cpu-avx512bf16 vllm-cpu-amxbf16 -y
 
-# Use detector to find right package
-pip install vllm-cpu-detect
-vllm-cpu-detect
+# Detect CPU features and get install command
+pkg=vllm-cpu
+grep -q avx512f /proc/cpuinfo && pkg=vllm-cpu-avx512
+grep -q avx512_vnni /proc/cpuinfo && pkg=vllm-cpu-avx512vnni
+grep -q avx512_bf16 /proc/cpuinfo && pkg=vllm-cpu-avx512bf16
+grep -q amx_bf16 /proc/cpuinfo && pkg=vllm-cpu-amxbf16
+printf "\n\tRUN:\n\t\tuv pip install $pkg\n"
 ```
 
 ### PyPI upload fails with "file already exists"

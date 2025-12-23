@@ -12,9 +12,6 @@ __pycache__/
 *.pyo
 .env
 package_metadata/
-cpu_detect/dist/
-cpu_detect/build/
-cpu_detect/*.egg-info/
 *.log*
 *backup*
 .env
