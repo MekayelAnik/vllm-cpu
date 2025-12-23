@@ -116,6 +116,11 @@ on:
         required: false
         type: boolean
         default: false
+      no_cache:
+        description: 'Disable Docker layer caching (forces full rebuild)'
+        required: false
+        type: boolean
+        default: false
       compression:
         description: 'Image compression algorithm'
         required: false
@@ -325,8 +330,9 @@ jobs:
             USE_GITHUB_RELEASE=${{ steps.build-vars.outputs.use_github_release }}
           secrets: |
             GITHUB_TOKEN=${{ secrets.GITHUB_TOKEN }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          no-cache: ${{ inputs.no_cache == true }}
+          cache-from: ${{ inputs.no_cache != true && 'type=gha' || '' }}
+          cache-to: ${{ inputs.no_cache != true && 'type=gha,mode=max' || '' }}
           outputs: ${{ steps.compression.outputs.output_opts }}
           provenance: false
 
