@@ -196,7 +196,7 @@ ENV VLLM_MQ_MAX_CHUNK_BYTES_MB=16
 ENV VLLM_V1_OUTPUT_PROC_CHUNK_SIZE=128
 
 # Install runtime dependencies
-# g++ is required for PyTorch inductor (torch.compile) JIT kernel compilation
+# build-essential (g++) is required for PyTorch inductor (torch.compile) JIT kernel compilation
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt,sharing=locked \
     apt-get update && apt-get install -y --no-install-recommends \
@@ -211,7 +211,7 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     ca-certificates \
     binutils \
     gosu \
-    g++
+    build-essential
 
 # Install uv
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
