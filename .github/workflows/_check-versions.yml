@@ -304,45 +304,26 @@ jobs:
             exit 0
           fi
 
-          # Function to check if a base version OR any .postN version exists on PyPI
-          # Returns 0 (success/true) if version exists, 1 (failure/false) otherwise
-          version_exists_on_pypi() {
-            local base_ver="$1"
-            # Check exact base version
-            if grep -qx "$base_ver" /tmp/pypi_all_versions.txt 2>/dev/null; then
-              return 0
-            fi
-            # Check any postfix version (base.post1, base.post2, etc.)
-            if grep -qE "^${base_ver}\.post[0-9]+$" /tmp/pypi_all_versions.txt 2>/dev/null; then
-              return 0
-            fi
-            return 1
-          }
-
-          # Auto-detect: Find versions in GitHub but not in PyPI (base or postfix)
+          # Pass ALL GitHub versions to the matrix generator
+          # The per-Python-version checking will decide what to skip/build
+          # This ensures we don't skip versions that have some wheels but missing others (e.g., cp312 exists but cp313 missing)
           NEW_VERSIONS=""
           while IFS= read -r version; do
             if [[ -n "$version" ]]; then
-              if ! version_exists_on_pypi "$version"; then
-                echo "New version found: $version (no base or .postN on PyPI)"
-                if [[ -n "$NEW_VERSIONS" ]]; then
-                  NEW_VERSIONS="$NEW_VERSIONS,$version"
-                else
-                  NEW_VERSIONS="$version"
-                fi
+              echo "Found GitHub release: $version (will check per-Python-version in matrix step)"
+              if [[ -n "$NEW_VERSIONS" ]]; then
+                NEW_VERSIONS="$NEW_VERSIONS,$version"
               else
-                # Log what exists for debugging
-                EXISTING=$(grep -E "^${version}(\.post[0-9]+)?$" /tmp/pypi_all_versions.txt 2>/dev/null | tr '\n' ', ' | sed 's/,$//')
-                echo "Skipping $version - already on PyPI as: $EXISTING"
+                NEW_VERSIONS="$version"
               fi
             fi
           done < /tmp/github_versions.txt
 
           if [[ -z "$NEW_VERSIONS" ]]; then
-            echo "No new versions found"
+            echo "No GitHub releases found"
             echo "new_versions=[]" >> "$GITHUB_OUTPUT"
           else
-            echo "New versions to build: $NEW_VERSIONS"
+            echo "Versions to check: $NEW_VERSIONS"
             # Convert comma-separated to JSON array
             JSON_ARRAY=$(echo "$NEW_VERSIONS" | tr ',' '\n' | jq -R . | jq -s -c .)
             echo "new_versions=$JSON_ARRAY" >> "$GITHUB_OUTPUT"
