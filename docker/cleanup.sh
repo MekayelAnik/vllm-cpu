@@ -15,7 +15,7 @@
 #   - Test directories and documentation
 #   - Static libraries and header files
 #   - Debug symbols from shared libraries
-#   - Unused system packages (binutils, wget)
+#   - Unused system packages (wget) - NOTE: keeps build-essential/g++ for torch.compile
 #   - Locale data (keeps only en_US)
 #
 # NOTE: All cleanup commands use "|| true" to prevent build failures
@@ -202,11 +202,14 @@ find /usr/share/locale -mindepth 1 -maxdepth 1 ! -name 'en*' \
 rm -vrf /usr/share/doc /usr/share/man /usr/share/info 2>/dev/null || true
 
 # =============================================================================
-# 14. Remove uv binary and build tools
+# 14. Remove uv binary and non-essential build tools
 # =============================================================================
-echo "Step 14: Removing build tools..."
+echo "Step 14: Removing non-essential build tools..."
 rm -vf /usr/local/bin/uv
-apt-get purge -y --auto-remove binutils wget 2>/dev/null || true
+# NOTE: Do NOT use --auto-remove here! It would remove g++/gcc which are
+# dependencies of build-essential, required for PyTorch inductor JIT compilation.
+# Also do NOT remove binutils - it's a dependency of gcc/g++.
+apt-get purge -y wget 2>/dev/null || true
 rm -vrf /var/lib/apt/lists/* /var/cache/apt/archives/* /var/log/apt/* /var/log/dpkg.log 2>/dev/null || true
 
 # =============================================================================
