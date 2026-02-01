@@ -132,7 +132,7 @@ jobs:
   # Unified build job with dynamic matrix
   # ==========================================================================
   build:
-    name: Build ${{ matrix.variant }} ${{ matrix.platform }} (${{ matrix.version }})
+    name: Build ${{ matrix.variant }} ${{ matrix.platform }} py${{ matrix.python_version }} (${{ matrix.version }})
     needs: check-versions
     # CRITICAL: Skip if no builds (empty matrix causes "Matrix vector does not contain any values" error)
     if: |
@@ -146,7 +146,8 @@ jobs:
       variant: ${{ matrix.variant }}
       platform: ${{ matrix.platform }}
       version: ${{ matrix.version }}
-      python_versions: ${{ inputs.python_versions || 'auto' }}
+      # Use specific Python version from matrix (each version checked independently)
+      python_versions: ${{ matrix.python_version }}
       version_postfix: ${{ needs.check-versions.outputs.version_postfix }}
       skip_github_release: ${{ inputs.skip_github_release == true }}
     secrets: inherit

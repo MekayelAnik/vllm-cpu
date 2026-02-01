@@ -397,24 +397,75 @@ jobs:
           echo "Platforms: AMD64=$BUILD_AMD64, ARM64=$BUILD_ARM64"
           echo "Variants: noavx512=$BUILD_NOAVX512, avx512=$BUILD_AVX512, avx512vnni=$BUILD_AVX512VNNI, avx512bf16=$BUILD_AVX512BF16, amxbf16=$BUILD_AMXBF16"
 
-          # Function to check if platform-specific wheel exists on PyPI
+          # Function to get supported Python versions for a vLLM version
+          # Fetches requires-python from vLLM's pyproject.toml and returns compatible versions
+          # Args: $1=vllm_version
+          # Returns: Space-separated list of supported Python versions (e.g., "3.10 3.11 3.12 3.13")
+          get_supported_python_versions() {
+            local vllm_ver="$1"
+            local pyproject_url="https://raw.githubusercontent.com/vllm-project/vllm/v${vllm_ver}/pyproject.toml"
+            
+            # Fetch requires-python from upstream vLLM
+            local pyproject_content
+            pyproject_content=$(curl -sfL --max-time 10 "$pyproject_url" 2>/dev/null || echo "")
+            
+            local requires_python=""
+            if [[ -n "$pyproject_content" ]]; then
+              requires_python=$(echo "$pyproject_content" | grep -E '^requires-python\s*=' | head -1 | sed 's/.*"\(.*\)".*/\1/' | tr -d ' ')
+            fi
+            
+            # Fallback if fetch failed
+            if [[ -z "$requires_python" ]]; then
+              echo "3.10 3.11 3.12 3.13"  # Default fallback
+              return
+            fi
+            
+            # Parse min and max versions
+            local min_minor=10 max_minor=99
+            
+            if [[ "$requires_python" =~ \>=3\.([0-9]+) ]]; then
+              min_minor="${BASH_REMATCH[1]}"
+            fi
+            
+            if [[ "$requires_python" =~ \<3\.([0-9]+) ]]; then
+              max_minor="${BASH_REMATCH[1]}"
+            fi
+            
+            # Generate version list
+            local versions=""
+            for ((i=min_minor; i<max_minor; i++)); do
+              if [[ -n "$versions" ]]; then
+                versions="$versions 3.$i"
+              else
+                versions="3.$i"
+              fi
+            done
+            
+            echo "$versions"
+          }
+
+          # Function to check if a specific wheel exists on PyPI
           # Checks both base version AND any .postN versions
-          # Args: $1=package_name, $2=base_version, $3=platform_tag (manylinux_2_28_x86_64 or manylinux_2_28_aarch64)
-          check_wheel_exists() {
+          # Args: $1=package_name, $2=base_version, $3=python_tag (cp310, cp311, etc.), $4=platform_tag
+          check_wheel_exists_pypi() {
             local pkg="$1"
             local base_ver="$2"
-            local plat="$3"
+            local py_tag="$3"
+            local plat="$4"
             local pkg_underscore="${pkg//-/_}"
+            
+            # Pattern: {package_underscore}-{version}-{py_tag}-{py_tag}-{platform}.whl
+            # e.g., vllm_cpu-0.14.0-cp312-cp312-manylinux_2_28_x86_64.whl
+            local wheel_pattern="${pkg_underscore}-[^-]*-${py_tag}-${py_tag}-${plat}"
 
             # First try exact base version
             local response
             response=$(curl -sf "https://pypi.org/pypi/${pkg}/${base_ver}/json" 2>/dev/null)
-            if [[ $? -eq 0 ]] && echo "$response" | grep -qE "\"filename\":\s*\"${pkg_underscore}-[^\"]*${plat}"; then
+            if [[ $? -eq 0 ]] && echo "$response" | grep -qE "\"filename\":\s*\"${wheel_pattern}"; then
               return 0  # Wheel exists for base version
             fi
 
             # Try postfix versions (.post1, .post2, etc.)
-            # Get all versions of this package that match base.postN
             local all_versions
             all_versions=$(curl -sf "https://pypi.org/pypi/${pkg}/json" 2>/dev/null | \
               jq -r '.releases | keys[]' 2>/dev/null | \
@@ -424,12 +475,100 @@ jobs:
             local postfix_ver
             for postfix_ver in $all_versions; do
               response=$(curl -sf "https://pypi.org/pypi/${pkg}/${postfix_ver}/json" 2>/dev/null)
-              if [[ $? -eq 0 ]] && echo "$response" | grep -qE "\"filename\":\s*\"${pkg_underscore}-[^\"]*${plat}"; then
+              if [[ $? -eq 0 ]] && echo "$response" | grep -qE "\"filename\":\s*\"${wheel_pattern}"; then
                 return 0  # Wheel exists for postfix version
               fi
             done
 
-            return 1  # No wheel found for base or any postfix version
+            return 1  # No wheel found
+          }
+          
+          # Function to check if wheel exists in GitHub Release
+          # Args: $1=package_name, $2=base_version, $3=python_tag (cp310, cp311, etc.), $4=platform_tag
+          check_wheel_exists_github() {
+            local pkg="$1"
+            local base_ver="$2"
+            local py_tag="$3"
+            local plat="$4"
+            local pkg_underscore="${pkg//-/_}"
+            
+            # GitHub Release tag format: v{version} or v{version}.postN
+            # First check base version release
+            local release_url="https://api.github.com/repos/MekayelAnik/vllm-cpu/releases/tags/v${base_ver}"
+            local response
+            response=$(curl -sf \
+              -H "Accept: application/vnd.github.v3+json" \
+              -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+              "$release_url" 2>/dev/null)
+            
+            if [[ $? -eq 0 ]]; then
+              # Pattern to match wheel file
+              local wheel_pattern="${pkg_underscore}-[^-]*-${py_tag}-${py_tag}-${plat}"
+              if echo "$response" | jq -r '.assets[].name' 2>/dev/null | grep -qE "${wheel_pattern}"; then
+                return 0  # Wheel exists in base version release
+              fi
+            fi
+            
+            # Check .postN releases
+            local releases_url="https://api.github.com/repos/MekayelAnik/vllm-cpu/releases"
+            local all_releases
+            all_releases=$(curl -sf \
+              -H "Accept: application/vnd.github.v3+json" \
+              -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+              "${releases_url}?per_page=100" 2>/dev/null)
+            
+            if [[ $? -eq 0 ]]; then
+              # Find releases matching v{base_ver}.postN
+              local post_tags
+              post_tags=$(echo "$all_releases" | jq -r '.[].tag_name' 2>/dev/null | grep -E "^v${base_ver}\.post[0-9]+$" || true)
+              
+              local tag
+              for tag in $post_tags; do
+                response=$(curl -sf \
+                  -H "Accept: application/vnd.github.v3+json" \
+                  -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+                  "https://api.github.com/repos/MekayelAnik/vllm-cpu/releases/tags/${tag}" 2>/dev/null)
+                
+                if [[ $? -eq 0 ]]; then
+                  local wheel_pattern="${pkg_underscore}-[^-]*-${py_tag}-${py_tag}-${plat}"
+                  if echo "$response" | jq -r '.assets[].name' 2>/dev/null | grep -qE "${wheel_pattern}"; then
+                    return 0  # Wheel exists in postN release
+                  fi
+                fi
+              done
+            fi
+            
+            return 1  # No wheel found in any release
+          }
+          
+          # Combined check for wheel existence (PyPI AND GitHub Release)
+          # Returns: "complete" (both), "partial-pypi" (PyPI only), "partial-gh" (GitHub only), "missing" (neither)
+          check_wheel_exists() {
+            local pkg="$1"
+            local base_ver="$2"
+            local py_tag="$3"
+            local plat="$4"
+            
+            local pypi_exists=false
+            local gh_exists=false
+            
+            if check_wheel_exists_pypi "$pkg" "$base_ver" "$py_tag" "$plat"; then
+              pypi_exists=true
+            fi
+            
+            if check_wheel_exists_github "$pkg" "$base_ver" "$py_tag" "$plat"; then
+              gh_exists=true
+            fi
+            
+            if [[ "$pypi_exists" == "true" ]] && [[ "$gh_exists" == "true" ]]; then
+              echo "complete"
+            elif [[ "$pypi_exists" == "true" ]]; then
+              echo "partial-pypi"
+            elif [[ "$gh_exists" == "true" ]]; then
+              echo "partial-gh"
+            else
+              echo "missing"
+            fi
           }
 
           # Map variant to package name
@@ -452,55 +591,13 @@ jobs:
               *) echo "manylinux_2_28_x86_64" ;;
             esac
           }
-
-          # Generate the build matrix using jq
-          # This creates a flat array of {variant, platform, version} objects
-          MATRIX=$(echo "$VERSIONS_JSON" | jq -c --arg build_amd64 "$BUILD_AMD64" \
-                                                  --arg build_arm64 "$BUILD_ARM64" \
-                                                  --arg build_noavx512 "$BUILD_NOAVX512" \
-                                                  --arg build_avx512 "$BUILD_AVX512" \
-                                                  --arg build_avx512vnni "$BUILD_AVX512VNNI" \
-                                                  --arg build_avx512bf16 "$BUILD_AVX512BF16" \
-                                                  --arg build_amxbf16 "$BUILD_AMXBF16" '
-            . as $versions |
-            [
-              # noavx512 for AMD64
-              (if ($build_noavx512 == "true" and $build_amd64 == "true") then
-                $versions[] | {variant: "noavx512", platform: "amd64", version: .}
-              else empty end),
-
-              # noavx512 for ARM64
-              (if ($build_noavx512 == "true" and $build_arm64 == "true") then
-                $versions[] | {variant: "noavx512", platform: "arm64", version: .}
-              else empty end),
-
-              # AVX512 variants (AMD64 only)
-              (if ($build_avx512 == "true" and $build_amd64 == "true") then
-                $versions[] | {variant: "avx512", platform: "amd64", version: .}
-              else empty end),
-
-              (if ($build_avx512vnni == "true" and $build_amd64 == "true") then
-                $versions[] | {variant: "avx512vnni", platform: "amd64", version: .}
-              else empty end),
-
-              (if ($build_avx512bf16 == "true" and $build_amd64 == "true") then
-                $versions[] | {variant: "avx512bf16", platform: "amd64", version: .}
-              else empty end),
-
-              (if ($build_amxbf16 == "true" and $build_amd64 == "true") then
-                $versions[] | {variant: "amxbf16", platform: "amd64", version: .}
-              else empty end)
-            ]
-          ')
-
-          echo "Initial matrix (before platform wheel check):"
-          echo "$MATRIX" | jq .
-
-          # Filter matrix: remove entries where platform-specific wheel already exists on PyPI
-          # Now checks for BOTH base version AND any .postN versions
-          echo ""
-          echo "=== Checking for existing platform-specific wheels on PyPI ==="
-          FILTERED_MATRIX="[]"
+          
+          # Map Python version (3.10) to wheel tag (cp310)
+          python_to_tag() {
+            local py_ver="$1"
+            # 3.10 -> cp310, 3.11 -> cp311, etc.
+            echo "cp${py_ver//./}"
+          }
 
           # Get version postfix (e.g., .post2) if manually specified
           VERSION_POSTFIX="${{ steps.postfix.outputs.postfix }}"
@@ -508,54 +605,111 @@ jobs:
           echo "DEBUG: Normalized postfix from step: '$VERSION_POSTFIX'"
           if [[ -n "$VERSION_POSTFIX" ]]; then
             echo "Using specific version postfix: $VERSION_POSTFIX"
-            echo "Will only check for this exact version on PyPI"
+            echo "Will only check for this exact version"
           else
-            echo "No version postfix specified - will check base AND any .postN versions on PyPI"
+            echo "No version postfix specified - will check base AND any .postN versions"
           fi
 
-          for entry in $(echo "$MATRIX" | jq -c '.[]'); do
-            variant=$(echo "$entry" | jq -r '.variant')
-            platform=$(echo "$entry" | jq -r '.platform')
-            base_version=$(echo "$entry" | jq -r '.version')
+          # Build the matrix with per-Python-version checking
+          # For each vLLM version, we detect supported Python versions and check each wheel independently
+          echo ""
+          echo "=== Building matrix with per-Python-version wheel checking ==="
+          echo "=== Checking both PyPI AND GitHub Releases ==="
+          FINAL_ENTRIES="[]"
 
-            package=$(variant_to_package "$variant")
-            plat_tag=$(platform_to_tag "$platform")
-
-            if [[ -n "$VERSION_POSTFIX" ]]; then
-              # Specific postfix requested - check only that exact version
-              pypi_version="${base_version}${VERSION_POSTFIX}"
-              if check_wheel_exists "$package" "$pypi_version" "$plat_tag"; then
-                echo "SKIP: $package v$pypi_version ($plat_tag) - wheel exists on PyPI"
-              else
-                echo "BUILD: $package v$pypi_version ($plat_tag) - wheel not found on PyPI"
-                FILTERED_MATRIX=$(echo "$FILTERED_MATRIX" | jq -c --argjson entry "$entry" '. + [$entry]')
-              fi
-            else
-              # No postfix - check base version AND any .postN versions
-              # check_wheel_exists already handles this (checks base + all .postN)
-              if check_wheel_exists "$package" "$base_version" "$plat_tag"; then
-                echo "SKIP: $package v$base_version ($plat_tag) - wheel exists on PyPI (base or .postN)"
-              else
-                echo "BUILD: $package v$base_version ($plat_tag) - no wheel found on PyPI"
-                FILTERED_MATRIX=$(echo "$FILTERED_MATRIX" | jq -c --argjson entry "$entry" '. + [$entry]')
-              fi
+          # Process each vLLM version
+          for version in $(echo "$VERSIONS_JSON" | jq -r '.[]'); do
+            echo ""
+            echo "--- Processing vLLM $version ---"
+            
+            # Get supported Python versions for this vLLM version
+            PYTHON_VERSIONS=$(get_supported_python_versions "$version")
+            echo "Supported Python versions: $PYTHON_VERSIONS"
+            
+            # Build list of variant/platform combinations based on flags
+            COMBOS=""
+            if [[ "$BUILD_NOAVX512" == "true" ]] && [[ "$BUILD_AMD64" == "true" ]]; then
+              COMBOS="$COMBOS noavx512:amd64"
             fi
+            if [[ "$BUILD_NOAVX512" == "true" ]] && [[ "$BUILD_ARM64" == "true" ]]; then
+              COMBOS="$COMBOS noavx512:arm64"
+            fi
+            if [[ "$BUILD_AVX512" == "true" ]] && [[ "$BUILD_AMD64" == "true" ]]; then
+              COMBOS="$COMBOS avx512:amd64"
+            fi
+            if [[ "$BUILD_AVX512VNNI" == "true" ]] && [[ "$BUILD_AMD64" == "true" ]]; then
+              COMBOS="$COMBOS avx512vnni:amd64"
+            fi
+            if [[ "$BUILD_AVX512BF16" == "true" ]] && [[ "$BUILD_AMD64" == "true" ]]; then
+              COMBOS="$COMBOS avx512bf16:amd64"
+            fi
+            if [[ "$BUILD_AMXBF16" == "true" ]] && [[ "$BUILD_AMD64" == "true" ]]; then
+              COMBOS="$COMBOS amxbf16:amd64"
+            fi
+            
+            # For each variant/platform/python combination, check if wheel exists
+            for combo in $COMBOS; do
+              variant="${combo%:*}"
+              platform="${combo#*:}"
+              package=$(variant_to_package "$variant")
+              plat_tag=$(platform_to_tag "$platform")
+              
+              for py_ver in $PYTHON_VERSIONS; do
+                py_tag=$(python_to_tag "$py_ver")
+                
+                # Determine which version to check
+                if [[ -n "$VERSION_POSTFIX" ]]; then
+                  check_version="${version}${VERSION_POSTFIX}"
+                else
+                  check_version="$version"
+                fi
+                
+                # Check wheel existence on both PyPI and GitHub
+                status=$(check_wheel_exists "$package" "$check_version" "$py_tag" "$plat_tag")
+                
+                case "$status" in
+                  complete)
+                    echo "  SKIP: $package v$check_version py$py_ver ($plat_tag) - exists on BOTH PyPI and GitHub"
+                    ;;
+                  partial-pypi)
+                    echo "  BUILD: $package v$check_version py$py_ver ($plat_tag) - EXISTS on PyPI, MISSING on GitHub"
+                    # Build to upload to GitHub
+                    ENTRY=$(jq -n --arg variant "$variant" --arg platform "$platform" --arg version "$version" --arg python_version "$py_ver" \
+                      '{variant: $variant, platform: $platform, version: $version, python_version: $python_version}')
+                    FINAL_ENTRIES=$(echo "$FINAL_ENTRIES" | jq -c --argjson entry "$ENTRY" '. + [$entry]')
+                    ;;
+                  partial-gh)
+                    echo "  BUILD: $package v$check_version py$py_ver ($plat_tag) - MISSING on PyPI, EXISTS on GitHub"
+                    # Build to upload to PyPI
+                    ENTRY=$(jq -n --arg variant "$variant" --arg platform "$platform" --arg version "$version" --arg python_version "$py_ver" \
+                      '{variant: $variant, platform: $platform, version: $version, python_version: $python_version}')
+                    FINAL_ENTRIES=$(echo "$FINAL_ENTRIES" | jq -c --argjson entry "$ENTRY" '. + [$entry]')
+                    ;;
+                  missing)
+                    echo "  BUILD: $package v$check_version py$py_ver ($plat_tag) - MISSING on both PyPI and GitHub"
+                    ENTRY=$(jq -n --arg variant "$variant" --arg platform "$platform" --arg version "$version" --arg python_version "$py_ver" \
+                      '{variant: $variant, platform: $platform, version: $version, python_version: $python_version}')
+                    FINAL_ENTRIES=$(echo "$FINAL_ENTRIES" | jq -c --argjson entry "$ENTRY" '. + [$entry]')
+                    ;;
+                esac
+              done
+            done
           done
 
           echo ""
-          echo "Filtered matrix (after platform wheel check):"
-          echo "$FILTERED_MATRIX" | jq .
+          echo "=== Final build matrix ==="
+          echo "$FINAL_ENTRIES" | jq .
 
           # Check if matrix is empty
-          MATRIX_LENGTH=$(echo "$FILTERED_MATRIX" | jq 'length')
+          MATRIX_LENGTH=$(echo "$FINAL_ENTRIES" | jq 'length')
           if [[ "$MATRIX_LENGTH" -eq 0 ]]; then
-            echo "No builds in matrix (all wheels already exist or variants/platforms disabled)"
+            echo "No builds in matrix (all wheels already exist on both PyPI and GitHub, or variants/platforms disabled)"
             echo "build_matrix=[]" >> "$GITHUB_OUTPUT"
             echo "has_builds=false" >> "$GITHUB_OUTPUT"
           else
             echo "Matrix has $MATRIX_LENGTH builds"
             # Wrap in include for GitHub Actions matrix format
-            FINAL_MATRIX=$(echo "$FILTERED_MATRIX" | jq -c '{include: .}')
+            FINAL_MATRIX=$(echo "$FINAL_ENTRIES" | jq -c '{include: .}')
             echo "build_matrix=$FINAL_MATRIX" >> "$GITHUB_OUTPUT"
             echo "has_builds=true" >> "$GITHUB_OUTPUT"
           fi
