@@ -293,17 +293,15 @@ jobs:
               jq -r '.last_updated // ""' 2>/dev/null
           }
 
-          # Function to check if Docker image has a specific platform in its manifest
+          # Function to check if Docker image has a specific platform on Docker Hub
           # Returns 0 if platform exists, 1 if not
-          check_docker_platform() {
+          check_dockerhub_platform() {
             local base_ver="$1"
             local variant="$2"
             local platform="$3"  # amd64 or arm64
             local image="${{ inputs.dockerhub_image }}"
             local tag="${variant}-${base_ver}"
 
-            # Docker Hub manifest API - check if platform exists
-            # The images array contains platform-specific digests
             local manifest
             manifest=$(curl -sS --retry 2 --retry-delay 3 \
               "https://hub.docker.com/v2/repositories/${image}/tags/${tag}/" 2>/dev/null)
@@ -312,37 +310,135 @@ jobs:
               return 1  # Tag doesn't exist
             fi
 
-            # Check if any image in the manifest matches the platform
             if echo "$manifest" | jq -e --arg arch "$platform" '.images[] | select(.architecture == $arch)' > /dev/null 2>&1; then
               return 0  # Platform exists
             fi
             return 1  # Platform not found
           }
 
-          # Function to check if all required platforms exist for a variant
+          # Function to check if Docker image has a specific platform on GHCR
+          # Returns 0 if platform exists, 1 if not
+          check_ghcr_platform() {
+            local base_ver="$1"
+            local variant="$2"
+            local platform="$3"  # amd64 or arm64
+            local image="${{ inputs.ghcr_image }}"
+            local tag="${variant}-${base_ver}"
+            
+            # Extract owner/repo from ghcr.io/owner/repo format
+            local owner_repo="${image#ghcr.io/}"
+            
+            # Get GHCR token for anonymous access (public images)
+            local token
+            token=$(curl -sS "https://ghcr.io/token?scope=repository:${owner_repo}:pull" 2>/dev/null | jq -r '.token // ""')
+            
+            if [[ -z "$token" ]]; then
+              return 1  # Can't get token
+            fi
+            
+            # Fetch manifest with accept header for manifest list
+            local manifest
+            manifest=$(curl -sS --retry 2 --retry-delay 3 \
+              -H "Authorization: Bearer ${token}" \
+              -H "Accept: application/vnd.oci.image.index.v1+json,application/vnd.docker.distribution.manifest.list.v2+json" \
+              "https://ghcr.io/v2/${owner_repo}/manifests/${tag}" 2>/dev/null)
+            
+            if [[ -z "$manifest" ]] || echo "$manifest" | jq -e '.errors' > /dev/null 2>&1; then
+              return 1  # Tag doesn't exist or error
+            fi
+            
+            # Check if platform exists in manifest list
+            if echo "$manifest" | jq -e --arg arch "$platform" '.manifests[]? | select(.platform.architecture == $arch)' > /dev/null 2>&1; then
+              return 0  # Platform exists
+            fi
+            
+            # Single-arch image - check config
+            if echo "$manifest" | jq -e --arg arch "$platform" '.config? // empty' > /dev/null 2>&1; then
+              # Need to check the config blob for architecture
+              local config_digest
+              config_digest=$(echo "$manifest" | jq -r '.config.digest // ""')
+              if [[ -n "$config_digest" ]]; then
+                local config
+                config=$(curl -sS -H "Authorization: Bearer ${token}" \
+                  "https://ghcr.io/v2/${owner_repo}/blobs/${config_digest}" 2>/dev/null)
+                if echo "$config" | jq -e --arg arch "$platform" 'select(.architecture == $arch)' > /dev/null 2>&1; then
+                  return 0
+                fi
+              fi
+            fi
+            
+            return 1  # Platform not found
+          }
+
+          # Function to check if all required platforms exist for a variant on BOTH registries
           # Returns: "complete", "partial", or "missing"
           check_variant_platforms() {
             local base_ver="$1"
             local variant="$2"
+            local skip_dockerhub="${{ inputs.skip_dockerhub }}"
+            local skip_ghcr="${{ inputs.skip_ghcr }}"
 
             if [[ "$variant" == "noavx512" ]]; then
               # noavx512 requires both amd64 and arm64
-              local has_amd64=false
-              local has_arm64=false
-              check_docker_platform "$base_ver" "$variant" "amd64" && has_amd64=true
-              check_docker_platform "$base_ver" "$variant" "arm64" && has_arm64=true
+              local dh_amd64=false dh_arm64=false
+              local ghcr_amd64=false ghcr_arm64=false
 
-              if [[ "$has_amd64" == "true" && "$has_arm64" == "true" ]]; then
+              # Check Docker Hub (if not skipped)
+              if [[ "$skip_dockerhub" != "true" ]]; then
+                check_dockerhub_platform "$base_ver" "$variant" "amd64" && dh_amd64=true
+                check_dockerhub_platform "$base_ver" "$variant" "arm64" && dh_arm64=true
+              else
+                dh_amd64=true; dh_arm64=true  # Skip means don't require it
+              fi
+
+              # Check GHCR (if not skipped)
+              if [[ "$skip_ghcr" != "true" ]]; then
+                check_ghcr_platform "$base_ver" "$variant" "amd64" && ghcr_amd64=true
+                check_ghcr_platform "$base_ver" "$variant" "arm64" && ghcr_arm64=true
+              else
+                ghcr_amd64=true; ghcr_arm64=true  # Skip means don't require it
+              fi
+
+              # Both registries must have both platforms
+              local all_amd64=false all_arm64=false
+              [[ "$dh_amd64" == "true" && "$ghcr_amd64" == "true" ]] && all_amd64=true
+              [[ "$dh_arm64" == "true" && "$ghcr_arm64" == "true" ]] && all_arm64=true
+
+              if [[ "$all_amd64" == "true" && "$all_arm64" == "true" ]]; then
                 echo "complete"
-              elif [[ "$has_amd64" == "true" || "$has_arm64" == "true" ]]; then
-                echo "partial"
+              elif [[ "$all_amd64" == "true" || "$all_arm64" == "true" ]]; then
+                # Show which registry is missing
+                local missing=""
+                [[ "$dh_amd64" != "true" ]] && missing="${missing}DH:amd64 "
+                [[ "$dh_arm64" != "true" ]] && missing="${missing}DH:arm64 "
+                [[ "$ghcr_amd64" != "true" ]] && missing="${missing}GHCR:amd64 "
+                [[ "$ghcr_arm64" != "true" ]] && missing="${missing}GHCR:arm64 "
+                echo "partial(${missing% })"
               else
                 echo "missing"
               fi
             else
               # Other variants only need amd64
-              if check_docker_platform "$base_ver" "$variant" "amd64"; then
+              local dh_ok=false ghcr_ok=false
+
+              if [[ "$skip_dockerhub" != "true" ]]; then
+                check_dockerhub_platform "$base_ver" "$variant" "amd64" && dh_ok=true
+              else
+                dh_ok=true
+              fi
+
+              if [[ "$skip_ghcr" != "true" ]]; then
+                check_ghcr_platform "$base_ver" "$variant" "amd64" && ghcr_ok=true
+              else
+                ghcr_ok=true
+              fi
+
+              if [[ "$dh_ok" == "true" && "$ghcr_ok" == "true" ]]; then
                 echo "complete"
+              elif [[ "$dh_ok" == "true" ]]; then
+                echo "partial(GHCR:amd64)"
+              elif [[ "$ghcr_ok" == "true" ]]; then
+                echo "partial(DH:amd64)"
               else
                 echo "missing"
               fi
@@ -419,8 +515,11 @@ jobs:
                 else
                   echo "  OK: $variant"
                 fi
-              elif [[ "$STATUS" == "partial" ]]; then
-                add_missing_build "$base_version" "$variant" "missing platforms"
+              elif [[ "$STATUS" == partial* ]]; then
+                # Extract details from partial(details) format
+                local details="${STATUS#partial}"
+                details="${details#(}"; details="${details%)}"
+                add_missing_build "$base_version" "$variant" "missing: $details"
                 VERSION_HAS_MISSING=true
               else
                 add_missing_build "$base_version" "$variant" "not found"
