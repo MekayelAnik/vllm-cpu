@@ -126,8 +126,9 @@ if [ -z "${PYTHON_VER}" ] && [ "${USE_GITHUB_RELEASE}" != "true" ]; then
     if [ -n "${PYPI_JSON}" ]; then
         # Use jq for all filtering to avoid grep compatibility issues on arm64 QEMU
         # Filter: architecture suffix -> extract cpXXX -> convert to 3.XX -> get max
+        # Note: || echo "" prevents jq exit code 5 (no results) from failing script with set -e
         PYTHON_VER=$(echo "${PYPI_JSON}" | jq -r --arg arch "_${WHEEL_ARCH}" \
-            '[.urls[].filename | select(endswith($arch + ".whl")) | match("cp3([0-9]+)") | .captures[0].string] | map(tonumber) | max // empty' 2>/dev/null)
+            '[.urls[].filename | select(endswith($arch + ".whl")) | match("cp3([0-9]+)") | .captures[0].string] | map(tonumber) | max // empty' 2>/dev/null || echo "")
         if [ -n "${PYTHON_VER}" ]; then
             PYTHON_VER="3.${PYTHON_VER}"
             echo "Found highest CPython on PyPI for ${WHEEL_ARCH}: ${PYTHON_VER}" >&2
@@ -172,8 +173,9 @@ if [ -z "${PYTHON_VER}" ]; then
             PACKAGE_NAME_UNDERSCORE=$(echo "${PACKAGE_NAME}" | tr '-' '_')
             # Use jq for all filtering to avoid grep compatibility issues on arm64 QEMU
             # Filter: package name prefix + architecture suffix -> extract cpXXX -> convert to 3.XX -> get max
+            # Note: || echo "" prevents jq exit code 5 (no results) from failing script with set -e
             PYTHON_VER=$(echo "${GH_JSON}" | jq -r --arg pkg "${PACKAGE_NAME_UNDERSCORE}" --arg arch "_${WHEEL_ARCH}" \
-                '[.assets[].name | select(startswith($pkg)) | select(endswith($arch + ".whl")) | match("cp3([0-9]+)") | .captures[0].string] | map(tonumber) | max // empty' 2>/dev/null)
+                '[.assets[].name | select(startswith($pkg)) | select(endswith($arch + ".whl")) | match("cp3([0-9]+)") | .captures[0].string] | map(tonumber) | max // empty' 2>/dev/null || echo "")
             if [ -n "${PYTHON_VER}" ]; then
                 PYTHON_VER="3.${PYTHON_VER}"
                 echo "Found highest CPython on GitHub (${GH_TAG}) for ${WHEEL_ARCH}: ${PYTHON_VER}" >&2
