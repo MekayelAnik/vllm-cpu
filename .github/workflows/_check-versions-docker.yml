@@ -517,9 +517,9 @@ jobs:
                 fi
               elif [[ "$STATUS" == partial* ]]; then
                 # Extract details from partial(details) format
-                local details="${STATUS#partial}"
-                details="${details#(}"; details="${details%)}"
-                add_missing_build "$base_version" "$variant" "missing: $details"
+                DETAILS="${STATUS#partial}"
+                DETAILS="${DETAILS#(}"; DETAILS="${DETAILS%)}"
+                add_missing_build "$base_version" "$variant" "missing: $DETAILS"
                 VERSION_HAS_MISSING=true
               else
                 add_missing_build "$base_version" "$variant" "not found"
