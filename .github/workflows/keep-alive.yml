@@ -8,7 +8,7 @@ on:
   schedule:
     # Run on 1st and 15th of each month at 00:00 UTC
     - cron: '0 0 1,15 * *'
-  
+
   # Manual trigger
   workflow_dispatch:
 
@@ -17,13 +17,13 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
-    
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
-      
+
       - name: Check last commit date
         id: check
         run: |
@@ -31,10 +31,10 @@ jobs:
           LAST_COMMIT=$(git log -1 --format=%ct --invert-grep --grep="keep-alive" 2>/dev/null || echo "0")
           NOW=$(date +%s)
           DAYS_SINCE=$(( (NOW - LAST_COMMIT) / 86400 ))
-          
+
           echo "Days since last non-keep-alive commit: ${DAYS_SINCE}"
           echo "days_since=${DAYS_SINCE}" >> "$GITHUB_OUTPUT"
-          
+
           # Only commit if more than 30 days since last real commit
           # This prevents unnecessary commits when repo is actively developed
           if [ "${DAYS_SINCE}" -ge 30 ]; then
@@ -42,7 +42,7 @@ jobs:
           else
             echo "needs_keepalive=false" >> "$GITHUB_OUTPUT"
           fi
-      
+
       - name: Update keep-alive timestamp
         if: steps.check.outputs.needs_keepalive == 'true'
         run: |
@@ -55,14 +55,14 @@ jobs:
           # Last updated: $(date -u +%Y-%m-%dT%H:%M:%SZ)
           # Triggered by: ${{ github.event_name }}
           EOF
-      
+
       - name: Commit and push
         if: steps.check.outputs.needs_keepalive == 'true'
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add .github/keep-alive.txt
-          
+
           if ! git diff --staged --quiet; then
             git commit -m "chore: keep-alive [skip ci]"
             git push
@@ -70,7 +70,7 @@ jobs:
           else
             echo "ℹ️ No changes to commit"
           fi
-      
+
       - name: Summary
         run: |
           echo "## Keep-Alive Status" >> $GITHUB_STEP_SUMMARY
