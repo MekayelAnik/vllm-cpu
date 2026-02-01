@@ -1,18 +1,6 @@
 # Keep-Alive Workflow
 # Prevents GitHub from disabling scheduled workflows after 60 days of inactivity
 # This workflow commits a timestamp file twice per month to maintain activity
-#
-# Can also be triggered externally via:
-# - workflow_dispatch (manual)
-# - repository_dispatch (webhook from cron.org or other services)
-#
-# cron.org setup:
-#   URL: https://api.github.com/repos/MekayelAnik/vllm-cpu/dispatches
-#   Method: POST
-#   Headers:
-#     Authorization: Bearer <GITHUB_PAT>
-#     Accept: application/vnd.github.v3+json
-#   Body: {"event_type": "keep-alive"}
 
 name: Keep Alive
 
@@ -23,10 +11,6 @@ on:
   
   # Manual trigger
   workflow_dispatch:
-  
-  # External trigger (e.g., cron.org webhook)
-  repository_dispatch:
-    types: [keep-alive]
 
 jobs:
   keep-alive:
