@@ -124,14 +124,12 @@ if [ -z "${PYTHON_VER}" ] && [ "${USE_GITHUB_RELEASE}" != "true" ]; then
     echo "Checking PyPI for available ${WHEEL_ARCH} wheels..." >&2
     PYPI_JSON=$(curl -sfL --max-time 15 "https://pypi.org/pypi/${PACKAGE_NAME}/${VLLM_VERSION}/json" 2>/dev/null || echo "")
     if [ -n "${PYPI_JSON}" ]; then
-        # Extract CPython versions from wheel filenames, filtering by architecture
-        PYTHON_VER=$(echo "${PYPI_JSON}" | jq -r '.urls[].filename' 2>/dev/null | \
-            grep "_${WHEEL_ARCH}" | \
-            grep -oE 'cp3[0-9]+' | \
-            sed 's/cp3/3./' | \
-            sort -t. -k2 -n -r | \
-            head -1 || echo "")
+        # Use jq for all filtering to avoid grep compatibility issues on arm64 QEMU
+        # Filter: architecture suffix -> extract cpXXX -> convert to 3.XX -> get max
+        PYTHON_VER=$(echo "${PYPI_JSON}" | jq -r --arg arch "_${WHEEL_ARCH}" \
+            '[.urls[].filename | select(endswith($arch + ".whl")) | match("cp3([0-9]+)") | .captures[0].string] | map(tonumber) | max // empty' 2>/dev/null)
         if [ -n "${PYTHON_VER}" ]; then
+            PYTHON_VER="3.${PYTHON_VER}"
             echo "Found highest CPython on PyPI for ${WHEEL_ARCH}: ${PYTHON_VER}" >&2
         fi
     fi
@@ -172,14 +170,12 @@ if [ -z "${PYTHON_VER}" ]; then
         fi
         if [ -n "${GH_JSON}" ] && echo "${GH_JSON}" | jq -e '.assets' >/dev/null 2>&1; then
             PACKAGE_NAME_UNDERSCORE=$(echo "${PACKAGE_NAME}" | tr '-' '_')
-            PYTHON_VER=$(echo "${GH_JSON}" | jq -r '.assets[].name' 2>/dev/null | \
-                grep -E "^${PACKAGE_NAME_UNDERSCORE}" | \
-                grep "_${WHEEL_ARCH}" | \
-                grep -oE 'cp3[0-9]+' | \
-                sed 's/cp3/3./' | \
-                sort -t. -k2 -n -r | \
-                head -1 || echo "")
+            # Use jq for all filtering to avoid grep compatibility issues on arm64 QEMU
+            # Filter: package name prefix + architecture suffix -> extract cpXXX -> convert to 3.XX -> get max
+            PYTHON_VER=$(echo "${GH_JSON}" | jq -r --arg pkg "${PACKAGE_NAME_UNDERSCORE}" --arg arch "_${WHEEL_ARCH}" \
+                '[.assets[].name | select(startswith($pkg)) | select(endswith($arch + ".whl")) | match("cp3([0-9]+)") | .captures[0].string] | map(tonumber) | max // empty' 2>/dev/null)
             if [ -n "${PYTHON_VER}" ]; then
+                PYTHON_VER="3.${PYTHON_VER}"
                 echo "Found highest CPython on GitHub (${GH_TAG}) for ${WHEEL_ARCH}: ${PYTHON_VER}" >&2
                 break
             fi

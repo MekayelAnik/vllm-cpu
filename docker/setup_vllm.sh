@@ -166,18 +166,16 @@ try_install_vllm() {
             echo "Querying GitHub API for release ${RELEASE_TAG}..."
 
             # Query GitHub API for available wheels in this release
-            # Use GITHUB_TOKEN if available (avoids rate limiting)
+            # Use jq for JSON parsing to avoid grep compatibility issues on arm64 QEMU
             if [ -n "${GITHUB_TOKEN}" ]; then
                 RELEASE_ASSETS=$(wget -q -O - \
                     --header="Authorization: Bearer ${GITHUB_TOKEN}" \
                     "https://api.github.com/repos/MekayelAnik/vllm-cpu/releases/tags/${RELEASE_TAG}" 2>/dev/null | \
-                    grep -o '"browser_download_url"[[:space:]]*:[[:space:]]*"[^"]*"' | \
-                    sed 's/"browser_download_url"[[:space:]]*:[[:space:]]*"//;s/"$//' || echo "")
+                    jq -r '.assets[].browser_download_url // empty' 2>/dev/null | tr '\n' ' ' || echo "")
             else
                 RELEASE_ASSETS=$(wget -q -O - \
                     "https://api.github.com/repos/MekayelAnik/vllm-cpu/releases/tags/${RELEASE_TAG}" 2>/dev/null | \
-                    grep -o '"browser_download_url"[[:space:]]*:[[:space:]]*"[^"]*"' | \
-                    sed 's/"browser_download_url"[[:space:]]*:[[:space:]]*"//;s/"$//' || echo "")
+                    jq -r '.assets[].browser_download_url // empty' 2>/dev/null | tr '\n' ' ' || echo "")
             fi
 
             if [ -n "${RELEASE_ASSETS}" ]; then
@@ -211,11 +209,12 @@ try_install_vllm() {
 
             # Select wheel with highest manylinux version
             if [ -n "${MATCHING_WHEELS}" ]; then
-                WHEEL_URL=$(echo "${MATCHING_WHEELS}" | tr ' ' '\n' | grep -v '^$' | \
-                    while read -r url; do
+                WHEEL_URL=$(echo "${MATCHING_WHEELS}" | tr ' ' '\n' | while read -r url; do
+                        [ -z "${url}" ] && continue
                         name=$(basename "${url}")
-                        # Extract manylinux version number (e.g., 2_28 -> 228, 2_17 -> 217)
-                        manylinux_ver=$(echo "${name}" | grep -oE 'manylinux_[0-9]+_[0-9]+' | sed 's/manylinux_//' | tr -d '_')
+                        # Extract manylinux version number using sed (e.g., manylinux_2_28 -> 228)
+                        # More portable than grep -oE which may have issues on arm64 QEMU
+                        manylinux_ver=$(echo "${name}" | sed -n 's/.*manylinux_\([0-9]*\)_\([0-9]*\).*/\1\2/p')
                         echo "${manylinux_ver:-0} ${url}"
                     done | sort -rn | head -1 | cut -d' ' -f2-)
                 WHEEL_NAME=$(basename "${WHEEL_URL}")
