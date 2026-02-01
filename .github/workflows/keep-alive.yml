@@ -1,0 +1,100 @@
+# Keep-Alive Workflow
+# Prevents GitHub from disabling scheduled workflows after 60 days of inactivity
+# This workflow commits a timestamp file twice per month to maintain activity
+#
+# Can also be triggered externally via:
+# - workflow_dispatch (manual)
+# - repository_dispatch (webhook from cron.org or other services)
+#
+# cron.org setup:
+#   URL: https://api.github.com/repos/MekayelAnik/vllm-cpu/dispatches
+#   Method: POST
+#   Headers:
+#     Authorization: Bearer <GITHUB_PAT>
+#     Accept: application/vnd.github.v3+json
+#   Body: {"event_type": "keep-alive"}
+
+name: Keep Alive
+
+on:
+  schedule:
+    # Run on 1st and 15th of each month at 00:00 UTC
+    - cron: '0 0 1,15 * *'
+  
+  # Manual trigger
+  workflow_dispatch:
+  
+  # External trigger (e.g., cron.org webhook)
+  repository_dispatch:
+    types: [keep-alive]
+
+jobs:
+  keep-alive:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+      
+      - name: Check last commit date
+        id: check
+        run: |
+          # Get date of last commit (excluding keep-alive commits)
+          LAST_COMMIT=$(git log -1 --format=%ct --invert-grep --grep="keep-alive" 2>/dev/null || echo "0")
+          NOW=$(date +%s)
+          DAYS_SINCE=$(( (NOW - LAST_COMMIT) / 86400 ))
+          
+          echo "Days since last non-keep-alive commit: ${DAYS_SINCE}"
+          echo "days_since=${DAYS_SINCE}" >> "$GITHUB_OUTPUT"
+          
+          # Only commit if more than 30 days since last real commit
+          # This prevents unnecessary commits when repo is actively developed
+          if [ "${DAYS_SINCE}" -ge 30 ]; then
+            echo "needs_keepalive=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "needs_keepalive=false" >> "$GITHUB_OUTPUT"
+          fi
+      
+      - name: Update keep-alive timestamp
+        if: steps.check.outputs.needs_keepalive == 'true'
+        run: |
+          mkdir -p .github
+          cat > .github/keep-alive.txt << EOF
+          # Keep-Alive Timestamp
+          # This file is auto-updated to prevent GitHub from disabling scheduled workflows
+          # after 60 days of repository inactivity.
+          #
+          # Last updated: $(date -u +%Y-%m-%dT%H:%M:%SZ)
+          # Triggered by: ${{ github.event_name }}
+          EOF
+      
+      - name: Commit and push
+        if: steps.check.outputs.needs_keepalive == 'true'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add .github/keep-alive.txt
+          
+          if ! git diff --staged --quiet; then
+            git commit -m "chore: keep-alive [skip ci]"
+            git push
+            echo "✅ Keep-alive commit pushed"
+          else
+            echo "ℹ️ No changes to commit"
+          fi
+      
+      - name: Summary
+        run: |
+          echo "## Keep-Alive Status" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- **Trigger:** ${{ github.event_name }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Days since last commit:** ${{ steps.check.outputs.days_since }}" >> $GITHUB_STEP_SUMMARY
+          if [ "${{ steps.check.outputs.needs_keepalive }}" == "true" ]; then
+            echo "- **Action:** Committed keep-alive timestamp" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "- **Action:** No commit needed (recent activity detected)" >> $GITHUB_STEP_SUMMARY
+          fi
