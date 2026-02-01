@@ -1,0 +1,13 @@
+{
+    "python.testing.pytestArgs": [
+        "tests"
+    ],
+    "python.testing.unittestEnabled": false,
+    "python.testing.pytestEnabled": true,
+    "github.copilot.chat.byok.ollamaEndpoint": "http://100.70.211.117:33545",
+    "chat.tools.global.autoApprove": true,
+    "chat.tools.autoApprove": true,
+    "chat.agent.maxRequests": 100,
+    "claudeCode.permissions.defaultMode": "bypassPermissions",
+    "claudeCode.sandbox.autoAllowBashIfSandboxed": true
+}

@@ -280,10 +280,10 @@ jobs:
               jq -r '.urls[0].upload_time_iso_8601 // ""' 2>/dev/null
           }
 
-          # Function to get Docker image last updated date
+          # Function to get Docker image last updated date for a specific variant
           get_docker_last_updated() {
             local base_ver="$1"
-            local variant="noavx512"
+            local variant="${2:-noavx512}"
             local image="${{ inputs.dockerhub_image }}"
             local tag="${variant}-${base_ver}"
 
@@ -349,75 +349,103 @@ jobs:
             fi
           }
 
-          # Find PyPI base versions not in Docker Hub
-          # Also check for versions that need rebuild (newer .postN available after image was built)
-          # And check GitHub releases for versions not on PyPI
+          # Get list of enabled variants
+          ENABLED_VARIANTS=""
+          [[ "${{ inputs.build_noavx512 }}" == "true" ]] && ENABLED_VARIANTS="noavx512"
+          [[ "${{ inputs.build_avx512 }}" == "true" ]] && ENABLED_VARIANTS="${ENABLED_VARIANTS:+$ENABLED_VARIANTS,}avx512"
+          [[ "${{ inputs.build_avx512vnni }}" == "true" ]] && ENABLED_VARIANTS="${ENABLED_VARIANTS:+$ENABLED_VARIANTS,}avx512vnni"
+          [[ "${{ inputs.build_avx512bf16 }}" == "true" ]] && ENABLED_VARIANTS="${ENABLED_VARIANTS:+$ENABLED_VARIANTS,}avx512bf16"
+          [[ "${{ inputs.build_amxbf16 }}" == "true" ]] && ENABLED_VARIANTS="${ENABLED_VARIANTS:+$ENABLED_VARIANTS,}amxbf16"
+
+          echo "Enabled variants: $ENABLED_VARIANTS"
+
+          # Find missing version+variant combinations
+          # Track as JSON array: [{"version": "0.14.0", "variant": "noavx512"}, ...]
           echo ""
-          echo "Finding versions to build..."
-          NEW_VERSIONS=""
-          REBUILD_VERSIONS=""
-          GITHUB_RELEASE_VERSIONS=""  # Versions that need GitHub release wheels
+          echo "Checking each version and variant..."
+          MISSING_BUILDS="[]"
+          ALL_VERSIONS=""
+          GITHUB_RELEASE_VERSIONS=""
+          WHEEL_MAP="{"
+          WHEEL_MAP_FIRST=true
+
+          # Function to add a missing build
+          add_missing_build() {
+            local ver="$1"
+            local var="$2"
+            local reason="$3"
+            echo "  MISSING: $ver / $var ($reason)"
+            MISSING_BUILDS=$(echo "$MISSING_BUILDS" | jq -c --arg v "$ver" --arg var "$var" '. + [{"version": $v, "variant": $var}]')
+          }
 
           while IFS= read -r base_version; do
-            if [[ -n "$base_version" ]]; then
-              HIGHEST_WHEEL=$(get_highest_wheel_version "$base_version")
+            if [[ -z "$base_version" ]]; then
+              continue
+            fi
 
-              # Check noavx512 platforms specifically (it's the only multi-platform variant)
-              NOAVX512_STATUS=$(check_variant_platforms "$base_version" "noavx512")
+            HIGHEST_WHEEL=$(get_highest_wheel_version "$base_version")
+            if [[ -z "$HIGHEST_WHEEL" ]]; then
+              echo "  SKIP: $base_version (no PyPI wheel found)"
+              continue
+            fi
 
-              if ! grep -qx "$base_version" /tmp/docker_versions.txt 2>/dev/null; then
-                # No Docker image exists for this base version at all
-                if [[ -n "$HIGHEST_WHEEL" ]]; then
-                  echo "  NEW: $base_version (PyPI wheel: $HIGHEST_WHEEL)"
-                  if [[ -n "$NEW_VERSIONS" ]]; then
-                    NEW_VERSIONS="$NEW_VERSIONS,$base_version"
-                  else
-                    NEW_VERSIONS="$base_version"
-                  fi
-                fi
-              elif [[ "$NOAVX512_STATUS" == "partial" ]]; then
-                # Docker image exists but is missing platforms (e.g., arm64)
-                echo "  PARTIAL: $base_version (noavx512 missing some platforms - needs rebuild)"
-                if [[ -n "$REBUILD_VERSIONS" ]]; then
-                  REBUILD_VERSIONS="$REBUILD_VERSIONS,$base_version"
-                else
-                  REBUILD_VERSIONS="$base_version"
-                fi
-              else
-                # Docker image exists with all platforms - check if rebuild needed for newer wheel
-                if [[ -n "$HIGHEST_WHEEL" && "$HIGHEST_WHEEL" != "$base_version" ]]; then
-                  # A .postN wheel exists - check if it's newer than the Docker image
-                  DOCKER_DATE=$(get_docker_last_updated "$base_version")
+            echo ""
+            echo "Checking $base_version (wheel: $HIGHEST_WHEEL)..."
+            VERSION_HAS_MISSING=false
+
+            # Check each enabled variant independently
+            for variant in $(echo "$ENABLED_VARIANTS" | tr ',' '\n'); do
+              STATUS=$(check_variant_platforms "$base_version" "$variant")
+
+              if [[ "$STATUS" == "complete" ]]; then
+                # Check if rebuild needed for newer wheel
+                if [[ "$HIGHEST_WHEEL" != "$base_version" ]]; then
+                  DOCKER_DATE=$(get_docker_last_updated "$base_version" "$variant")
                   WHEEL_DATE=$(get_pypi_release_date "$HIGHEST_WHEEL")
 
                   if [[ -n "$DOCKER_DATE" && -n "$WHEEL_DATE" ]]; then
-                    # Compare dates - rebuild if wheel is newer
                     DOCKER_TS=$(date -d "$DOCKER_DATE" +%s 2>/dev/null || echo "0")
                     WHEEL_TS=$(date -d "$WHEEL_DATE" +%s 2>/dev/null || echo "0")
 
                     if [[ "$WHEEL_TS" -gt "$DOCKER_TS" ]]; then
-                      echo "  REBUILD: $base_version (wheel $HIGHEST_WHEEL released after Docker image)"
-                      echo "           Docker: $DOCKER_DATE, Wheel: $WHEEL_DATE"
-                      if [[ -n "$REBUILD_VERSIONS" ]]; then
-                        REBUILD_VERSIONS="$REBUILD_VERSIONS,$base_version"
-                      else
-                        REBUILD_VERSIONS="$base_version"
-                      fi
+                      add_missing_build "$base_version" "$variant" "newer wheel $HIGHEST_WHEEL available"
+                      VERSION_HAS_MISSING=true
                     else
-                      echo "  EXISTS: $base_version (Docker image up-to-date with wheel $HIGHEST_WHEEL)"
+                      echo "  OK: $variant (up-to-date)"
                     fi
                   else
-                    echo "  EXISTS: $base_version (cannot determine dates, skipping rebuild check)"
+                    echo "  OK: $variant (cannot verify dates)"
                   fi
                 else
-                  echo "  EXISTS: $base_version (all platforms present, no .postN wheel available)"
+                  echo "  OK: $variant"
                 fi
+              elif [[ "$STATUS" == "partial" ]]; then
+                add_missing_build "$base_version" "$variant" "missing platforms"
+                VERSION_HAS_MISSING=true
+              else
+                add_missing_build "$base_version" "$variant" "not found"
+                VERSION_HAS_MISSING=true
               fi
+            done
+
+            # Track versions and wheel mappings for missing builds
+            if [[ "$VERSION_HAS_MISSING" == "true" ]]; then
+              if [[ -n "$ALL_VERSIONS" ]]; then
+                ALL_VERSIONS="$ALL_VERSIONS,$base_version"
+              else
+                ALL_VERSIONS="$base_version"
+              fi
+
+              # Add to wheel map
+              if [[ "$WHEEL_MAP_FIRST" != "true" ]]; then
+                WHEEL_MAP="${WHEEL_MAP},"
+              fi
+              WHEEL_MAP="${WHEEL_MAP}\"${base_version}\":\"${HIGHEST_WHEEL}\""
+              WHEEL_MAP_FIRST=false
             fi
           done < /tmp/pypi_base_versions.txt
 
-          # Also check GitHub releases for versions that might not be on PyPI yet
-          # This handles the case where wheels are only available in GitHub releases
+          # Also check GitHub releases for versions not on PyPI
           echo ""
           echo "Checking GitHub releases for additional versions..."
           GH_RELEASES=$(curl -sS --retry 2 --retry-delay 3 \
@@ -428,94 +456,72 @@ jobs:
             sort -V -u || echo "")
 
           for gh_version in $GH_RELEASES; do
-            # Skip if already in our lists
-            if echo "$NEW_VERSIONS,$REBUILD_VERSIONS" | tr ',' '\n' | grep -qx "$gh_version" 2>/dev/null; then
-              continue
-            fi
             # Skip if PyPI has this version (already handled above)
             if grep -qx "$gh_version" /tmp/pypi_base_versions.txt 2>/dev/null; then
               continue
             fi
 
-            # Check if Docker image exists with all platforms
-            if grep -qx "$gh_version" /tmp/docker_versions.txt 2>/dev/null; then
-              # Check if noavx512 has all required platforms
-              GH_NOAVX512_STATUS=$(check_variant_platforms "$gh_version" "noavx512")
-              if [[ "$GH_NOAVX512_STATUS" == "complete" ]]; then
-                continue  # All platforms exist, skip
-              elif [[ "$GH_NOAVX512_STATUS" == "partial" ]]; then
-                echo "  PARTIAL (GitHub Release): $gh_version (noavx512 missing some platforms)"
-                if [[ -n "$GITHUB_RELEASE_VERSIONS" ]]; then
-                  GITHUB_RELEASE_VERSIONS="$GITHUB_RELEASE_VERSIONS,$gh_version"
-                else
-                  GITHUB_RELEASE_VERSIONS="$gh_version"
-                fi
-                continue
-              fi
+            # Check if this GitHub release has wheels
+            if ! check_github_release_wheel "$gh_version"; then
+              continue
             fi
 
-            # Check if this GitHub release has wheels
-            if check_github_release_wheel "$gh_version"; then
-              echo "  NEW (GitHub Release): $gh_version"
+            echo ""
+            echo "Checking $gh_version (GitHub release only)..."
+            VERSION_HAS_MISSING=false
+
+            for variant in $(echo "$ENABLED_VARIANTS" | tr ',' '\n'); do
+              STATUS=$(check_variant_platforms "$gh_version" "$variant")
+
+              if [[ "$STATUS" != "complete" ]]; then
+                add_missing_build "$gh_version" "$variant" "$STATUS - GitHub release"
+                VERSION_HAS_MISSING=true
+              else
+                echo "  OK: $variant"
+              fi
+            done
+
+            if [[ "$VERSION_HAS_MISSING" == "true" ]]; then
+              if [[ -n "$ALL_VERSIONS" ]]; then
+                ALL_VERSIONS="$ALL_VERSIONS,$gh_version"
+              else
+                ALL_VERSIONS="$gh_version"
+              fi
               if [[ -n "$GITHUB_RELEASE_VERSIONS" ]]; then
                 GITHUB_RELEASE_VERSIONS="$GITHUB_RELEASE_VERSIONS,$gh_version"
               else
                 GITHUB_RELEASE_VERSIONS="$gh_version"
               fi
+
+              # Add to wheel map (use base version for GitHub releases)
+              if [[ "$WHEEL_MAP_FIRST" != "true" ]]; then
+                WHEEL_MAP="${WHEEL_MAP},"
+              fi
+              WHEEL_MAP="${WHEEL_MAP}\"${gh_version}\":\"${gh_version}\""
+              WHEEL_MAP_FIRST=false
             fi
           done
 
-          # Combine all versions
-          ALL_VERSIONS="$NEW_VERSIONS"
-          if [[ -n "$REBUILD_VERSIONS" ]]; then
-            if [[ -n "$ALL_VERSIONS" ]]; then
-              ALL_VERSIONS="$ALL_VERSIONS,$REBUILD_VERSIONS"
-            else
-              ALL_VERSIONS="$REBUILD_VERSIONS"
-            fi
-          fi
-          if [[ -n "$GITHUB_RELEASE_VERSIONS" ]]; then
-            if [[ -n "$ALL_VERSIONS" ]]; then
-              ALL_VERSIONS="$ALL_VERSIONS,$GITHUB_RELEASE_VERSIONS"
-            else
-              ALL_VERSIONS="$GITHUB_RELEASE_VERSIONS"
-            fi
-          fi
+          WHEEL_MAP="${WHEEL_MAP}}"
 
-          if [[ -z "$ALL_VERSIONS" ]]; then
-            echo "No new versions found - all versions have up-to-date Docker images"
+          MISSING_COUNT=$(echo "$MISSING_BUILDS" | jq 'length')
+          if [[ "$MISSING_COUNT" -eq 0 ]]; then
+            echo ""
+            echo "No missing builds - all Docker images are up-to-date"
             echo "new_versions=[]" >> "$GITHUB_OUTPUT"
+            echo "missing_builds=[]" >> "$GITHUB_OUTPUT"
             echo "wheel_versions={}" >> "$GITHUB_OUTPUT"
             echo "github_release_versions=" >> "$GITHUB_OUTPUT"
           else
             echo ""
-            echo "Versions to build: $ALL_VERSIONS"
-            JSON_ARRAY=$(echo "$ALL_VERSIONS" | tr ',' '\n' | sort -V -u | jq -R . | jq -s -c .)
-            echo "new_versions=$JSON_ARRAY" >> "$GITHUB_OUTPUT"
-            echo "github_release_versions=$GITHUB_RELEASE_VERSIONS" >> "$GITHUB_OUTPUT"
+            echo "Found $MISSING_COUNT missing version+variant combinations"
+            echo "$MISSING_BUILDS" | jq '.'
 
-            # Create wheel_version mapping: base_version -> highest_wheel_version
-            # This is used by the matrix to know which wheel to install for each Docker tag
-            # For GitHub release-only versions, use the base version itself
-            echo ""
-            echo "Building wheel version mapping..."
-            WHEEL_MAP="{"
-            FIRST=true
-            for base_version in $(echo "$ALL_VERSIONS" | tr ',' '\n' | sort -V -u); do
-              HIGHEST_WHEEL=$(get_highest_wheel_version "$base_version")
-              # If not on PyPI, use base version (will be fetched from GitHub release)
-              if [[ -z "$HIGHEST_WHEEL" ]]; then
-                HIGHEST_WHEEL="$base_version"
-              fi
-              if [[ "$FIRST" != "true" ]]; then
-                WHEEL_MAP="${WHEEL_MAP},"
-              fi
-              WHEEL_MAP="${WHEEL_MAP}\"${base_version}\":\"${HIGHEST_WHEEL}\""
-              FIRST=false
-              echo "  $base_version -> $HIGHEST_WHEEL"
-            done
-            WHEEL_MAP="${WHEEL_MAP}}"
+            UNIQUE_VERSIONS=$(echo "$ALL_VERSIONS" | tr ',' '\n' | sort -V -u | jq -R . | jq -s -c .)
+            echo "new_versions=$UNIQUE_VERSIONS" >> "$GITHUB_OUTPUT"
+            echo "missing_builds=$MISSING_BUILDS" >> "$GITHUB_OUTPUT"
             echo "wheel_versions=$WHEEL_MAP" >> "$GITHUB_OUTPUT"
+            echo "github_release_versions=$GITHUB_RELEASE_VERSIONS" >> "$GITHUB_OUTPUT"
           fi
 
           echo "is_auto_detect=true" >> "$GITHUB_OUTPUT"
@@ -548,18 +554,27 @@ jobs:
           echo "version=$PYPI_LATEST" >> "$GITHUB_OUTPUT"
 
           # Check if we're building the latest version
-          NEW_VERSIONS='${{ needs.base-check.outputs.new_versions }}'
+          # Use auto-detect versions if available, otherwise base-check versions
+          IS_AUTO_DETECT="${{ steps.auto-detect.outputs.is_auto_detect }}"
+          if [[ "$IS_AUTO_DETECT" == "true" ]]; then
+            NEW_VERSIONS='${{ steps.auto-detect.outputs.new_versions }}'
+          else
+            NEW_VERSIONS='${{ needs.base-check.outputs.new_versions }}'
+          fi
+
           BUILDING_LATEST="false"
-          if echo "$NEW_VERSIONS" | jq -e --arg v "$PYPI_LATEST" 'index($v) != null' > /dev/null 2>&1; then
-            BUILDING_LATEST="true"
-            echo "Building the latest version - latest tags will be updated"
+          if [[ -n "$NEW_VERSIONS" && "$NEW_VERSIONS" != "[]" && "$NEW_VERSIONS" != "null" ]]; then
+            if echo "$NEW_VERSIONS" | jq -e --arg v "$PYPI_LATEST" 'index($v) != null' > /dev/null 2>&1; then
+              BUILDING_LATEST="true"
+              echo "Building the latest version - latest tags will be updated"
+            fi
           fi
 
           echo "needs_update=$BUILDING_LATEST" >> "$GITHUB_OUTPUT"
 
       - name: Check existing Docker images
         id: existing
-        if: needs.base-check.outputs.has_builds == 'true'
+        if: needs.base-check.outputs.has_builds == 'true' || steps.auto-detect.outputs.is_auto_detect == 'true'
         shell: bash
         run: |
           FORCE_DOCKERHUB="${{ inputs.force_rebuild_dockerhub }}"
@@ -677,16 +692,18 @@ jobs:
         id: matrix
         shell: bash
         run: |
-          # Use auto-detected versions if in auto-detect mode, otherwise use base-check
+          # Use auto-detected missing builds if in auto-detect mode
           IS_AUTO_DETECT="${{ steps.auto-detect.outputs.is_auto_detect }}"
           if [[ "$IS_AUTO_DETECT" == "true" ]]; then
+            MISSING_BUILDS='${{ steps.auto-detect.outputs.missing_builds }}'
             NEW_VERSIONS='${{ steps.auto-detect.outputs.new_versions }}'
             WHEEL_VERSIONS='${{ steps.auto-detect.outputs.wheel_versions }}'
-            echo "Using auto-detected versions (PyPI vs Docker Hub)"
+            echo "Using auto-detected missing builds (per-variant checking)"
           else
+            MISSING_BUILDS='[]'
             NEW_VERSIONS='${{ needs.base-check.outputs.new_versions }}'
             WHEEL_VERSIONS='{}'
-            echo "Using manually specified versions"
+            echo "Using manually specified versions (will check all variants)"
           fi
 
           VARIANTS='${{ steps.variants.outputs.matrix }}'
@@ -700,121 +717,177 @@ jobs:
             exit 0
           fi
 
-          # For manual mode, filter out versions that already have Docker images (unless force rebuild)
-          # For auto-detect mode, this is already done in the auto-detect step
           FORCE_DOCKERHUB="${{ inputs.force_rebuild_dockerhub }}"
           FORCE_GHCR="${{ inputs.force_rebuild_ghcr }}"
-
-          FILTERED_VERSIONS="$NEW_VERSIONS"
-          if [[ "$IS_AUTO_DETECT" != "true" && "$FORCE_DOCKERHUB" != "true" && "$FORCE_GHCR" != "true" && -n "$EXISTING" ]]; then
-            # Filter versions - keep only those not in existing
-            FILTERED_VERSIONS=$(echo "$NEW_VERSIONS" | jq -c --arg existing "$EXISTING" '
-              ($existing | split(",")) as $ex |
-              map(select(. as $v | $ex | index($v) | not))
-            ')
-          fi
-
-          if [[ "$FILTERED_VERSIONS" == "[]" ]]; then
-            echo "All versions already have Docker images"
-            echo "build_matrix={\"include\":[]}" >> "$GITHUB_OUTPUT"
-            echo "has_builds=false" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
 
           # Get list of versions that need GitHub release (not on PyPI)
           GH_RELEASE_VERSIONS="${{ steps.auto-detect.outputs.github_release_versions }}"
           echo "GitHub release-only versions: ${GH_RELEASE_VERSIONS:-none}"
 
-          # For manual mode without wheel_versions, we need to look them up from PyPI
-          if [[ "$WHEEL_VERSIONS" == "{}" || -z "$WHEEL_VERSIONS" ]]; then
-            echo "Looking up highest wheel versions from PyPI..."
-            ALL_PYPI=$(curl -sS --retry 3 --retry-delay 5 \
-              "https://pypi.org/pypi/vllm-cpu/json" | \
-              jq -r '.releases | keys[]' 2>/dev/null || echo "")
+          # For auto-detect mode with missing_builds, use it directly
+          # For manual mode or force rebuild, generate version × variant
+          if [[ "$IS_AUTO_DETECT" == "true" && "$FORCE_DOCKERHUB" != "true" && "$FORCE_GHCR" != "true" ]]; then
+            # Use pre-computed missing builds from auto-detect
+            MISSING_COUNT=$(echo "$MISSING_BUILDS" | jq 'length')
+            if [[ "$MISSING_COUNT" -eq 0 ]]; then
+              echo "No missing builds detected"
+              echo "build_matrix={\"include\":[]}" >> "$GITHUB_OUTPUT"
+              echo "has_builds=false" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
 
-            WHEEL_VERSIONS="{"
-            FIRST=true
-            for base_version in $(echo "$FILTERED_VERSIONS" | jq -r '.[]'); do
-              # Find highest version matching base (including .postN)
-              HIGHEST=$(echo "$ALL_PYPI" | grep -E "^${base_version}(\.post[0-9]+)?$" | sort -V | tail -1)
-              if [[ -n "$HIGHEST" ]]; then
+            echo "Using $MISSING_COUNT pre-detected missing builds"
+
+            # Create GitHub release map for lookup
+            GH_RELEASE_MAP="{"
+            if [[ -n "$GH_RELEASE_VERSIONS" ]]; then
+              FIRST=true
+              for ver in $(echo "$GH_RELEASE_VERSIONS" | tr ',' '\n' | sort -V -u); do
                 if [[ "$FIRST" != "true" ]]; then
-                  WHEEL_VERSIONS="${WHEEL_VERSIONS},"
+                  GH_RELEASE_MAP="${GH_RELEASE_MAP},"
                 fi
-                WHEEL_VERSIONS="${WHEEL_VERSIONS}\"${base_version}\":\"${HIGHEST}\""
+                GH_RELEASE_MAP="${GH_RELEASE_MAP}\"${ver}\":true"
                 FIRST=false
-                echo "  $base_version -> $HIGHEST"
-              else
-                # Not on PyPI - use base version (will use GitHub release)
-                if [[ "$FIRST" != "true" ]]; then
-                  WHEEL_VERSIONS="${WHEEL_VERSIONS},"
-                fi
-                WHEEL_VERSIONS="${WHEEL_VERSIONS}\"${base_version}\":\"${base_version}\""
-                FIRST=false
-                echo "  $base_version -> $base_version (GitHub release)"
-                # Add to GH release versions list
-                if [[ -n "$GH_RELEASE_VERSIONS" ]]; then
-                  GH_RELEASE_VERSIONS="$GH_RELEASE_VERSIONS,$base_version"
-                else
-                  GH_RELEASE_VERSIONS="$base_version"
-                fi
-              fi
-            done
-            WHEEL_VERSIONS="${WHEEL_VERSIONS}}"
-          fi
+              done
+            fi
+            GH_RELEASE_MAP="${GH_RELEASE_MAP}}"
 
-          echo "Wheel versions mapping: $WHEEL_VERSIONS"
+            BUILD_AMD64="${{ needs.base-check.outputs.build_amd64 }}"
+            BUILD_ARM64="${{ needs.base-check.outputs.build_arm64 }}"
 
-          # Create a JSON object for GitHub release versions lookup
-          GH_RELEASE_MAP="{"
-          if [[ -n "$GH_RELEASE_VERSIONS" ]]; then
-            FIRST=true
-            for ver in $(echo "$GH_RELEASE_VERSIONS" | tr ',' '\n' | sort -V -u); do
-              if [[ "$FIRST" != "true" ]]; then
-                GH_RELEASE_MAP="${GH_RELEASE_MAP},"
-              fi
-              GH_RELEASE_MAP="${GH_RELEASE_MAP}\"${ver}\":true"
-              FIRST=false
-            done
-          fi
-          GH_RELEASE_MAP="${GH_RELEASE_MAP}}"
-          echo "GitHub release map: $GH_RELEASE_MAP"
-
-          # Generate matrix: version × variant with wheel_version and use_github_release
-          BUILD_AMD64="${{ needs.base-check.outputs.build_amd64 }}"
-          BUILD_ARM64="${{ needs.base-check.outputs.build_arm64 }}"
-
-          MATRIX=$(jq -n -c \
-            --argjson versions "$FILTERED_VERSIONS" \
-            --argjson variants "$VARIANTS" \
-            --argjson wheel_map "$WHEEL_VERSIONS" \
-            --argjson gh_release_map "$GH_RELEASE_MAP" \
-            --arg build_amd64 "$BUILD_AMD64" \
-            --arg build_arm64 "$BUILD_ARM64" '
-            {
-              include: [
-                $versions[] as $ver |
-                $variants[] as $var |
-                {
-                  version: $ver,
-                  variant: $var,
-                  wheel_version: ($wheel_map[$ver] // $ver),
-                  use_github_release: (if $gh_release_map[$ver] then "true" else "false" end),
-                  platforms: (
-                    if $var == "noavx512" then
-                      if $build_amd64 == "true" and $build_arm64 == "true" then "linux/amd64,linux/arm64"
-                      elif $build_amd64 == "true" then "linux/amd64"
-                      elif $build_arm64 == "true" then "linux/arm64"
-                      else ""
+            # Transform missing_builds into matrix with platforms
+            MATRIX=$(echo "$MISSING_BUILDS" | jq -c \
+              --argjson wheel_map "$WHEEL_VERSIONS" \
+              --argjson gh_release_map "$GH_RELEASE_MAP" \
+              --arg build_amd64 "$BUILD_AMD64" \
+              --arg build_arm64 "$BUILD_ARM64" '
+              {
+                include: [
+                  .[] |
+                  {
+                    version: .version,
+                    variant: .variant,
+                    wheel_version: ($wheel_map[.version] // .version),
+                    use_github_release: (if $gh_release_map[.version] then "true" else "false" end),
+                    platforms: (
+                      if .variant == "noavx512" then
+                        if $build_amd64 == "true" and $build_arm64 == "true" then "linux/amd64,linux/arm64"
+                        elif $build_amd64 == "true" then "linux/amd64"
+                        elif $build_arm64 == "true" then "linux/arm64"
+                        else ""
+                        end
+                      else
+                        if $build_amd64 == "true" then "linux/amd64" else "" end
                       end
-                    else
-                      if $build_amd64 == "true" then "linux/amd64" else "" end
-                    end
-                  )
-                }
-              ] | map(select(.platforms != ""))
-            }
-          ')
+                    )
+                  }
+                ] | map(select(.platforms != ""))
+              }
+            ')
+          else
+            # Manual mode or force rebuild: generate version × variant cross-product
+            echo "Generating version × variant matrix..."
+
+            FILTERED_VERSIONS="$NEW_VERSIONS"
+            if [[ "$FORCE_DOCKERHUB" != "true" && "$FORCE_GHCR" != "true" && -n "$EXISTING" ]]; then
+              FILTERED_VERSIONS=$(echo "$NEW_VERSIONS" | jq -c --arg existing "$EXISTING" '
+                ($existing | split(",")) as $ex |
+                map(select(. as $v | $ex | index($v) | not))
+              ')
+            fi
+
+            if [[ "$FILTERED_VERSIONS" == "[]" ]]; then
+              echo "All versions already have Docker images"
+              echo "build_matrix={\"include\":[]}" >> "$GITHUB_OUTPUT"
+              echo "has_builds=false" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+
+            # For manual mode without wheel_versions, look them up from PyPI
+            if [[ "$WHEEL_VERSIONS" == "{}" || -z "$WHEEL_VERSIONS" ]]; then
+              echo "Looking up highest wheel versions from PyPI..."
+              ALL_PYPI=$(curl -sS --retry 3 --retry-delay 5 \
+                "https://pypi.org/pypi/vllm-cpu/json" | \
+                jq -r '.releases | keys[]' 2>/dev/null || echo "")
+
+              WHEEL_VERSIONS="{"
+              FIRST=true
+              for base_version in $(echo "$FILTERED_VERSIONS" | jq -r '.[]'); do
+                HIGHEST=$(echo "$ALL_PYPI" | grep -E "^${base_version}(\.post[0-9]+)?$" | sort -V | tail -1)
+                if [[ -n "$HIGHEST" ]]; then
+                  if [[ "$FIRST" != "true" ]]; then
+                    WHEEL_VERSIONS="${WHEEL_VERSIONS},"
+                  fi
+                  WHEEL_VERSIONS="${WHEEL_VERSIONS}\"${base_version}\":\"${HIGHEST}\""
+                  FIRST=false
+                  echo "  $base_version -> $HIGHEST"
+                else
+                  if [[ "$FIRST" != "true" ]]; then
+                    WHEEL_VERSIONS="${WHEEL_VERSIONS},"
+                  fi
+                  WHEEL_VERSIONS="${WHEEL_VERSIONS}\"${base_version}\":\"${base_version}\""
+                  FIRST=false
+                  echo "  $base_version -> $base_version (GitHub release)"
+                  if [[ -n "$GH_RELEASE_VERSIONS" ]]; then
+                    GH_RELEASE_VERSIONS="$GH_RELEASE_VERSIONS,$base_version"
+                  else
+                    GH_RELEASE_VERSIONS="$base_version"
+                  fi
+                fi
+              done
+              WHEEL_VERSIONS="${WHEEL_VERSIONS}}"
+            fi
+
+            echo "Wheel versions mapping: $WHEEL_VERSIONS"
+
+            GH_RELEASE_MAP="{"
+            if [[ -n "$GH_RELEASE_VERSIONS" ]]; then
+              FIRST=true
+              for ver in $(echo "$GH_RELEASE_VERSIONS" | tr ',' '\n' | sort -V -u); do
+                if [[ "$FIRST" != "true" ]]; then
+                  GH_RELEASE_MAP="${GH_RELEASE_MAP},"
+                fi
+                GH_RELEASE_MAP="${GH_RELEASE_MAP}\"${ver}\":true"
+                FIRST=false
+              done
+            fi
+            GH_RELEASE_MAP="${GH_RELEASE_MAP}}"
+
+            BUILD_AMD64="${{ needs.base-check.outputs.build_amd64 }}"
+            BUILD_ARM64="${{ needs.base-check.outputs.build_arm64 }}"
+
+            MATRIX=$(jq -n -c \
+              --argjson versions "$FILTERED_VERSIONS" \
+              --argjson variants "$VARIANTS" \
+              --argjson wheel_map "$WHEEL_VERSIONS" \
+              --argjson gh_release_map "$GH_RELEASE_MAP" \
+              --arg build_amd64 "$BUILD_AMD64" \
+              --arg build_arm64 "$BUILD_ARM64" '
+              {
+                include: [
+                  $versions[] as $ver |
+                  $variants[] as $var |
+                  {
+                    version: $ver,
+                    variant: $var,
+                    wheel_version: ($wheel_map[$ver] // $ver),
+                    use_github_release: (if $gh_release_map[$ver] then "true" else "false" end),
+                    platforms: (
+                      if $var == "noavx512" then
+                        if $build_amd64 == "true" and $build_arm64 == "true" then "linux/amd64,linux/arm64"
+                        elif $build_amd64 == "true" then "linux/amd64"
+                        elif $build_arm64 == "true" then "linux/arm64"
+                        else ""
+                        end
+                      else
+                        if $build_amd64 == "true" then "linux/amd64" else "" end
+                      end
+                    )
+                  }
+                ] | map(select(.platforms != ""))
+              }
+            ')
+          fi
 
           MATRIX_COUNT=$(echo "$MATRIX" | jq '.include | length')
 

@@ -1,0 +1,28 @@
+{
+  "servers": {
+    "context7": {
+      "type": "http",
+      "url": "http://10.7.7.213:8010/mcp",
+    },
+    "ddg": {
+      "type": "http",
+      "url": "http://10.7.7.213:8020/mcp",
+    },
+    "firecrawl": {
+      "type": "http",
+      "url": "http://10.7.7.213:8030/mcp",
+    },
+    "fetch": {
+      "type": "http",
+      "url": "http://10.7.7.213:8960/mcp",
+    },
+	  "time": {
+      "type": "http",
+      "url": "http://10.7.7.213:8060/mcp",
+    },
+    "sequential-thinking": {
+      "type": "http",
+      "url": "http://10.7.7.213:8035/mcp",
+    }
+  }
+}
