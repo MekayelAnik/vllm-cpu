@@ -15,7 +15,7 @@
 # Recommended run options:
 #   docker run --cap-add SYS_NICE --security-opt seccomp=unconfined --shm-size 4g ...
 
-ARG BASE_IMAGE=debian:trixie-slim
+ARG BASE_IMAGE=debian:stable-slim
 
 # Stage 1: Detect Python version from available wheels
 FROM ${BASE_IMAGE} AS python-detector
@@ -63,7 +63,7 @@ LABEL org.opencontainers.image.title="vLLM CPU (${VARIANT})" \
       org.opencontainers.image.source="https://github.com/MekayelAnik/vllm-cpu" \
       org.opencontainers.image.documentation="https://github.com/MekayelAnik/vllm-cpu#readme" \
       org.opencontainers.image.licenses="GPL-3.0-only" \
-      org.opencontainers.image.base.name="docker.io/library/debian:trixie-slim" \
+      org.opencontainers.image.base.name="docker.io/library/debian:stable-slim" \
       org.opencontainers.image.ref.name="${VARIANT}-${VLLM_VERSION}" \
       vllm.variant="${VARIANT}" \
       vllm.version="${VLLM_VERSION}" \
