@@ -111,7 +111,16 @@ runs:
           riscv64)       CRANE_ARCH="riscv64" ;;
           *)             echo "crane: unsupported arch $ARCH, skipping"; exit 0 ;;
         esac
-        CRANE_VERSION="$(curl -fsSL https://api.github.com/repos/google/go-containerregistry/releases/latest | jq -r .tag_name)"
-        curl -fsSL "https://github.com/google/go-containerregistry/releases/download/${CRANE_VERSION}/go-containerregistry_Linux_${CRANE_ARCH}.tar.gz" \
-          | tar xzf - -C /usr/local/bin crane
-        echo "Installed crane ${CRANE_VERSION} (${CRANE_ARCH})"
+        # Pinned version avoids GitHub API rate limits on /releases/latest
+        CRANE_VERSION="v0.21.3"
+        for attempt in 1 2 3; do
+          if curl -fsSL "https://github.com/google/go-containerregistry/releases/download/${CRANE_VERSION}/go-containerregistry_Linux_${CRANE_ARCH}.tar.gz" \
+            | tar xzf - -C /usr/local/bin crane; then
+            echo "Installed crane ${CRANE_VERSION} (${CRANE_ARCH})"
+            exit 0
+          fi
+          echo "crane install attempt ${attempt} failed, retrying in ${attempt}s..." >&2
+          sleep "$attempt"
+        done
+        echo "::warning::crane install failed after 3 attempts — falling back to docker buildx imagetools"
+        exit 0
