@@ -121,8 +121,8 @@ runs:
           *)             echo "crane: unsupported arch $ARCH, skipping"; exit 0 ;;
         esac
 
-        # Pinned versions — avoids GitHub API /releases/latest rate limits
-        CRANE_VERSIONS=("v0.21.3" "v0.21.2" "v0.21.1" "v0.20.3")
+        # Pinned fallback versions in case API + latest download both fail
+        CRANE_FALLBACK_VERSIONS=("v0.21.3" "v0.21.2" "v0.21.1" "v0.20.3")
 
         try_download() {
           local ver="$1" auth_flag="${2:-}"
@@ -136,29 +136,25 @@ runs:
           return 1
         }
 
-        # Strategy 1: Direct download (unauthenticated, try each pinned version)
-        for ver in "${CRANE_VERSIONS[@]}"; do
-          try_download "$ver" && exit 0
-        done
-        echo "Anonymous download failed for all versions, trying authenticated..." >&2
-
-        # Strategy 2: Authenticated download with GITHUB_TOKEN (higher rate limit)
+        # Strategy 1: Fetch latest version via GitHub API (authenticated — 5000 req/hr)
         if [[ -n "${GH_TOKEN:-}" ]]; then
-          for ver in "${CRANE_VERSIONS[@]}"; do
-            try_download "$ver" "auth" && exit 0
-          done
-          echo "Authenticated download also failed, trying API discovery..." >&2
-        fi
-
-        # Strategy 3: Discover latest via GitHub API with auth (last resort)
-        if [[ -n "${GH_TOKEN:-}" ]]; then
-          LATEST_VER="$(curl -fsSL --connect-timeout 5 -H "Authorization: token ${GH_TOKEN}" \
+          LATEST_VER="$(curl -fsSL --connect-timeout 5 --max-time 10 \
+            -H "Authorization: token ${GH_TOKEN}" \
             "https://api.github.com/repos/google/go-containerregistry/releases/latest" 2>/dev/null \
             | jq -r '.tag_name // empty' 2>/dev/null || true)"
           if [[ -n "$LATEST_VER" ]]; then
             try_download "$LATEST_VER" "auth" && exit 0
+            echo "Latest ${LATEST_VER} download failed, trying fallback versions..." >&2
+          else
+            echo "API discovery failed, trying fallback versions..." >&2
           fi
         fi
+
+        # Strategy 2: Pinned fallback versions (authenticated, then anonymous)
+        for ver in "${CRANE_FALLBACK_VERSIONS[@]}"; do
+          try_download "$ver" "auth" && exit 0
+          try_download "$ver" && exit 0
+        done
 
         echo "::warning::crane install failed — all strategies exhausted. Falling back to docker buildx imagetools."
         exit 0
