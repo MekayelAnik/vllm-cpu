@@ -1,0 +1,143 @@
+name: Reusable Build Versions
+
+on:
+  workflow_call:
+    inputs:
+      runner_version:
+        description: GitHub Actions runner version
+        required: false
+        type: string
+        default: 'ubuntu-24.04'
+      versions_json:
+        description: JSON matrix include payload for versions
+        required: true
+        type: string
+      force_build:
+        description: Force build even if tags may already exist
+        required: false
+        type: string
+        default: 'false'
+      base_image_default:
+        description: Base image used by DockerfileModifier
+        required: true
+        type: string
+      ghcr_repo:
+        description: GHCR repository
+        required: true
+        type: string
+      dockerhub_repo:
+        description: Docker Hub repository
+        required: true
+        type: string
+      default_platforms:
+        description: Build platforms
+        required: true
+        type: string
+    secrets:
+      DOCKERHUB_USERNAME:
+        description: Docker Hub username
+        required: true
+      DOCKERHUB_TOKEN:
+        description: Docker Hub token
+        required: true
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  build-versions:
+    name: Build ${{ matrix.version }}
+    runs-on: ${{ inputs.runner_version || 'ubuntu-latest' }}
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        include: ${{ fromJson(inputs.versions_json) }}
+
+    steps:
+      - name: Sanitize inputs (trim whitespace)
+        id: sanitize
+        shell: bash
+        run: |
+          set -euo pipefail
+          trim() { local v="$*"; v="${v#"${v%%[![:space:]]*}"}"; v="${v%"${v##*[![:space:]]}"}" ; printf '%s' "$v"; }
+          echo "ghcr_repo=$(trim '${{ inputs.ghcr_repo }}')" >> "$GITHUB_OUTPUT"
+          echo "dockerhub_repo=$(trim '${{ inputs.dockerhub_repo }}')" >> "$GITHUB_OUTPUT"
+          echo "default_platforms=$(trim '${{ inputs.default_platforms }}')" >> "$GITHUB_OUTPUT"
+          echo "base_image_default=$(trim '${{ inputs.base_image_default }}')" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Login to Docker Hub
+        uses: docker/login-action@v4
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Login to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+
+      - name: Check existing tags
+        id: check-existing
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          RESULT="$({ FORCE_BUILD="${{ inputs.force_build }}" GHCR_REPO="${{ steps.sanitize.outputs.ghcr_repo }}" VERSION="${{ matrix.version }}" bash .github/scripts/check-existing-tags.sh; } )"
+          echo "$RESULT"
+          SKIP_LINE="$(echo "$RESULT" | awk -F= '/^skip_build=/{print $0}' | tail -n1)"
+          if [[ -z "$SKIP_LINE" ]]; then
+            echo "check-existing-tags did not return skip_build output" >&2
+            exit 1
+          fi
+          echo "$SKIP_LINE" >> "$GITHUB_OUTPUT"
+
+      - name: Generate Dockerfile via DockerfileModifier.sh
+        if: steps.check-existing.outputs.skip_build != 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "Using base image: ${{ steps.sanitize.outputs.base_image_default }}"
+          mkdir -p resources/build_data
+          echo "${{ steps.sanitize.outputs.base_image_default }}" > ./resources/build_data/base-image
+          echo "${{ matrix.version }}" > ./resources/build_data/version
+          touch ./resources/build_data/build
+          bash ./DockerfileModifier.sh
+          test -f ./Dockerfile.vllm-cpu
+
+      - name: Build and push image
+        if: steps.check-existing.outputs.skip_build != 'true'
+        uses: docker/build-push-action@v6
+        timeout-minutes: 120
+        with:
+          context: .
+          file: ./Dockerfile.vllm-cpu
+          push: true
+          platforms: ${{ steps.sanitize.outputs.default_platforms }}
+          tags: |
+            ${{ steps.sanitize.outputs.ghcr_repo }}:${{ matrix.image_tag }}
+            ${{ steps.sanitize.outputs.ghcr_repo }}:${{ matrix.version }}
+          cache-from: |
+            type=registry,ref=${{ steps.sanitize.outputs.ghcr_repo }}:buildcache-${{ matrix.version }}
+            type=registry,ref=${{ steps.sanitize.outputs.dockerhub_repo }}:buildcache-${{ matrix.version }}
+          cache-to: |
+            type=registry,ref=${{ steps.sanitize.outputs.ghcr_repo }}:buildcache-${{ matrix.version }},mode=max
+            type=registry,ref=${{ steps.sanitize.outputs.dockerhub_repo }}:buildcache-${{ matrix.version }},mode=max
+          build-args: |
+            BUILDKIT_INLINE_CACHE=1
+            BASE_IMAGE=${{ steps.sanitize.outputs.base_image_default }}
+            VLLM_VERSION=${{ matrix.version }}
+          provenance: false
+          sbom: false
