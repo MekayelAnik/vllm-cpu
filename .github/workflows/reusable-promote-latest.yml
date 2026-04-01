@@ -1,0 +1,92 @@
+name: Reusable Promote Latest
+
+on:
+  workflow_call:
+    inputs:
+      latest_version:
+        description: Latest stable version
+        required: true
+        type: string
+      date_tag:
+        description: Date tag suffix
+        required: true
+        type: string
+      ghcr_repo:
+        description: GHCR repository
+        required: true
+        type: string
+      dockerhub_repo:
+        description: Docker Hub repository
+        required: true
+        type: string
+      force_latest:
+        description: Skip digest check and force re-promote latest
+        required: false
+        type: boolean
+        default: false
+      force_stable:
+        description: Skip 5-day soak and force promote to stable
+        required: false
+        type: boolean
+        default: false
+      runner_version:
+        description: 'GitHub Actions runner version (e.g. ubuntu-24.04)'
+        required: false
+        type: string
+        default: 'ubuntu-24.04'
+    secrets:
+      DOCKERHUB_USERNAME:
+        description: Docker Hub username
+        required: true
+      DOCKERHUB_TOKEN:
+        description: Docker Hub token
+        required: true
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  promote-latest:
+    name: Promote latest tag
+    runs-on: ${{ inputs.runner_version || 'ubuntu-latest' }}
+    if: inputs.latest_version != ''
+    steps:
+      - name: Sanitize inputs (trim whitespace)
+        id: sanitize
+        shell: bash
+        run: |
+          set -euo pipefail
+          trim() { local v="$*"; v="${v#"${v%%[![:space:]]*}"}"; v="${v%"${v##*[![:space:]]}"}" ; printf '%s' "$v"; }
+          echo "ghcr_repo=$(trim '${{ inputs.ghcr_repo }}')" >> "$GITHUB_OUTPUT"
+          echo "dockerhub_repo=$(trim '${{ inputs.dockerhub_repo }}')" >> "$GITHUB_OUTPUT"
+          echo "latest_version=$(trim '${{ inputs.latest_version }}')" >> "$GITHUB_OUTPUT"
+          echo "date_tag=$(trim '${{ inputs.date_tag }}')" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup promotion environment
+        uses: ./.github/actions/setup-build-env
+        with:
+          do_checkout: 'false'
+          setup_qemu: 'false'
+          setup_buildx: 'true'
+          login_dockerhub: 'true'
+          login_ghcr: 'true'
+          dockerhub_username: ${{ secrets.DOCKERHUB_USERNAME }}
+          dockerhub_token: ${{ secrets.DOCKERHUB_TOKEN }}
+          ghcr_actor: ${{ github.actor }}
+          ghcr_token: ${{ github.token }}
+
+      - name: Promote latest and verify parity
+        uses: ./.github/actions/promote-latest
+        with:
+          latest_version: ${{ steps.sanitize.outputs.latest_version }}
+          date_tag: ${{ steps.sanitize.outputs.date_tag }}
+          ghcr_repo: ${{ steps.sanitize.outputs.ghcr_repo }}
+          dockerhub_repo: ${{ steps.sanitize.outputs.dockerhub_repo }}
+          gh_token: ${{ github.token }}
+          github_repository: ${{ github.repository }}
+          force_latest: ${{ inputs.force_latest && 'true' || 'false' }}
+          force_stable: ${{ inputs.force_stable && 'true' || 'false' }}

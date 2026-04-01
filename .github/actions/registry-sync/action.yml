@@ -1,0 +1,25 @@
+name: Registry Sync
+description: Synchronize Docker image tags between GHCR and Docker Hub
+
+inputs:
+  dockerhub_repo:
+    description: Docker Hub repository (e.g., username/image)
+    required: true
+  ghcr_repo:
+    description: GHCR repository (e.g., ghcr.io/owner/image)
+    required: true
+  tags:
+    description: Comma-separated list of tags to sync
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Sync images across registries
+      shell: bash
+      env:
+        DOCKERHUB_REPO: ${{ inputs.dockerhub_repo }}
+        GHCR_REPO: ${{ inputs.ghcr_repo }}
+        TAGS: ${{ inputs.tags }}
+      run: |
+        bash .github/scripts/registry-sync.sh

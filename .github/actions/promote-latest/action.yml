@@ -1,0 +1,484 @@
+name: Promote Latest Tag
+description: Promote latest tag from GHCR source and verify GHCR/Docker Hub platform parity
+
+inputs:
+  latest_version:
+    description: Latest stable version (e.g. 1.2.3)
+    required: true
+  date_tag:
+    description: Date tag suffix (e.g. DDMMYYYY)
+    required: true
+  ghcr_repo:
+    description: GHCR repository (e.g., ghcr.io/owner/image)
+    required: true
+  dockerhub_repo:
+    description: Docker Hub repository (e.g., owner/image)
+    required: true
+  gh_token:
+    description: GitHub token for reading pipeline-state branch
+    required: true
+  github_repository:
+    description: GitHub repository (owner/repo) for API calls
+    required: true
+  force_latest:
+    description: Skip digest check and force re-promote latest
+    required: false
+    default: 'false'
+  force_stable:
+    description: Skip 5-day soak and force promote to stable
+    required: false
+    default: 'false'
+
+outputs:
+  source_tag_ghcr:
+    description: Resolved GHCR source tag used for latest promotion
+    value: ${{ steps.promote.outputs.source_tag_ghcr }}
+  skipped:
+    description: Whether promotion was skipped because all registries were already up to date
+    value: ${{ steps.promote.outputs.skipped }}
+  stable_promoted:
+    description: Whether the version was promoted to stable
+    value: ${{ steps.promote-stable.outputs.stable_promoted }}
+
+runs:
+  using: composite
+  steps:
+    - name: Promote latest and verify parity
+      id: promote
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        # --- Retry helpers ---
+
+        run_with_retry() {
+          local description="$1"
+          shift
+          local attempts=5
+          local delay=2
+          local attempt
+          local err_file
+          err_file="$(mktemp)"
+
+          for attempt in $(seq 1 "$attempts"); do
+            if "$@" 2>"$err_file"; then
+              rm -f "$err_file"
+              return 0
+            fi
+
+            if [[ "$attempt" -lt "$attempts" ]]; then
+              if grep -qiE '429|toomanyrequests|rate limit' "$err_file"; then
+                echo "Rate limit detected for ${description}" >&2
+                rm -f "$err_file"
+                return 2
+              fi
+              echo "Retry ${attempt}/${attempts} for ${description} failed. Sleeping ${delay}s..." >&2
+              sleep "$delay"
+              delay=$((delay * 2))
+            fi
+          done
+
+          echo "${description} failed after ${attempts} attempts" >&2
+          if [[ -s "$err_file" ]]; then
+            echo "Last stderr output:" >&2
+            cat "$err_file" >&2
+            if grep -qiE '429|toomanyrequests|rate limit' "$err_file"; then
+              rm -f "$err_file"
+              return 2
+            fi
+          fi
+          rm -f "$err_file"
+          return 1
+        }
+
+        # --- Digest helpers (HEAD-only via crane, fallback to imagetools) ---
+
+        declare -A DIGEST_CACHE
+        declare -A DIGEST_RC_CACHE
+
+        # Get digest with a single HEAD request (crane) or full inspect (fallback).
+        cached_digest() {
+          local ref="$1"
+
+          if [[ -n "${DIGEST_RC_CACHE[$ref]+x}" ]]; then
+            if [[ "${DIGEST_RC_CACHE[$ref]}" -ne 0 ]]; then
+              return "${DIGEST_RC_CACHE[$ref]}"
+            fi
+            printf '%s' "${DIGEST_CACHE[$ref]}"
+            return 0
+          fi
+
+          local digest="" err_file rc=0
+          err_file="$(mktemp)"
+          set +e
+          if command -v crane >/dev/null 2>&1; then
+            digest="$(crane digest "$ref" 2>"$err_file")"
+            rc=$?
+          else
+            digest="$(docker buildx imagetools inspect "$ref" 2>"$err_file" | awk '/^Digest:/{print $2; exit}')"
+            rc=$?
+          fi
+          set -e
+
+          if [[ "$rc" -ne 0 ]] && grep -qiE '429|toomanyrequests|rate.limit' "$err_file" 2>/dev/null; then
+            rm -f "$err_file"
+            DIGEST_RC_CACHE["$ref"]=2
+            return 2
+          fi
+          rm -f "$err_file"
+
+          DIGEST_RC_CACHE["$ref"]=$rc
+          if [[ "$rc" -eq 0 && -n "$digest" ]]; then
+            DIGEST_CACHE["$ref"]="$digest"
+            printf '%s' "$digest"
+          fi
+          return "$rc"
+        }
+
+        invalidate_digest_cache() {
+          local ref="$1"
+          unset 'DIGEST_CACHE['"$ref"']' 2>/dev/null || true
+          unset 'DIGEST_RC_CACHE['"$ref"']' 2>/dev/null || true
+        }
+
+        # Alias for backward compat
+        extract_digest() { cached_digest "$@"; }
+
+        # Cross-registry copy: crane copy (server-side) or imagetools create (fallback)
+        registry_copy() {
+          local src="$1" dst="$2"
+          if command -v crane >/dev/null 2>&1; then
+            crane copy "$src" "$dst"
+          else
+            docker buildx imagetools create -t "$dst" "$src" >/dev/null
+          fi
+        }
+
+        # Same-registry tag: crane tag (single PUT) or imagetools create (fallback)
+        registry_tag() {
+          local src="$1" dst_tag="$2"
+          local repo="${src%%:*}"
+          if command -v crane >/dev/null 2>&1; then
+            crane tag "$src" "$dst_tag"
+          else
+            docker buildx imagetools create -t "${repo}:${dst_tag}" "$src" >/dev/null
+          fi
+        }
+
+        # --- Main logic ---
+
+        LATEST_VERSION="${{ inputs.latest_version }}"
+        DATE_TAG="${{ inputs.date_tag }}"
+        GHCR_REPO="${{ inputs.ghcr_repo }}"
+        DOCKERHUB_REPO="${{ inputs.dockerhub_repo }}"
+
+        SOURCE_DATE_TAG="${LATEST_VERSION}-${DATE_TAG}"
+        SOURCE_FALLBACK_TAG="${LATEST_VERSION}"
+
+        # Step 1: Resolve source tag (HEAD-only existence + digest check)
+        SOURCE_TAG_GHCR=""
+        if cached_digest "${GHCR_REPO}:${SOURCE_DATE_TAG}" >/dev/null 2>&1; then
+          SOURCE_TAG_GHCR="$SOURCE_DATE_TAG"
+        elif cached_digest "${GHCR_REPO}:${SOURCE_FALLBACK_TAG}" >/dev/null 2>&1; then
+          SOURCE_TAG_GHCR="$SOURCE_FALLBACK_TAG"
+        else
+          echo "Could not resolve GHCR source tag for latest promotion" >&2
+          exit 1
+        fi
+
+        GHCR_SOURCE_DIGEST="$(cached_digest "${GHCR_REPO}:${SOURCE_TAG_GHCR}")"
+        echo "Source tag: ${SOURCE_TAG_GHCR} (digest: ${GHCR_SOURCE_DIGEST})"
+
+        # Step 2: Early-exit if GHCR latest already matches source (HEAD-only check)
+        GHCR_LATEST_DIGEST="$(cached_digest "${GHCR_REPO}:latest" || true)"
+
+        FORCE_LATEST="${{ inputs.force_latest }}"
+
+        if [[ "$FORCE_LATEST" == "true" ]]; then
+          echo "Force latest promotion requested — skipping digest check"
+        elif [[ -n "$GHCR_LATEST_DIGEST" && "$GHCR_SOURCE_DIGEST" == "$GHCR_LATEST_DIGEST" ]]; then
+          echo "GHCR latest already points to version ${LATEST_VERSION} (digest: ${GHCR_LATEST_DIGEST})"
+
+          # Check Docker Hub parity (HEAD-only, rate-limit tolerant)
+          set +e
+          DH_LATEST_DIGEST="$(cached_digest "${DOCKERHUB_REPO}:latest")"
+          dh_rc=$?
+          set -e
+
+          if [[ "$dh_rc" -eq 2 ]]; then
+            echo "::warning::Could not check Docker Hub latest due to rate limiting; GHCR is correct" >&2
+            echo "source_tag_ghcr=$SOURCE_TAG_GHCR" >> "$GITHUB_OUTPUT"
+            echo "skipped=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if [[ -n "$DH_LATEST_DIGEST" && "$GHCR_LATEST_DIGEST" == "$DH_LATEST_DIGEST" ]]; then
+            echo "Docker Hub latest also in sync (digest: ${DH_LATEST_DIGEST})"
+            echo "Skipping promotion — all registries already up to date"
+            echo "source_tag_ghcr=$SOURCE_TAG_GHCR" >> "$GITHUB_OUTPUT"
+            echo "skipped=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          else
+            echo "Docker Hub latest out of sync — will sync from GHCR latest"
+          fi
+        fi
+
+        # Step 3: Promote GHCR latest (crane tag = single PUT, no layer copy)
+        run_with_retry "promote ${GHCR_REPO}:latest" \
+          registry_tag "${GHCR_REPO}:${SOURCE_TAG_GHCR}" "latest"
+
+        # Sync Docker Hub latest (crane copy = server-side, only missing layers)
+        set +e
+        run_with_retry "promote ${DOCKERHUB_REPO}:latest" \
+          registry_copy "${GHCR_REPO}:latest" "${DOCKERHUB_REPO}:latest"
+        dh_promote_rc=$?
+        set -e
+
+        if [[ "$dh_promote_rc" -eq 2 ]]; then
+          echo "::warning::Docker Hub latest promotion skipped due to rate limiting; GHCR latest is correct" >&2
+        elif [[ "$dh_promote_rc" -ne 0 ]]; then
+          echo "::error::Failed to promote Docker Hub latest" >&2
+          exit 1
+        fi
+
+        # Step 4: Verify GHCR latest digest matches source (HEAD-only)
+        invalidate_digest_cache "${GHCR_REPO}:latest"
+
+        GHCR_LATEST_DIGEST_POST="$(cached_digest "${GHCR_REPO}:latest")"
+        if [[ -z "$GHCR_LATEST_DIGEST_POST" ]]; then
+          echo "GHCR digest resolution failed after promotion" >&2
+          exit 1
+        fi
+
+        if [[ "$GHCR_SOURCE_DIGEST" != "$GHCR_LATEST_DIGEST_POST" ]]; then
+          echo "GHCR latest digest does not match source after promotion" >&2
+          echo "Source digest: $GHCR_SOURCE_DIGEST" >&2
+          echo "Latest digest: $GHCR_LATEST_DIGEST_POST" >&2
+          exit 1
+        fi
+
+        # Digest match guarantees platform parity (same manifest = same platforms)
+        echo "GHCR verification passed: latest matches ${LATEST_VERSION} (digest: ${GHCR_LATEST_DIGEST_POST})"
+
+        # Step 5: Docker Hub verification (HEAD-only, rate-limit tolerant)
+        if [[ "$dh_promote_rc" -eq 0 ]]; then
+          invalidate_digest_cache "${DOCKERHUB_REPO}:latest"
+
+          set +e
+          DH_LATEST_DIGEST_POST="$(cached_digest "${DOCKERHUB_REPO}:latest")"
+          dh_verify_rc=$?
+          set -e
+
+          if [[ "$dh_verify_rc" -eq 2 ]]; then
+            echo "::warning::Docker Hub verification skipped due to rate limit; GHCR verification passed" >&2
+          elif [[ "$dh_verify_rc" -eq 0 && -n "$DH_LATEST_DIGEST_POST" ]]; then
+            echo "Docker Hub verification passed (digest: ${DH_LATEST_DIGEST_POST})"
+          else
+            echo "::warning::Docker Hub verification inconclusive but GHCR is correct" >&2
+          fi
+        fi
+
+        echo "Latest tag promotion completed for version ${LATEST_VERSION}"
+        echo "source_tag_ghcr=$SOURCE_TAG_GHCR" >> "$GITHUB_OUTPUT"
+        echo "skipped=false" >> "$GITHUB_OUTPUT"
+
+    - name: Promote stable if eligible (5-day rule)
+      id: promote-stable
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.gh_token }}
+      run: |
+        set -euo pipefail
+
+        LATEST_VERSION="${{ inputs.latest_version }}"
+        GHCR_REPO="${{ inputs.ghcr_repo }}"
+        DOCKERHUB_REPO="${{ inputs.dockerhub_repo }}"
+        REPO="${{ inputs.github_repository }}"
+
+        # --- Retry helper (same as promote step) ---
+
+        run_with_retry() {
+          local description="$1"
+          shift
+          local attempts=5
+          local delay=2
+          local attempt
+          local err_file
+          err_file="$(mktemp)"
+
+          for attempt in $(seq 1 "$attempts"); do
+            if "$@" 2>"$err_file"; then
+              rm -f "$err_file"
+              return 0
+            fi
+
+            if [[ "$attempt" -lt "$attempts" ]]; then
+              if grep -qiE '429|toomanyrequests|rate limit' "$err_file"; then
+                echo "Rate limit detected for ${description}" >&2
+                rm -f "$err_file"
+                return 2
+              fi
+              echo "Retry ${attempt}/${attempts} for ${description} failed. Sleeping ${delay}s..." >&2
+              sleep "$delay"
+              delay=$((delay * 2))
+            fi
+          done
+
+          echo "${description} failed after ${attempts} attempts" >&2
+          if [[ -s "$err_file" ]]; then
+            echo "Last stderr output:" >&2
+            cat "$err_file" >&2
+            if grep -qiE '429|toomanyrequests|rate limit' "$err_file"; then
+              rm -f "$err_file"
+              return 2
+            fi
+          fi
+          rm -f "$err_file"
+          return 1
+        }
+
+        # --- Read state from pipeline-state branch ---
+
+        STATE_JSON=""
+        STATE_JSON="$(gh api "repos/${REPO}/contents/state.json?ref=pipeline-state" --jq '.content' 2>/dev/null | base64 -d 2>/dev/null || echo "")"
+
+        if [[ -z "$STATE_JSON" ]]; then
+          echo "Could not read state.json from pipeline-state branch — skipping stable promotion"
+          echo "stable_promoted=false" >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
+
+        STORED_VERSION="$(echo "$STATE_JSON" | jq -r '.npm_latest_version // ""')"
+        LATEST_SINCE="$(echo "$STATE_JSON" | jq -r '.latest_version_since // ""')"
+
+        if [[ -z "$LATEST_SINCE" ]]; then
+          echo "No latest_version_since in state — skipping stable promotion (will be set on next state update)"
+          echo "stable_promoted=false" >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
+
+        # Verify the state version matches the version we are promoting
+        if [[ "$STORED_VERSION" != "$LATEST_VERSION" ]]; then
+          echo "State version ($STORED_VERSION) differs from promote version ($LATEST_VERSION) — skipping stable promotion"
+          echo "stable_promoted=false" >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
+
+        # --- Check 5-day eligibility ---
+
+        SINCE_EPOCH="$(date -d "$LATEST_SINCE" +%s 2>/dev/null || echo 0)"
+        NOW_EPOCH="$(date +%s)"
+
+        if [[ "$SINCE_EPOCH" -eq 0 ]]; then
+          echo "Could not parse latest_version_since ($LATEST_SINCE) — skipping stable promotion"
+          echo "stable_promoted=false" >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
+
+        DAYS_AS_LATEST=$(( (NOW_EPOCH - SINCE_EPOCH) / 86400 ))
+        FORCE_STABLE="${{ inputs.force_stable }}"
+        echo "Version $LATEST_VERSION has been :latest for $DAYS_AS_LATEST day(s) (since $LATEST_SINCE)"
+
+        if [[ "$FORCE_STABLE" == "true" ]]; then
+          echo "Force stable promotion requested — skipping 5-day soak"
+        elif [[ "$DAYS_AS_LATEST" -lt 5 ]]; then
+          echo "Not eligible for :stable promotion (need 5 days, has $DAYS_AS_LATEST)"
+          echo "stable_promoted=false" >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
+
+        echo "Eligible for :stable promotion ($DAYS_AS_LATEST days as :latest)"
+
+        # --- Early-exit if :stable already points to :latest (HEAD-only checks) ---
+
+        # crane digest helper for this step (no shared cache with promote step)
+        get_digest() {
+          if command -v crane >/dev/null 2>&1; then
+            crane digest "$1" 2>/dev/null
+          else
+            docker buildx imagetools inspect "$1" 2>/dev/null | awk '/^Digest:/{print $2; exit}'
+          fi
+        }
+
+        # crane copy / tag helpers
+        registry_copy_stable() {
+          local src="$1" dst="$2"
+          if command -v crane >/dev/null 2>&1; then
+            crane copy "$src" "$dst"
+          else
+            docker buildx imagetools create -t "$dst" "$src" >/dev/null
+          fi
+        }
+
+        registry_tag_stable() {
+          local src="$1" dst_tag="$2"
+          if command -v crane >/dev/null 2>&1; then
+            crane tag "$src" "$dst_tag"
+          else
+            local repo="${src%%:*}"
+            docker buildx imagetools create -t "${repo}:${dst_tag}" "$src" >/dev/null
+          fi
+        }
+
+        GHCR_LATEST_DIGEST="$(get_digest "${GHCR_REPO}:latest" || true)"
+        GHCR_STABLE_DIGEST="$(get_digest "${GHCR_REPO}:stable" || true)"
+
+        if [[ "$FORCE_STABLE" == "true" ]]; then
+          echo "Force stable promotion requested — skipping digest check"
+        elif [[ -n "$GHCR_LATEST_DIGEST" && -n "$GHCR_STABLE_DIGEST" && "$GHCR_LATEST_DIGEST" == "$GHCR_STABLE_DIGEST" ]]; then
+          set +e
+          DH_STABLE_DIGEST="$(get_digest "${DOCKERHUB_REPO}:stable")"
+          dh_rc=$?
+          set -e
+
+          if [[ "$dh_rc" -eq 0 && -n "$DH_STABLE_DIGEST" && "$GHCR_STABLE_DIGEST" == "$DH_STABLE_DIGEST" ]]; then
+            echo "Skipping :stable promotion — all registries already up to date (digest: ${GHCR_STABLE_DIGEST})"
+            echo "stable_promoted=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          elif [[ "$dh_rc" -ne 0 ]]; then
+            echo "::warning::Could not check Docker Hub :stable; GHCR :stable is correct"
+            echo "stable_promoted=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          else
+            echo "Docker Hub :stable out of sync — will sync from GHCR"
+          fi
+        fi
+
+        # --- Promote GHCR :stable from :latest (crane tag = single PUT) ---
+
+        echo "Promoting ${GHCR_REPO}:stable from :latest"
+        run_with_retry "promote ${GHCR_REPO}:stable" \
+          registry_tag_stable "${GHCR_REPO}:latest" "stable"
+
+        # --- Sync Docker Hub :stable (crane copy = server-side) ---
+
+        set +e
+        run_with_retry "promote ${DOCKERHUB_REPO}:stable" \
+          registry_copy_stable "${GHCR_REPO}:stable" "${DOCKERHUB_REPO}:stable"
+        dh_promote_rc=$?
+        set -e
+
+        if [[ "$dh_promote_rc" -eq 2 ]]; then
+          echo "::warning::Docker Hub :stable promotion skipped due to rate limiting; GHCR :stable is correct"
+        elif [[ "$dh_promote_rc" -ne 0 ]]; then
+          echo "::error::Failed to promote Docker Hub :stable"
+          exit 1
+        fi
+
+        # --- Verify GHCR :stable digest (HEAD-only) ---
+
+        GHCR_STABLE_DIGEST_POST="$(get_digest "${GHCR_REPO}:stable" || true)"
+        if [[ -z "$GHCR_STABLE_DIGEST_POST" ]]; then
+          echo "GHCR :stable digest resolution failed after promotion" >&2
+          exit 1
+        fi
+
+        if [[ -n "$GHCR_LATEST_DIGEST" && "$GHCR_LATEST_DIGEST" != "$GHCR_STABLE_DIGEST_POST" ]]; then
+          echo "GHCR :stable digest does not match :latest after promotion" >&2
+          echo ":latest digest: $GHCR_LATEST_DIGEST" >&2
+          echo ":stable digest: $GHCR_STABLE_DIGEST_POST" >&2
+          exit 1
+        fi
+
+        echo "Stable tag promotion completed for version ${LATEST_VERSION} (digest: ${GHCR_STABLE_DIGEST_POST})"
+        echo "stable_promoted=true" >> "$GITHUB_OUTPUT"

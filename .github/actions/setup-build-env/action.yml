@@ -1,0 +1,117 @@
+name: Setup Build Environment
+description: Standard setup for workflow jobs (checkout, qemu, buildx, registry login)
+
+inputs:
+  do_checkout:
+    description: Run actions/checkout
+    required: false
+    default: 'true'
+  setup_qemu:
+    description: Run docker/setup-qemu-action
+    required: false
+    default: 'true'
+  setup_buildx:
+    description: Run docker/setup-buildx-action
+    required: false
+    default: 'true'
+  login_dockerhub:
+    description: Login to Docker Hub
+    required: false
+    default: 'true'
+  login_ghcr:
+    description: Login to GHCR
+    required: false
+    default: 'true'
+  dockerhub_username:
+    description: Docker Hub username
+    required: false
+    default: ''
+  dockerhub_token:
+    description: Docker Hub token
+    required: false
+    default: ''
+  ghcr_actor:
+    description: GHCR actor username
+    required: false
+    default: ''
+  ghcr_token:
+    description: GHCR token
+    required: false
+    default: ''
+  install_crane:
+    description: Install crane CLI for efficient registry operations
+    required: false
+    default: 'true'
+
+runs:
+  using: composite
+  steps:
+    - name: Checkout
+      if: inputs.do_checkout == 'true'
+      uses: actions/checkout@v4
+
+    - name: Set up QEMU (all non-native — amd64 is native on GHA runners)
+      if: inputs.setup_qemu == 'true'
+      uses: docker/setup-qemu-action@v4
+      with:
+        platforms: arm64,arm,s390x,ppc64le,riscv64,mips64le
+
+    - name: Set up Docker Buildx (tuned for CI)
+      if: inputs.setup_buildx == 'true'
+      uses: docker/setup-buildx-action@v4
+      with:
+        driver-opts: |
+          image=moby/buildkit:master
+          network=host
+        buildkitd-flags: --allow-insecure-entitlement network.host
+        buildkitd-config-inline: |
+          [dns]
+            nameservers = ["1.1.1.1", "76.76.2.0", "95.161.161.161", "8.8.8.8"]
+            options = ["ndots:0", "attempts:2", "timeout:3"]
+          [history]
+            maxAge = 0
+            maxEntries = 0
+          [worker.oci]
+            max-parallelism = 4
+            gc = true
+            reservedSpace = "2GB"
+            maxUsedSpace = "12GB"
+            minFreeSpace = "2GB"
+            cniPoolSize = 16
+            [[worker.oci.gcpolicy]]
+              keepBytes = 4000000000
+              keepDuration = 86400
+              filters = ["type==source.local", "type==exec.cachemount", "type==source.git.checkout"]
+            [[worker.oci.gcpolicy]]
+              all = true
+              keepBytes = 8000000000
+          [registry."docker.io"]
+            mirrors = ["mirror.gcr.io"]
+
+    - name: Login registries
+      if: inputs.login_dockerhub == 'true' || inputs.login_ghcr == 'true'
+      uses: ./.github/actions/registry-login
+      with:
+        dockerhub_username: ${{ inputs.dockerhub_username }}
+        dockerhub_token: ${{ inputs.dockerhub_token }}
+        ghcr_actor: ${{ inputs.ghcr_actor }}
+        ghcr_token: ${{ inputs.ghcr_token }}
+        push_to_dockerhub: ${{ inputs.login_dockerhub }}
+        push_to_ghcr: ${{ inputs.login_ghcr }}
+
+    - name: Install crane (API-efficient registry tool)
+      if: inputs.install_crane != 'false'
+      shell: bash
+      run: |
+        set -euo pipefail
+        ARCH="$(uname -m)"
+        case "$ARCH" in
+          x86_64)        CRANE_ARCH="x86_64" ;;
+          aarch64|arm64) CRANE_ARCH="arm64" ;;
+          riscv64)       CRANE_ARCH="riscv64" ;;
+          *)             echo "crane: unsupported arch $ARCH, skipping"; exit 0 ;;
+        esac
+        CRANE_VERSION="$(curl -fsSL https://api.github.com/repos/google/go-containerregistry/releases/latest | jq -r .tag_name)"
+        curl -fsSL "https://github.com/google/go-containerregistry/releases/download/${CRANE_VERSION}/go-containerregistry_Linux_${CRANE_ARCH}.tar.gz" \
+          | tar xzf - -C /usr/local/bin crane
+        echo "Installed crane ${CRANE_VERSION} (${CRANE_ARCH})"

@@ -3,15 +3,15 @@ name: Reusable Build Versions
 on:
   workflow_call:
     inputs:
-      runner_version:
-        description: GitHub Actions runner version
-        required: false
-        type: string
-        default: 'ubuntu-24.04'
       versions_json:
         description: JSON matrix include payload for versions
         required: true
         type: string
+      build_profile:
+        description: Build profile
+        required: false
+        type: string
+        default: production
       force_build:
         description: Force build even if tags may already exist
         required: false
@@ -30,9 +30,44 @@ on:
         required: true
         type: string
       default_platforms:
-        description: Build platforms
+        description: Build platforms (informational — actual platforms defined in matrix)
         required: true
         type: string
+      export_cache_concurrency:
+        description: Buildx export cache concurrency
+        required: false
+        type: string
+        default: '4'
+      export_layers_concurrency:
+        description: Buildx export layers concurrency
+        required: false
+        type: string
+        default: '4'
+      buildkit_step_log_max_size:
+        description: BuildKit step log max size
+        required: false
+        type: string
+        default: '50000000'
+      buildkit_step_log_max_speed:
+        description: BuildKit step log max speed
+        required: false
+        type: string
+        default: '100000000'
+      buildkit_progress:
+        description: BuildKit progress mode
+        required: false
+        type: string
+        default: plain
+      docker_buildkit_inline_cache:
+        description: BuildKit inline cache
+        required: false
+        type: string
+        default: '1'
+      runner_version:
+        description: 'GitHub Actions runner version (e.g. ubuntu-24.04). ARM derived as {version}-arm.'
+        required: false
+        type: string
+        default: 'ubuntu-24.04'
     secrets:
       DOCKERHUB_USERNAME:
         description: Docker Hub username
@@ -46,14 +81,102 @@ permissions:
   packages: write
 
 jobs:
-  build-versions:
-    name: Build ${{ matrix.version }}
+  # ── Prepare cross-product matrix: versions × platforms ──
+  prepare-matrix:
+    name: Prepare build matrix
     runs-on: ${{ inputs.runner_version || 'ubuntu-latest' }}
+    outputs:
+      matrix: ${{ steps.generate.outputs.matrix }}
+      versions: ${{ steps.generate.outputs.versions }}
+    steps:
+      - name: Generate version × platform matrix
+        id: generate
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          VERSIONS_JSON='${{ inputs.versions_json }}'
+          RUNNER_BASE="${{ inputs.runner_version || 'ubuntu-24.04' }}"
+          REQUESTED_PLATFORMS="${{ inputs.default_platforms }}"
+
+          # Platform → runner affinity lookup table
+          # Format: platform|runner_suffix|slug
+          # Runner affinity: ARM32 → ARM64 runner (native compat),
+          # i386 → amd64 (native compat), others → amd64 (QEMU)
+          PLATFORM_MAP="
+          linux/amd64||amd64
+          linux/arm64|-arm|arm64
+          linux/arm/v7|-arm|armv7
+          linux/arm/v6|-arm|armv6
+          linux/riscv64|-riscv|riscv64
+          linux/386||386
+          linux/s390x||s390x
+          linux/ppc64le||ppc64le
+          linux/mips64le||mips64le
+          "
+
+          # Build platform JSON array from DEFAULT_PLATFORMS using the lookup table
+          PLATFORMS="["
+          first=true
+          IFS=',' read -ra REQUESTED <<< "$REQUESTED_PLATFORMS"
+          for req in "${REQUESTED[@]}"; do
+            req="$(echo "$req" | xargs)"
+            [[ -z "$req" ]] && continue
+            matched=false
+            while IFS='|' read -r plat suffix slug; do
+              plat="$(echo "$plat" | xargs)"
+              [[ -z "$plat" ]] && continue
+              if [[ "$req" == "$plat" ]]; then
+                $first || PLATFORMS="${PLATFORMS},"
+                first=false
+                PLATFORMS="${PLATFORMS}
+            {\"platform\":\"${plat}\",\"runner\":\"${RUNNER_BASE}${suffix}\",\"slug\":\"${slug}\"}"
+                matched=true
+                break
+              fi
+            done <<< "$PLATFORM_MAP"
+            if [[ "$matched" == "false" ]]; then
+              echo "::warning::Unknown platform '$req' — skipping (not in affinity table)"
+            fi
+          done
+          PLATFORMS="${PLATFORMS}
+          ]"
+
+          echo "Platforms: $(echo "$PLATFORMS" | jq -c '[ .[].platform ]')"
+
+          # Cross-product: each version × each platform
+          MATRIX=$(echo "$VERSIONS_JSON" | jq -c --argjson platforms "$PLATFORMS" '
+            [.[] as $v | $platforms[] as $p | {
+              version: $v.version,
+              image_tag: $v.image_tag,
+              promote_latest: $v.promote_latest,
+              platform: $p.platform,
+              runner: $p.runner,
+              slug: $p.slug
+            }]
+          ')
+
+          # Deduplicated version list for merge job
+          VERSIONS=$(echo "$VERSIONS_JSON" | jq -c '[.[] | {version, image_tag, promote_latest}]')
+
+          echo "matrix={\"include\":$MATRIX}" >> "$GITHUB_OUTPUT"
+          echo "versions={\"include\":$VERSIONS}" >> "$GITHUB_OUTPUT"
+
+          COUNT=$(echo "$MATRIX" | jq length)
+          echo "Generated $COUNT build jobs (versions × platforms)"
+
+  # ── Per-platform build (native or QEMU-emulated) ──
+  build-platform:
+    name: Build ${{ matrix.version }} (${{ matrix.slug }})
+    needs: [prepare-matrix]
+    runs-on: ${{ matrix.runner }}
+    concurrency:
+      group: build-${{ matrix.version }}-${{ matrix.slug }}
+      cancel-in-progress: false
     strategy:
       fail-fast: false
-      max-parallel: 1
-      matrix:
-        include: ${{ fromJson(inputs.versions_json) }}
+      max-parallel: 8
+      matrix: ${{ fromJson(needs.prepare-matrix.outputs.matrix) }}
 
     steps:
       - name: Sanitize inputs (trim whitespace)
@@ -64,30 +187,29 @@ jobs:
           trim() { local v="$*"; v="${v#"${v%%[![:space:]]*}"}"; v="${v%"${v##*[![:space:]]}"}" ; printf '%s' "$v"; }
           echo "ghcr_repo=$(trim '${{ inputs.ghcr_repo }}')" >> "$GITHUB_OUTPUT"
           echo "dockerhub_repo=$(trim '${{ inputs.dockerhub_repo }}')" >> "$GITHUB_OUTPUT"
-          echo "default_platforms=$(trim '${{ inputs.default_platforms }}')" >> "$GITHUB_OUTPUT"
           echo "base_image_default=$(trim '${{ inputs.base_image_default }}')" >> "$GITHUB_OUTPUT"
 
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v4
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v4
-
-      - name: Login to Docker Hub
-        uses: docker/login-action@v4
+      - name: Resolve build profile
+        id: profile
+        uses: ./.github/actions/resolve-build-profile
         with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
+          build_profile: ${{ inputs.build_profile }}
 
-      - name: Login to GHCR
-        uses: docker/login-action@v4
+      - name: Setup build environment
+        uses: ./.github/actions/setup-build-env
         with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ github.token }}
+          do_checkout: 'false'
+          setup_qemu: 'true'
+          setup_buildx: 'true'
+          login_dockerhub: 'true'
+          login_ghcr: 'true'
+          dockerhub_username: ${{ secrets.DOCKERHUB_USERNAME }}
+          dockerhub_token: ${{ secrets.DOCKERHUB_TOKEN }}
+          ghcr_actor: ${{ github.actor }}
+          ghcr_token: ${{ github.token }}
 
       - name: Check existing tags
         id: check-existing
@@ -117,27 +239,134 @@ jobs:
           bash ./DockerfileModifier.sh
           test -f ./Dockerfile.vllm-cpu
 
-      - name: Build and push image
+      - name: Build and push by digest
+        id: build
         if: steps.check-existing.outputs.skip_build != 'true'
-        uses: docker/build-push-action@v6
         timeout-minutes: 120
+        env:
+          BUILDKIT_STEP_LOG_MAX_SIZE: ${{ inputs.buildkit_step_log_max_size }}
+          BUILDKIT_STEP_LOG_MAX_SPEED: ${{ inputs.buildkit_step_log_max_speed }}
+          BUILDKIT_PROGRESS: ${{ inputs.buildkit_progress }}
+          DOCKER_BUILDKIT_INLINE_CACHE: ${{ inputs.docker_buildkit_inline_cache }}
+        uses: docker/build-push-action@v6
         with:
           context: .
           file: ./Dockerfile.vllm-cpu
-          push: true
-          platforms: ${{ steps.sanitize.outputs.default_platforms }}
-          tags: |
-            ${{ steps.sanitize.outputs.ghcr_repo }}:${{ matrix.image_tag }}
-            ${{ steps.sanitize.outputs.ghcr_repo }}:${{ matrix.version }}
-          cache-from: |
-            type=registry,ref=${{ steps.sanitize.outputs.ghcr_repo }}:buildcache-${{ matrix.version }}
-            type=registry,ref=${{ steps.sanitize.outputs.dockerhub_repo }}:buildcache-${{ matrix.version }}
-          cache-to: |
-            type=registry,ref=${{ steps.sanitize.outputs.ghcr_repo }}:buildcache-${{ matrix.version }},mode=max
-            type=registry,ref=${{ steps.sanitize.outputs.dockerhub_repo }}:buildcache-${{ matrix.version }},mode=max
+          platforms: ${{ matrix.platform }}
+          outputs: type=image,name=${{ steps.sanitize.outputs.ghcr_repo }},push-by-digest=true,name-canonical=true,push=true,oci-mediatypes=true,${{ steps.profile.outputs.compression_params }},export-cache-concurrency=${{ inputs.export_cache_concurrency }},export-layers-concurrency=${{ inputs.export_layers_concurrency }}
+          cache-from: type=gha,scope=vllm-cpu-${{ matrix.version }}-${{ matrix.slug }}
+          cache-to: type=gha,scope=vllm-cpu-${{ matrix.version }}-${{ matrix.slug }},mode=max,compression=zstd
           build-args: |
             BUILDKIT_INLINE_CACHE=1
-            BASE_IMAGE=${{ steps.sanitize.outputs.base_image_default }}
             VLLM_VERSION=${{ matrix.version }}
+            BASE_IMAGE=${{ steps.sanitize.outputs.base_image_default }}
           provenance: false
           sbom: false
+
+      - name: Export digest
+        if: steps.check-existing.outputs.skip_build != 'true'
+        shell: bash
+        run: |
+          mkdir -p /tmp/digests
+          digest="${{ steps.build.outputs.digest }}"
+          echo "Platform ${{ matrix.slug }} digest: $digest"
+          echo "$digest" > "/tmp/digests/${{ matrix.slug }}"
+
+      - name: Upload digest
+        if: steps.check-existing.outputs.skip_build != 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: digest-${{ matrix.version }}-${{ matrix.slug }}
+          path: /tmp/digests/${{ matrix.slug }}
+          if-no-files-found: error
+          retention-days: 1
+
+  # ── Merge per-platform digests into multi-arch manifest ──
+  merge-manifest:
+    name: Merge ${{ matrix.version }}
+    needs: [prepare-matrix, build-platform]
+    runs-on: ${{ inputs.runner_version || 'ubuntu-latest' }}
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJson(needs.prepare-matrix.outputs.versions) }}
+
+    steps:
+      - name: Sanitize inputs
+        id: sanitize
+        shell: bash
+        run: |
+          set -euo pipefail
+          trim() { local v="$*"; v="${v#"${v%%[![:space:]]*}"}"; v="${v%"${v##*[![:space:]]}"}" ; printf '%s' "$v"; }
+          echo "ghcr_repo=$(trim '${{ inputs.ghcr_repo }}')" >> "$GITHUB_OUTPUT"
+          echo "dockerhub_repo=$(trim '${{ inputs.dockerhub_repo }}')" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup build environment
+        uses: ./.github/actions/setup-build-env
+        with:
+          do_checkout: 'false'
+          setup_qemu: 'true'
+          setup_buildx: 'true'
+          login_dockerhub: 'true'
+          login_ghcr: 'true'
+          dockerhub_username: ${{ secrets.DOCKERHUB_USERNAME }}
+          dockerhub_token: ${{ secrets.DOCKERHUB_TOKEN }}
+          ghcr_actor: ${{ github.actor }}
+          ghcr_token: ${{ github.token }}
+
+      - name: Download all platform digests
+        uses: actions/download-artifact@v4
+        with:
+          path: /tmp/digests
+          pattern: digest-${{ matrix.version }}-*
+          merge-multiple: true
+
+      - name: Create multi-arch manifest and push tags
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          GHCR_REPO="${{ steps.sanitize.outputs.ghcr_repo }}"
+          DH_REPO="${{ steps.sanitize.outputs.dockerhub_repo }}"
+          VERSION="${{ matrix.version }}"
+          IMAGE_TAG="${{ matrix.image_tag }}"
+
+          echo "Merging platform digests for $VERSION"
+          ls -la /tmp/digests/
+
+          # Collect all digest sources
+          SOURCES=""
+          for f in /tmp/digests/*; do
+            DIGEST="$(cat "$f")"
+            SLUG="$(basename "$f")"
+            echo "  $SLUG: $DIGEST"
+            SOURCES+="${GHCR_REPO}@${DIGEST} "
+          done
+
+          if [[ -z "$SOURCES" ]]; then
+            echo "No digests found — skipping manifest merge"
+            exit 0
+          fi
+
+          echo "Creating multi-arch manifest with tags:"
+          echo "  GHCR: $GHCR_REPO:$VERSION, $GHCR_REPO:$IMAGE_TAG"
+          echo "  DH:   $DH_REPO:$VERSION, $DH_REPO:$IMAGE_TAG"
+
+          # Create manifest list with all tags (GHCR + Docker Hub)
+          docker buildx imagetools create \
+            -t "${GHCR_REPO}:${VERSION}" \
+            -t "${GHCR_REPO}:${IMAGE_TAG}" \
+            -t "${DH_REPO}:${VERSION}" \
+            -t "${DH_REPO}:${IMAGE_TAG}" \
+            $SOURCES
+
+          echo "Multi-arch manifest created successfully"
+
+      - name: Verify Docker Hub parity (fallback sync)
+        uses: ./.github/actions/registry-sync
+        with:
+          dockerhub_repo: ${{ steps.sanitize.outputs.dockerhub_repo }}
+          ghcr_repo: ${{ steps.sanitize.outputs.ghcr_repo }}
+          tags: ${{ matrix.image_tag }},${{ matrix.version }}

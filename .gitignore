@@ -1,0 +1,8 @@
+build_logs
+resources/build_data
+resources/build-timestamp
+resources/tag
+Dockerfile.brrave-search-mcp
+/.vs
+/Dockerfile.brrave-search-mcp
+/Dockerfile
