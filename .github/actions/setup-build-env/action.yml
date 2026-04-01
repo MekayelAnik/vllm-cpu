@@ -102,8 +102,17 @@ runs:
     - name: Install crane (API-efficient registry tool)
       if: inputs.install_crane != 'false'
       shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
       run: |
         set -euo pipefail
+
+        # Skip if crane is already available
+        if command -v crane >/dev/null 2>&1; then
+          echo "crane already installed: $(crane version 2>/dev/null || echo 'unknown version')"
+          exit 0
+        fi
+
         ARCH="$(uname -m)"
         case "$ARCH" in
           x86_64)        CRANE_ARCH="x86_64" ;;
@@ -111,16 +120,45 @@ runs:
           riscv64)       CRANE_ARCH="riscv64" ;;
           *)             echo "crane: unsupported arch $ARCH, skipping"; exit 0 ;;
         esac
-        # Pinned version avoids GitHub API rate limits on /releases/latest
-        CRANE_VERSION="v0.21.3"
-        for attempt in 1 2 3; do
-          if curl -fsSL "https://github.com/google/go-containerregistry/releases/download/${CRANE_VERSION}/go-containerregistry_Linux_${CRANE_ARCH}.tar.gz" \
-            | tar xzf - -C /usr/local/bin crane; then
-            echo "Installed crane ${CRANE_VERSION} (${CRANE_ARCH})"
-            exit 0
+
+        # Pinned versions — avoids GitHub API /releases/latest rate limits
+        CRANE_VERSIONS=("v0.21.3" "v0.21.2" "v0.21.1" "v0.20.3")
+
+        try_download() {
+          local ver="$1" auth_flag="${2:-}"
+          local url="https://github.com/google/go-containerregistry/releases/download/${ver}/go-containerregistry_Linux_${CRANE_ARCH}.tar.gz"
+          local curl_args=(-fsSL --connect-timeout 10 --max-time 60 --retry 2 --retry-delay 1)
+          [[ -n "$auth_flag" ]] && curl_args+=(-H "Authorization: token ${GH_TOKEN}")
+          if curl "${curl_args[@]}" "$url" | tar xzf - -C /usr/local/bin crane 2>/dev/null; then
+            echo "Installed crane ${ver} (${CRANE_ARCH})${auth_flag:+ [authenticated]}"
+            return 0
           fi
-          echo "crane install attempt ${attempt} failed, retrying in ${attempt}s..." >&2
-          sleep "$attempt"
+          return 1
+        }
+
+        # Strategy 1: Direct download (unauthenticated, try each pinned version)
+        for ver in "${CRANE_VERSIONS[@]}"; do
+          try_download "$ver" && exit 0
         done
-        echo "::warning::crane install failed after 3 attempts — falling back to docker buildx imagetools"
+        echo "Anonymous download failed for all versions, trying authenticated..." >&2
+
+        # Strategy 2: Authenticated download with GITHUB_TOKEN (higher rate limit)
+        if [[ -n "${GH_TOKEN:-}" ]]; then
+          for ver in "${CRANE_VERSIONS[@]}"; do
+            try_download "$ver" "auth" && exit 0
+          done
+          echo "Authenticated download also failed, trying API discovery..." >&2
+        fi
+
+        # Strategy 3: Discover latest via GitHub API with auth (last resort)
+        if [[ -n "${GH_TOKEN:-}" ]]; then
+          LATEST_VER="$(curl -fsSL --connect-timeout 5 -H "Authorization: token ${GH_TOKEN}" \
+            "https://api.github.com/repos/google/go-containerregistry/releases/latest" 2>/dev/null \
+            | jq -r '.tag_name // empty' 2>/dev/null || true)"
+          if [[ -n "$LATEST_VER" ]]; then
+            try_download "$LATEST_VER" "auth" && exit 0
+          fi
+        fi
+
+        echo "::warning::crane install failed — all strategies exhausted. Falling back to docker buildx imagetools."
         exit 0
