@@ -64,7 +64,7 @@ jobs:
           echo "date_tag=$(trim '${{ inputs.date_tag }}')" >> "$GITHUB_OUTPUT"
 
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Setup promotion environment
         uses: ./.github/actions/setup-build-env

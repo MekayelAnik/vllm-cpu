@@ -190,7 +190,7 @@ jobs:
           echo "base_image_default=$(trim '${{ inputs.base_image_default }}')" >> "$GITHUB_OUTPUT"
 
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Resolve build profile
         id: profile
@@ -274,7 +274,7 @@ jobs:
 
       - name: Upload digest
         if: steps.check-existing.outputs.skip_build != 'true'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: digest-${{ matrix.version }}-${{ matrix.slug }}
           path: /tmp/digests/${{ matrix.slug }}
@@ -302,7 +302,7 @@ jobs:
           echo "dockerhub_repo=$(trim '${{ inputs.dockerhub_repo }}')" >> "$GITHUB_OUTPUT"
 
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Setup build environment
         uses: ./.github/actions/setup-build-env
@@ -318,7 +318,7 @@ jobs:
           ghcr_token: ${{ github.token }}
 
       - name: Download all platform digests
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           path: /tmp/digests
           pattern: digest-${{ matrix.version }}-*
