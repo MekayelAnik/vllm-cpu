@@ -323,7 +323,6 @@ jobs:
           path: /tmp/digests
           pattern: digest-${{ matrix.version }}-*
           merge-multiple: true
-          if-no-files-found: warn
 
       - name: Create multi-arch manifest and push tags
         shell: bash
