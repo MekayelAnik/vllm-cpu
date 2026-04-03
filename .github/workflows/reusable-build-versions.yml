@@ -84,6 +84,7 @@ jobs:
   # ── Prepare cross-product matrix: versions × platforms ──
   prepare-matrix:
     name: Prepare build matrix
+    timeout-minutes: 10
     runs-on: ${{ inputs.runner_version || 'ubuntu-latest' }}
     outputs:
       matrix: ${{ steps.generate.outputs.matrix }}
@@ -92,12 +93,16 @@ jobs:
       - name: Generate version × platform matrix
         id: generate
         shell: bash
+        env:
+          INPUT_VERSIONS_JSON: ${{ inputs.versions_json }}
+          INPUT_RUNNER_VERSION: ${{ inputs.runner_version || 'ubuntu-24.04' }}
+          INPUT_DEFAULT_PLATFORMS: ${{ inputs.default_platforms }}
         run: |
           set -euo pipefail
 
-          VERSIONS_JSON='${{ inputs.versions_json }}'
-          RUNNER_BASE="${{ inputs.runner_version || 'ubuntu-24.04' }}"
-          REQUESTED_PLATFORMS="${{ inputs.default_platforms }}"
+          VERSIONS_JSON="$INPUT_VERSIONS_JSON"
+          RUNNER_BASE="$INPUT_RUNNER_VERSION"
+          REQUESTED_PLATFORMS="$INPUT_DEFAULT_PLATFORMS"
 
           # Platform → runner affinity lookup table
           # Format: platform|runner_suffix|slug
@@ -168,6 +173,7 @@ jobs:
   # ── Per-platform build (native or QEMU-emulated) ──
   build-platform:
     name: Build ${{ matrix.version }} (${{ matrix.slug }})
+    timeout-minutes: 180
     needs: [prepare-matrix]
     runs-on: ${{ matrix.runner }}
     concurrency:
@@ -176,18 +182,22 @@ jobs:
     strategy:
       fail-fast: false
       max-parallel: 8
-      matrix: ${{ fromJson(needs.prepare-matrix.outputs.matrix) }}
+      matrix: ${{ fromJson(needs.prepare-matrix.outputs.matrix || '{"include":[]}') }}
 
     steps:
       - name: Sanitize inputs (trim whitespace)
         id: sanitize
         shell: bash
+        env:
+          INPUT_GHCR_REPO: ${{ inputs.ghcr_repo }}
+          INPUT_DOCKERHUB_REPO: ${{ inputs.dockerhub_repo }}
+          INPUT_BASE_IMAGE_DEFAULT: ${{ inputs.base_image_default }}
         run: |
           set -euo pipefail
           trim() { local v="$*"; v="${v#"${v%%[![:space:]]*}"}"; v="${v%"${v##*[![:space:]]}"}" ; printf '%s' "$v"; }
-          echo "ghcr_repo=$(trim '${{ inputs.ghcr_repo }}')" >> "$GITHUB_OUTPUT"
-          echo "dockerhub_repo=$(trim '${{ inputs.dockerhub_repo }}')" >> "$GITHUB_OUTPUT"
-          echo "base_image_default=$(trim '${{ inputs.base_image_default }}')" >> "$GITHUB_OUTPUT"
+          echo "ghcr_repo=$(trim "$INPUT_GHCR_REPO")" >> "$GITHUB_OUTPUT"
+          echo "dockerhub_repo=$(trim "$INPUT_DOCKERHUB_REPO")" >> "$GITHUB_OUTPUT"
+          echo "base_image_default=$(trim "$INPUT_BASE_IMAGE_DEFAULT")" >> "$GITHUB_OUTPUT"
 
       - name: Checkout
         uses: actions/checkout@v6
@@ -214,10 +224,14 @@ jobs:
       - name: Check existing tags
         id: check-existing
         shell: bash
+        env:
+          INPUT_FORCE_BUILD: ${{ inputs.force_build }}
+          SANITIZED_GHCR_REPO: ${{ steps.sanitize.outputs.ghcr_repo }}
+          MATRIX_VERSION: ${{ matrix.version }}
         run: |
           set -euo pipefail
 
-          RESULT="$({ FORCE_BUILD="${{ inputs.force_build }}" GHCR_REPO="${{ steps.sanitize.outputs.ghcr_repo }}" VERSION="${{ matrix.version }}" bash .github/scripts/check-existing-tags.sh; } )"
+          RESULT="$({ FORCE_BUILD="$INPUT_FORCE_BUILD" GHCR_REPO="$SANITIZED_GHCR_REPO" VERSION="$MATRIX_VERSION" bash .github/scripts/check-existing-tags.sh; } )"
           echo "$RESULT"
           SKIP_LINE="$(echo "$RESULT" | awk -F= '/^skip_build=/{print $0}' | tail -n1)"
           if [[ -z "$SKIP_LINE" ]]; then
@@ -229,12 +243,15 @@ jobs:
       - name: Generate Dockerfile via DockerfileModifier.sh
         if: steps.check-existing.outputs.skip_build != 'true'
         shell: bash
+        env:
+          SANITIZED_BASE_IMAGE: ${{ steps.sanitize.outputs.base_image_default }}
+          MATRIX_VERSION: ${{ matrix.version }}
         run: |
           set -euo pipefail
-          echo "Using base image: ${{ steps.sanitize.outputs.base_image_default }}"
+          echo "Using base image: $SANITIZED_BASE_IMAGE"
           mkdir -p resources/build_data
-          echo "${{ steps.sanitize.outputs.base_image_default }}" > ./resources/build_data/base-image
-          echo "${{ matrix.version }}" > ./resources/build_data/version
+          echo "$SANITIZED_BASE_IMAGE" > ./resources/build_data/base-image
+          echo "$MATRIX_VERSION" > ./resources/build_data/version
           touch ./resources/build_data/build
           bash ./DockerfileModifier.sh
           test -f ./Dockerfile.vllm-cpu
@@ -248,7 +265,7 @@ jobs:
           BUILDKIT_STEP_LOG_MAX_SPEED: ${{ inputs.buildkit_step_log_max_speed }}
           BUILDKIT_PROGRESS: ${{ inputs.buildkit_progress }}
           DOCKER_BUILDKIT_INLINE_CACHE: ${{ inputs.docker_buildkit_inline_cache }}
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           file: ./Dockerfile.vllm-cpu
@@ -266,11 +283,14 @@ jobs:
       - name: Export digest
         if: steps.check-existing.outputs.skip_build != 'true'
         shell: bash
+        env:
+          BUILD_DIGEST: ${{ steps.build.outputs.digest }}
+          MATRIX_SLUG: ${{ matrix.slug }}
         run: |
           mkdir -p /tmp/digests
-          digest="${{ steps.build.outputs.digest }}"
-          echo "Platform ${{ matrix.slug }} digest: $digest"
-          echo "$digest" > "/tmp/digests/${{ matrix.slug }}"
+          digest="$BUILD_DIGEST"
+          echo "Platform $MATRIX_SLUG digest: $digest"
+          echo "$digest" > "/tmp/digests/$MATRIX_SLUG"
 
       - name: Upload digest
         if: steps.check-existing.outputs.skip_build != 'true'
@@ -284,22 +304,26 @@ jobs:
   # ── Merge per-platform digests into multi-arch manifest ──
   merge-manifest:
     name: Merge ${{ matrix.version }}
+    timeout-minutes: 30
     needs: [prepare-matrix, build-platform]
     if: ${{ !cancelled() && needs.prepare-matrix.result == 'success' }}
     runs-on: ${{ inputs.runner_version || 'ubuntu-latest' }}
     strategy:
       fail-fast: false
-      matrix: ${{ fromJson(needs.prepare-matrix.outputs.versions) }}
+      matrix: ${{ fromJson(needs.prepare-matrix.outputs.versions || '{"include":[]}') }}
 
     steps:
       - name: Sanitize inputs
         id: sanitize
         shell: bash
+        env:
+          INPUT_GHCR_REPO: ${{ inputs.ghcr_repo }}
+          INPUT_DOCKERHUB_REPO: ${{ inputs.dockerhub_repo }}
         run: |
           set -euo pipefail
           trim() { local v="$*"; v="${v#"${v%%[![:space:]]*}"}"; v="${v%"${v##*[![:space:]]}"}" ; printf '%s' "$v"; }
-          echo "ghcr_repo=$(trim '${{ inputs.ghcr_repo }}')" >> "$GITHUB_OUTPUT"
-          echo "dockerhub_repo=$(trim '${{ inputs.dockerhub_repo }}')" >> "$GITHUB_OUTPUT"
+          echo "ghcr_repo=$(trim "$INPUT_GHCR_REPO")" >> "$GITHUB_OUTPUT"
+          echo "dockerhub_repo=$(trim "$INPUT_DOCKERHUB_REPO")" >> "$GITHUB_OUTPUT"
 
       - name: Checkout
         uses: actions/checkout@v6
@@ -326,13 +350,18 @@ jobs:
 
       - name: Create multi-arch manifest and push tags
         shell: bash
+        env:
+          SANITIZED_GHCR_REPO: ${{ steps.sanitize.outputs.ghcr_repo }}
+          SANITIZED_DOCKERHUB_REPO: ${{ steps.sanitize.outputs.dockerhub_repo }}
+          MATRIX_VERSION: ${{ matrix.version }}
+          MATRIX_IMAGE_TAG: ${{ matrix.image_tag }}
         run: |
           set -euo pipefail
 
-          GHCR_REPO="${{ steps.sanitize.outputs.ghcr_repo }}"
-          DH_REPO="${{ steps.sanitize.outputs.dockerhub_repo }}"
-          VERSION="${{ matrix.version }}"
-          IMAGE_TAG="${{ matrix.image_tag }}"
+          GHCR_REPO="$SANITIZED_GHCR_REPO"
+          DH_REPO="$SANITIZED_DOCKERHUB_REPO"
+          VERSION="$MATRIX_VERSION"
+          IMAGE_TAG="$MATRIX_IMAGE_TAG"
 
           echo "Merging platform digests for $VERSION"
           ls -la /tmp/digests/

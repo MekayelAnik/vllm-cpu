@@ -46,6 +46,12 @@ runs:
     - name: Promote latest and verify parity
       id: promote
       shell: bash
+      env:
+        INPUT_LATEST_VERSION: ${{ inputs.latest_version }}
+        INPUT_DATE_TAG: ${{ inputs.date_tag }}
+        INPUT_GHCR_REPO: ${{ inputs.ghcr_repo }}
+        INPUT_DOCKERHUB_REPO: ${{ inputs.dockerhub_repo }}
+        INPUT_FORCE_LATEST: ${{ inputs.force_latest }}
       run: |
         set -euo pipefail
 
@@ -167,10 +173,10 @@ runs:
 
         # --- Main logic ---
 
-        LATEST_VERSION="${{ inputs.latest_version }}"
-        DATE_TAG="${{ inputs.date_tag }}"
-        GHCR_REPO="${{ inputs.ghcr_repo }}"
-        DOCKERHUB_REPO="${{ inputs.dockerhub_repo }}"
+        LATEST_VERSION="$INPUT_LATEST_VERSION"
+        DATE_TAG="$INPUT_DATE_TAG"
+        GHCR_REPO="$INPUT_GHCR_REPO"
+        DOCKERHUB_REPO="$INPUT_DOCKERHUB_REPO"
 
         SOURCE_DATE_TAG="${LATEST_VERSION}-${DATE_TAG}"
         SOURCE_FALLBACK_TAG="${LATEST_VERSION}"
@@ -192,7 +198,7 @@ runs:
         # Step 2: Early-exit if GHCR latest already matches source (HEAD-only check)
         GHCR_LATEST_DIGEST="$(cached_digest "${GHCR_REPO}:latest" || true)"
 
-        FORCE_LATEST="${{ inputs.force_latest }}"
+        FORCE_LATEST="$INPUT_FORCE_LATEST"
 
         if [[ "$FORCE_LATEST" == "true" ]]; then
           echo "Force latest promotion requested — skipping digest check"
@@ -287,13 +293,18 @@ runs:
       shell: bash
       env:
         GH_TOKEN: ${{ inputs.gh_token }}
+        INPUT_LATEST_VERSION: ${{ inputs.latest_version }}
+        INPUT_GHCR_REPO: ${{ inputs.ghcr_repo }}
+        INPUT_DOCKERHUB_REPO: ${{ inputs.dockerhub_repo }}
+        INPUT_GITHUB_REPOSITORY: ${{ inputs.github_repository }}
+        INPUT_FORCE_STABLE: ${{ inputs.force_stable }}
       run: |
         set -euo pipefail
 
-        LATEST_VERSION="${{ inputs.latest_version }}"
-        GHCR_REPO="${{ inputs.ghcr_repo }}"
-        DOCKERHUB_REPO="${{ inputs.dockerhub_repo }}"
-        REPO="${{ inputs.github_repository }}"
+        LATEST_VERSION="$INPUT_LATEST_VERSION"
+        GHCR_REPO="$INPUT_GHCR_REPO"
+        DOCKERHUB_REPO="$INPUT_DOCKERHUB_REPO"
+        REPO="$INPUT_GITHUB_REPOSITORY"
 
         # --- Retry helper (same as promote step) ---
 
@@ -376,7 +387,7 @@ runs:
         fi
 
         DAYS_AS_LATEST=$(( (NOW_EPOCH - SINCE_EPOCH) / 86400 ))
-        FORCE_STABLE="${{ inputs.force_stable }}"
+        FORCE_STABLE="$INPUT_FORCE_STABLE"
         echo "Version $LATEST_VERSION has been :latest for $DAYS_AS_LATEST day(s) (since $LATEST_SINCE)"
 
         if [[ "$FORCE_STABLE" == "true" ]]; then

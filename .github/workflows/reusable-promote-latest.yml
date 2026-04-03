@@ -50,18 +50,24 @@ jobs:
   promote-latest:
     name: Promote latest tag
     runs-on: ${{ inputs.runner_version || 'ubuntu-latest' }}
+    timeout-minutes: 30
     if: inputs.latest_version != ''
     steps:
       - name: Sanitize inputs (trim whitespace)
         id: sanitize
         shell: bash
+        env:
+          INPUT_GHCR_REPO: ${{ inputs.ghcr_repo }}
+          INPUT_DOCKERHUB_REPO: ${{ inputs.dockerhub_repo }}
+          INPUT_LATEST_VERSION: ${{ inputs.latest_version }}
+          INPUT_DATE_TAG: ${{ inputs.date_tag }}
         run: |
           set -euo pipefail
           trim() { local v="$*"; v="${v#"${v%%[![:space:]]*}"}"; v="${v%"${v##*[![:space:]]}"}" ; printf '%s' "$v"; }
-          echo "ghcr_repo=$(trim '${{ inputs.ghcr_repo }}')" >> "$GITHUB_OUTPUT"
-          echo "dockerhub_repo=$(trim '${{ inputs.dockerhub_repo }}')" >> "$GITHUB_OUTPUT"
-          echo "latest_version=$(trim '${{ inputs.latest_version }}')" >> "$GITHUB_OUTPUT"
-          echo "date_tag=$(trim '${{ inputs.date_tag }}')" >> "$GITHUB_OUTPUT"
+          echo "ghcr_repo=$(trim "$INPUT_GHCR_REPO")" >> "$GITHUB_OUTPUT"
+          echo "dockerhub_repo=$(trim "$INPUT_DOCKERHUB_REPO")" >> "$GITHUB_OUTPUT"
+          echo "latest_version=$(trim "$INPUT_LATEST_VERSION")" >> "$GITHUB_OUTPUT"
+          echo "date_tag=$(trim "$INPUT_DATE_TAG")" >> "$GITHUB_OUTPUT"
 
       - name: Checkout
         uses: actions/checkout@v6

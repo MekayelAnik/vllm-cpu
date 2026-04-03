@@ -24,10 +24,12 @@ runs:
     - name: Resolve profile
       id: resolve
       shell: bash
+      env:
+        INPUT_BUILD_PROFILE: ${{ inputs.build_profile }}
       run: |
         set -euo pipefail
 
-        PROFILE="${{ inputs.build_profile }}"
+        PROFILE="$INPUT_BUILD_PROFILE"
 
         case "$PROFILE" in
           development|dev)
