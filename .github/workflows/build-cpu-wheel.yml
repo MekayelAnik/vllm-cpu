@@ -282,7 +282,7 @@ jobs:
 
           docker run --rm \
             -v "$PWD/dist:/output" \
-            -v "$PWD/README.md:/repo-readme/README.md:ro" \
+            -v "$PWD/PYPI_README.md:/repo-readme/README.md:ro" \
             -v "$HOME/.cache/ccache:/root/.cache/ccache" \
             -e "VLLM_VERSION=${VERSION}" \
             -e "FULL_VERSION=${FULL_VERSION}" \
