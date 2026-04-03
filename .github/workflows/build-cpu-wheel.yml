@@ -282,6 +282,7 @@ jobs:
 
           docker run --rm \
             -v "$PWD/dist:/output" \
+            -v "$PWD/README.md:/repo-readme/README.md:ro" \
             -v "$HOME/.cache/ccache:/root/.cache/ccache" \
             -e "VLLM_VERSION=${VERSION}" \
             -e "FULL_VERSION=${FULL_VERSION}" \
@@ -315,6 +316,9 @@ jobs:
 
               # --- Patch pyproject.toml: rename package to vllm-cpu ---
               sed -i "s/^name = \"vllm\"/name = \"vllm-cpu\"/" pyproject.toml
+
+              # Use our README as the PyPI long description
+              cp /repo-readme/README.md README.md
 
               # Remove +cpu local version suffix (PyPI forbids local identifiers)
               if [[ -f vllm/version.py ]]; then
