@@ -299,16 +299,13 @@ jobs:
               dnf install -y numactl-devel ccache jq git ninja-build wget
               source /opt/rh/gcc-toolset-14/enable
 
-              # --- Install uv package manager ---
-              curl -LsSf https://astral.sh/uv/install.sh | sh
-              export PATH="$HOME/.local/bin:$PATH"
-
               # --- Use Python 3.12 from manylinux (well-supported, stable ABI) ---
               # With stable ABI (cp38-abi3), we only need one Python to build.
               # Avoid 3.13+/3.14 which lack wheels for many build deps.
               PYTHON_BIN="$(ls -d /opt/python/cp312-cp312/bin 2>/dev/null || ls -d /opt/python/cp311-cp311/bin)"
               export PATH="${PYTHON_BIN}:${PATH}"
               python3 --version
+              pip3 install --upgrade pip
 
               # --- Clone vLLM source ---
               cd /tmp
@@ -341,28 +338,26 @@ jobs:
               fi
 
               # --- Install build dependencies ---
-              # Use explicit --python to ensure packages go to our cp312,
-              # not the manylinux system /usr/bin/python3
-              PYTHON3="${PYTHON_BIN}/python3"
-              uv pip install --python "$PYTHON3" build wheel setuptools cmake numpy
-              # Install PyTorch CPU-only from dedicated index
-              uv pip install --python "$PYTHON3" torch --index-url https://download.pytorch.org/whl/cpu
+              pip3 install build wheel setuptools cmake numpy
 
-              # Also install vLLM build requirements so --no-isolation works
-              # Note: avoid single quotes inside this block (breaks bash -exc quoting)
-              if [[ -f pyproject.toml ]]; then
-                BUILD_REQS="$("$PYTHON3" -c "import tomllib; f=open(\"pyproject.toml\",\"rb\"); c=tomllib.load(f); print(\" \".join(r for r in c.get(\"build-system\",{}).get(\"requires\",[]) if not r.startswith((\"torch\",\"cmake\"))))")"
-                if [[ -n "$BUILD_REQS" ]]; then
-                  echo "Installing build requirements: $BUILD_REQS"
-                  uv pip install --python "$PYTHON3" $BUILD_REQS
-                fi
+              # Install PyTorch CPU — extract required version from pyproject.toml
+              # to match vLLM's exact torch pin (e.g., torch==2.10.0)
+              TORCH_REQ="$(python3 -c "import tomllib; f=open(\"pyproject.toml\",\"rb\"); c=tomllib.load(f); reqs=c.get(\"build-system\",{}).get(\"requires\",[]); matches=[r for r in reqs if r.startswith(\"torch\")]; print(matches[0] if matches else \"torch\")")"
+              echo "Installing torch requirement: $TORCH_REQ"
+              pip3 install "$TORCH_REQ" --index-url https://download.pytorch.org/whl/cpu
+
+              # Install remaining build requirements (excluding torch and cmake)
+              BUILD_REQS="$(python3 -c "import tomllib; f=open(\"pyproject.toml\",\"rb\"); c=tomllib.load(f); print(\" \".join(r for r in c.get(\"build-system\",{}).get(\"requires\",[]) if not r.startswith((\"torch\",\"cmake\"))))")"
+              if [[ -n "$BUILD_REQS" ]]; then
+                echo "Installing build requirements: $BUILD_REQS"
+                pip3 install $BUILD_REQS
               fi
 
               # --- Build the wheel ---
               # Use --no-isolation to use our system-installed CPU torch.
               # Without this, build creates an isolated env and installs
               # CUDA torch from PyPI, causing cmake CUDA errors.
-              "$PYTHON3" -m build --wheel --no-isolation --outdir /tmp/wheel-out
+              python3 -m build --wheel --no-isolation --outdir /tmp/wheel-out
 
               # --- Rename wheel to manylinux_2_28 platform tag ---
               cd /tmp/wheel-out
