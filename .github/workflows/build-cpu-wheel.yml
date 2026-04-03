@@ -340,14 +340,32 @@ jobs:
               # --- Install build dependencies ---
               pip3 install build wheel setuptools cmake numpy
 
-              # Install PyTorch CPU — extract required version from pyproject.toml
-              # to match vLLM's exact torch pin (e.g., torch==2.10.0)
-              TORCH_REQ="$(python3 -c "import tomllib; f=open(\"pyproject.toml\",\"rb\"); c=tomllib.load(f); reqs=c.get(\"build-system\",{}).get(\"requires\",[]); matches=[r for r in reqs if r.startswith(\"torch\")]; print(matches[0] if matches else \"torch\")")"
+              # Extract build requirements from pyproject.toml using jq on setup.cfg
+              # Parse torch requirement and other build deps separately
+              TORCH_REQ="$(python3 - << "PYEOF"
+              import tomllib
+              with open("pyproject.toml", "rb") as f:
+                  cfg = tomllib.load(f)
+              reqs = cfg.get("build-system", {}).get("requires", [])
+              torch_reqs = [r for r in reqs if r.startswith("torch")]
+              print(torch_reqs[0] if torch_reqs else "torch")
+              PYEOF
+              )"
+              BUILD_REQS="$(python3 - << "PYEOF"
+              import tomllib
+              with open("pyproject.toml", "rb") as f:
+                  cfg = tomllib.load(f)
+              reqs = cfg.get("build-system", {}).get("requires", [])
+              other = [r for r in reqs if not r.startswith(("torch", "cmake"))]
+              print(" ".join(other))
+              PYEOF
+              )"
+
+              # Install PyTorch CPU with exact version from pyproject.toml
               echo "Installing torch requirement: $TORCH_REQ"
               pip3 install "$TORCH_REQ" --index-url https://download.pytorch.org/whl/cpu
 
               # Install remaining build requirements (excluding torch and cmake)
-              BUILD_REQS="$(python3 -c "import tomllib; f=open(\"pyproject.toml\",\"rb\"); c=tomllib.load(f); print(\" \".join(r for r in c.get(\"build-system\",{}).get(\"requires\",[]) if not r.startswith((\"torch\",\"cmake\"))))")"
               if [[ -n "$BUILD_REQS" ]]; then
                 echo "Installing build requirements: $BUILD_REQS"
                 pip3 install $BUILD_REQS
