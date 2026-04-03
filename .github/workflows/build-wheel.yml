@@ -341,12 +341,12 @@ jobs:
               fi
 
               # --- Install build dependencies ---
-              # Install build tools from PyPI first (cmake, ninja, etc.)
+              # Install build tools from PyPI
               uv pip install --system build wheel setuptools cmake numpy
-              # Install PyTorch CPU separately with index strategy to avoid
-              # PyTorch index shadowing PyPI packages (cmake on PyTorch index
-              # is x86_64-only and blocks aarch64 builds)
-              uv pip install --system torch --index-strategy unsafe-best-match --extra-index-url https://download.pytorch.org/whl/cpu
+              # Install PyTorch CPU-only from dedicated index.
+              # Use --index-url (not --extra-index-url) to force CPU wheel
+              # and prevent uv from picking the CUDA variant from PyPI.
+              uv pip install --system torch --index-url https://download.pytorch.org/whl/cpu
 
               # --- Build the wheel ---
               python3 -m build --wheel --outdir /tmp/wheel-out
