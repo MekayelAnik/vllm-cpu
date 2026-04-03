@@ -265,10 +265,10 @@ jobs:
   # ===========================================================================
   # Job 4: Build Docker images via reusable workflow
   # ===========================================================================
-  # Job 3b: Resolve base image with pull-test fallback
+  # Job 3b: Resolve base image with base-image-repo-test fallback
   # ===========================================================================
   resolve-base-image:
-    name: Resolve base image
+    name: Base image repo test
     needs: [quick-check]
     if: needs.quick-check.outputs.should_run == 'true'
     runs-on: ${{ vars.ACTION_RUNNER_VERSION || 'ubuntu-latest' }}
@@ -276,7 +276,7 @@ jobs:
     outputs:
       base_image: ${{ steps.resolve.outputs.base_image }}
     steps:
-      - name: Test and resolve base image
+      - name: Base image repo test
         id: resolve
         shell: bash
         env:
