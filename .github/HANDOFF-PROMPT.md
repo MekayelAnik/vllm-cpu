@@ -29,16 +29,53 @@ But the OLD caller workflows have been **deleted** and **no new caller workflow 
 vllm-project/vllm PR #35466 merged a **unified CPU wheel** that contains both AVX2 and AVX512 code in a single binary. Key details:
 
 - **How it works**: The wheel ships two `.so` files (`_C.so` for AVX512+BF16+VNNI+AMX, `_C_AVX2.so` for AVX2). At import time, `vllm/platforms/cpu.py` checks `torch._C._cpu._is_avx512_supported()` and loads the correct one. Zero runtime dispatch overhead.
-- **Available from**: vLLM v0.16.0+ (first release after the merge)
-- **Impact**: The old 5-variant approach (noavx512, avx512, avx512vnni, avx512bf16, amxbf16) is **obsolete** for v0.16.0+
+- **First release with unified build**: v0.17.0 (released 2026-03-07). The PR was merged Feb 28 into main, v0.16.0 was released Feb 25 (before merge). So **v0.17.0 is the first unified version.**
+- **Impact**: The old 5-variant approach (noavx512, avx512, avx512vnni, avx512bf16, amxbf16) is **obsolete** for v0.17.0+
 
-### Strategy: Unified Build Only (v0.16.0+)
+### CRITICAL: Upstream Now Publishes Official CPU Wheels
+
+Starting v0.17.0, vllm-project publishes official CPU wheels on GitHub Releases:
+
+```
+vllm-0.17.0+cpu-cp38-abi3-manylinux_2_35_x86_64.whl  (54MB, 334 downloads)
+vllm-0.17.0+cpu-cp38-abi3-manylinux_2_35_aarch64.whl  (33MB, 44 downloads)
+```
+
+**Key facts about upstream wheels:**
+- **`cp38-abi3` (Stable ABI)**: Works with Python 3.8+. No per-Python-version builds needed.
+- **`+cpu` local version suffix**: PEP 440 local versions CANNOT be uploaded to PyPI. Only available from GitHub Releases.
+- **`manylinux_2_35`**: Requires glibc 2.35 (Ubuntu 22.04+). Less compatible than manylinux_2_28.
+- **GitHub Releases only**: NOT on PyPI. Users must install via direct URL: `pip install "vllm @ https://github.com/vllm-project/vllm/releases/download/v0.17.0/vllm-0.17.0+cpu-cp38-abi3-manylinux_2_35_x86_64.whl"`
+
+**Your value-add (what upstream DOESN'T provide):**
+1. **PyPI availability** — `pip install vllm-cpu` (upstream can't put +cpu wheels on PyPI)
+2. **Docker images** — pre-configured with tcmalloc, OMP binding, NUMA optimization, CPU variant detection, health checks
+3. **Broader glibc support** — manylinux_2_28 (glibc 2.28, Debian 10+/Ubuntu 18.04+) vs upstream's manylinux_2_35
+4. **Simple install** — no need to copy long GitHub URLs
+
+### Decision: Two options for the wheel pipeline
+
+**Option A: Build your own unified wheels (RECOMMENDED)**
+- Build from vLLM source like before, but unified (no 5 variants)
+- Target manylinux_2_28 for broader compatibility
+- Publish to PyPI as `vllm-cpu` (single package, one token)
+- Also upload to GitHub Releases
+- Users get `pip install vllm-cpu` which just works
+
+**Option B: Repackage upstream wheels (simpler but less control)**
+- Download official `+cpu` wheels from GitHub Releases
+- Strip the `+cpu` suffix and repackage as `vllm-cpu`
+- Publish to PyPI
+- Downside: tied to upstream's manylinux_2_35, no glibc control
+
+### Strategy: Unified Build Only (v0.17.0+)
 
 - **Stop building old 5-variant wheels.** Existing packages on PyPI remain available for users on v0.8.5-v0.15.x.
-- **One PyPI package**: `vllm-cpu` — unified wheel per platform (x86_64, aarch64) per Python version
+- **One PyPI package**: `vllm-cpu` — unified wheel per platform (x86_64, aarch64). With stable ABI (cp38-abi3), possibly only 1 wheel per platform (no per-Python builds needed).
 - **One Docker image**: `mekayelanik/vllm-cpu` — multi-arch manifest (linux/amd64 + linux/arm64)
 - **One PyPI token** instead of 5
 - **Tags**: `vllm-cpu:X.Y.Z` (version), `vllm-cpu:latest`, `vllm-cpu:stable`
+- **Minimum version**: v0.17.0 (first release with unified CPU build)
 
 ### What Needs to Be Built
 
@@ -64,15 +101,18 @@ vllm-project/vllm PR #35466 merged a **unified CPU wheel** that contains both AV
 
 ### What Changes from the Old Architecture
 
-| Aspect | Old (v0.8.5-v0.15.x) | New (v0.16.0+) |
-|--------|----------------------|----------------|
-| PyPI packages | 5 (`vllm-cpu-noavx512`, `-avx512`, `-avx512vnni`, `-avx512bf16`, `-amxbf16`) | 1 (`vllm-cpu`) |
-| PyPI tokens | 5 (one per variant) | 1 |
-| Docker variants | 5 image tags per version | 1 multi-arch image per version |
-| ISA selection | User picks variant at install time | Runtime auto-detection |
-| Build matrix | 5 variants × 2 platforms × N python × N versions | 2 platforms × N python × N versions |
-| Wheel content | Single ISA per wheel | AVX2 + AVX512 .so files in one wheel |
-| Version range | v0.8.5+ | v0.16.0+ only |
+| Aspect | Old (v0.8.5-v0.15.x) | New (v0.17.0+) | Upstream official |
+|--------|----------------------|----------------|-------------------|
+| PyPI packages | 5 (`vllm-cpu-noavx512`, etc.) | 1 (`vllm-cpu`) | None (can't publish +cpu to PyPI) |
+| PyPI tokens | 5 (one per variant) | 1 | N/A |
+| Docker variants | 5 image tags per version | 1 multi-arch image | `vllm/vllm-openai` (CUDA only) |
+| ISA selection | User picks variant at install | Runtime auto-detection | Runtime auto-detection |
+| Build matrix | 5 variants × 2 platforms × N python | 2 platforms (stable ABI = 1 wheel each) | 2 platforms |
+| Wheel content | Single ISA per wheel | AVX2 + AVX512 .so files | AVX2 + AVX512 .so files |
+| glibc requirement | manylinux_2_28 (glibc 2.28) | manylinux_2_28 (broader compat) | manylinux_2_35 (glibc 2.35) |
+| Python ABI | Per-version (cp310, cp311, etc.) | Stable ABI cp38-abi3 (all 3.8+) | Stable ABI cp38-abi3 |
+| Install method | `pip install vllm-cpu-avx512` | `pip install vllm-cpu` | Manual URL from GH Releases |
+| Version range | v0.8.5+ | v0.17.0+ only | v0.17.0+ |
 
 ---
 
