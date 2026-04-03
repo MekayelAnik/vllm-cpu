@@ -340,34 +340,20 @@ jobs:
               # --- Install build dependencies ---
               pip3 install build wheel setuptools cmake numpy
 
-              # Extract build requirements from pyproject.toml using jq on setup.cfg
-              # Parse torch requirement and other build deps separately
-              TORCH_REQ="$(python3 - << "PYEOF"
-              import tomllib
-              with open("pyproject.toml", "rb") as f:
-                  cfg = tomllib.load(f)
-              reqs = cfg.get("build-system", {}).get("requires", [])
-              torch_reqs = [r for r in reqs if r.startswith("torch")]
-              print(torch_reqs[0] if torch_reqs else "torch")
-              PYEOF
-              )"
-              BUILD_REQS="$(python3 - << "PYEOF"
-              import tomllib
-              with open("pyproject.toml", "rb") as f:
-                  cfg = tomllib.load(f)
-              reqs = cfg.get("build-system", {}).get("requires", [])
-              other = [r for r in reqs if not r.startswith(("torch", "cmake"))]
-              print(" ".join(other))
-              PYEOF
-              )"
+              # Write a helper script to parse pyproject.toml build requirements
+              # (avoids heredoc/quoting issues inside docker bash -exc block)
+              printf "%s\n" "import tomllib,sys" "with open(sys.argv[1],\"rb\") as f:" "  c=tomllib.load(f)" "reqs=c.get(\"build-system\",{}).get(\"requires\",[])" "t=[r for r in reqs if r.startswith(\"torch\")]" "o=[r for r in reqs if not r.startswith((\"torch\",\"cmake\"))]" "print(t[0] if t else \"torch\")" "print(\" \".join(o))" > /tmp/parse_reqs.py
 
-              # Install PyTorch CPU with exact version from pyproject.toml
-              echo "Installing torch requirement: $TORCH_REQ"
+              # Parse torch req (line 1) and other reqs (line 2)
+              PARSED="$(python3 /tmp/parse_reqs.py pyproject.toml)"
+              TORCH_REQ="$(echo "$PARSED" | head -1)"
+              BUILD_REQS="$(echo "$PARSED" | tail -1)"
+
+              echo "Installing torch: $TORCH_REQ"
               pip3 install "$TORCH_REQ" --index-url https://download.pytorch.org/whl/cpu
 
-              # Install remaining build requirements (excluding torch and cmake)
               if [[ -n "$BUILD_REQS" ]]; then
-                echo "Installing build requirements: $BUILD_REQS"
+                echo "Installing build reqs: $BUILD_REQS"
                 pip3 install $BUILD_REQS
               fi
 
