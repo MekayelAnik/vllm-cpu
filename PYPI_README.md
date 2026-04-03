@@ -69,6 +69,7 @@ CPU-Optimized vLLM: Easy, Fast LLM Inference Without a GPU
 - [Performance Tips](#performance-tips)
 - [Environment Variables](#environment-variables)
 - [Supported Models](#supported-models)
+- [Framework Integrations](#framework-integrations)
 - [Version Support](#version-support)
 - [Troubleshooting](#troubleshooting)
 - [Links & Resources](#links--resources)
@@ -263,26 +264,95 @@ curl http://localhost:8000/v1/chat/completions \
 
 ## Performance Tips
 
-1. **Set thread count** to physical cores (not threads):
-   ```bash
-   export OMP_NUM_THREADS=16
-   export MKL_NUM_THREADS=16
-   ```
+### 1. Use TCMalloc (strongly recommended)
 
-2. **Use BFloat16** on supported CPUs:
-   ```python
-   llm = LLM(model="your-model", device="cpu", dtype="bfloat16")
-   ```
+TCMalloc provides significantly better memory allocation performance and cache locality:
 
-3. **NUMA awareness** for multi-socket systems:
-   ```bash
-   numactl --cpunodebind=0 --membind=0 python your_script.py
-   ```
+```bash
+# Install TCMalloc
+sudo apt install libtcmalloc-minimal4  # Debian/Ubuntu
+# or
+sudo dnf install gperftools-libs        # RHEL/Fedora
 
-4. **Use quantized models** for lower memory:
-   ```python
-   llm = LLM(model="TheBloke/Llama-2-7B-GPTQ", device="cpu", quantization="gptq")
-   ```
+# Find and preload it
+export LD_PRELOAD=$(find /usr -name "libtcmalloc_minimal.so*" | head -1)
+python -m vllm.entrypoints.openai.api_server --model your-model --device cpu
+```
+
+### 2. Set thread count to physical cores
+
+Use physical cores only -- disable hyper-threading for best performance:
+
+```bash
+# Check physical cores
+lscpu | grep "Core(s) per socket"
+
+export OMP_NUM_THREADS=16    # Set to physical core count
+export MKL_NUM_THREADS=16
+```
+
+**Tip:** Reserve 1-2 cores for the HTTP serving framework to avoid CPU oversubscription:
+```bash
+export VLLM_CPU_OMP_THREADS_BIND=0-13    # Bind inference to cores 0-13
+export VLLM_CPU_NUM_OF_RESERVED_CPU=2     # Reserve 2 cores for serving
+```
+
+### 3. Use BFloat16
+
+Recommended for all CPUs that support it (avoids unstable float16 on CPU):
+
+```python
+llm = LLM(model="your-model", device="cpu", dtype="bfloat16")
+```
+
+### 4. NUMA optimization for multi-socket systems
+
+On multi-socket systems, avoid cross-NUMA memory access:
+
+```bash
+# Simple: bind to one NUMA node
+numactl --cpunodebind=0 --membind=0 python your_script.py
+
+# Advanced: use Tensor Parallel across NUMA nodes (e.g., 2-socket)
+VLLM_CPU_OMP_THREADS_BIND=0-31|32-63 python -m vllm.entrypoints.openai.api_server \
+  --model your-model --device cpu --tensor-parallel-size 2
+```
+
+### 5. Set KV cache size
+
+Larger KV cache allows more concurrent requests:
+
+```bash
+# Allocate 40 GB for KV cache (default is 0, auto)
+export VLLM_CPU_KVCACHE_SPACE=40
+```
+
+### 6. Enable SGL kernels (x86 only, experimental)
+
+Small-batch optimized kernels for low-latency online serving:
+
+```bash
+export VLLM_CPU_SGL_KERNEL=1
+```
+
+### 7. Use quantized models for lower memory
+
+```python
+llm = LLM(model="TheBloke/Llama-2-7B-GPTQ", device="cpu", quantization="gptq")
+```
+
+### Memory Estimation
+
+| Model Size | dtype | Approximate RAM |
+|------------|-------|-----------------|
+| 1B params | bfloat16 | ~4 GB |
+| 7B params | bfloat16 | ~16 GB |
+| 7B params | GPTQ INT4 | ~6 GB |
+| 13B params | bfloat16 | ~28 GB |
+| 70B params | bfloat16 | ~140 GB |
+| 70B params | GPTQ INT4 | ~40 GB |
+
+*Add KV cache overhead: ~2-8 GB depending on `VLLM_CPU_KVCACHE_SPACE` and context length.*
 
 ---
 
@@ -290,10 +360,13 @@ curl http://localhost:8000/v1/chat/completions \
 
 | Variable | Description | Default |
 |----------|-------------|---------|
+| `VLLM_CPU_KVCACHE_SPACE` | KV cache size in GB (larger = more concurrent requests) | 0 (auto) |
+| `VLLM_CPU_OMP_THREADS_BIND` | CPU core binding (`0-31`, `auto`, or `nobind`) | auto |
+| `VLLM_CPU_NUM_OF_RESERVED_CPU` | Cores reserved for HTTP serving (when bind=auto) | 0 |
+| `VLLM_CPU_SGL_KERNEL` | Enable small-batch optimized kernels (x86, experimental) | 0 |
 | `OMP_NUM_THREADS` | OpenMP thread count | All cores |
 | `MKL_NUM_THREADS` | Intel MKL thread count | All cores |
-| `VLLM_CPU_KVCACHE_SPACE` | KV cache size in GB | 4 |
-| `VLLM_CPU_OMP_THREADS_BIND` | Thread binding strategy | auto |
+| `LD_PRELOAD` | Preload TCMalloc for better memory performance | None |
 | `HF_TOKEN` | Hugging Face access token | None |
 | `HF_HOME` | Hugging Face cache directory | ~/.cache/huggingface |
 
@@ -311,6 +384,42 @@ vLLM supports 100+ models including:
 | **Multimodal** | LLaVA, Qwen-VL, Qwen2.5-VL, InternVL, Pixtral, MiniCPM-V |
 
 Full list: [vLLM Supported Models](https://docs.vllm.ai/en/latest/models/supported_models.html)
+
+---
+
+## Framework Integrations
+
+### LangChain
+
+```python
+from langchain_openai import ChatOpenAI
+
+llm = ChatOpenAI(
+    base_url="http://localhost:8000/v1",
+    api_key="not-needed",
+    model="mistralai/Mistral-7B-Instruct-v0.2"
+)
+response = llm.invoke("Explain machine learning in simple terms")
+print(response.content)
+```
+
+### LlamaIndex
+
+```python
+from llama_index.llms.openai_like import OpenAILike
+
+llm = OpenAILike(
+    api_base="http://localhost:8000/v1",
+    api_key="not-needed",
+    model="mistralai/Mistral-7B-Instruct-v0.2"
+)
+response = llm.complete("What is the capital of France?")
+print(response.text)
+```
+
+### Any OpenAI-compatible client
+
+vLLM's server is fully OpenAI API-compatible. Any client library that supports `base_url` override works out of the box -- including Semantic Kernel, AutoGen, CrewAI, and others.
 
 ---
 
@@ -336,24 +445,46 @@ Legacy variant packages remain on PyPI for older vLLM versions:
 
 ### Illegal Instruction Error
 
-Your CPU doesn't support the instruction set the loaded `.so` requires. This should not happen with the unified wheel (it auto-detects), but if it does:
+The unified wheel auto-detects CPU capabilities, but if you see this error:
 
 ```bash
 # Check what your CPU supports
 lscpu | grep -E "avx512|vnni|bf16|amx"
 ```
 
-### Out of Memory
+If no AVX2 flags appear, your CPU is too old for vLLM CPU inference.
+
+### Out of Memory (OOM)
+
+Reduce memory usage by lowering context length and using lower precision:
 
 ```python
 llm = LLM(model="your-model", device="cpu", max_model_len=2048, dtype="bfloat16")
 ```
+
+Also reduce KV cache: `export VLLM_CPU_KVCACHE_SPACE=2`
+
+### Slow Performance Checklist
+
+1. **TCMalloc loaded?** Check with `echo $LD_PRELOAD`
+2. **Thread count correct?** `echo $OMP_NUM_THREADS` should equal physical core count
+3. **Hyper-threading disabled?** Recommended for bare-metal deployments
+4. **Cross-NUMA access?** Use `VLLM_CPU_OMP_THREADS_BIND` to pin to one NUMA node
+5. **Using bfloat16?** Float16 is unstable on CPU -- always use `dtype="bfloat16"`
 
 ### Multiple vLLM Packages Conflict
 
 ```bash
 pip uninstall vllm vllm-cpu vllm-cpu-avx512 vllm-cpu-avx512vnni vllm-cpu-avx512bf16 vllm-cpu-amxbf16 -y
 pip install vllm-cpu
+```
+
+### RuntimeError: Failed to infer device type
+
+For legacy versions (v0.8.5--v0.15.x), use `.post2` releases which include the CPU platform fix:
+
+```bash
+pip install vllm-cpu==0.12.0.post2
 ```
 
 ---
