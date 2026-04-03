@@ -265,9 +265,45 @@ jobs:
   # ===========================================================================
   # Job 4: Build Docker images via reusable workflow
   # ===========================================================================
+  # Job 3b: Resolve base image with pull-test fallback
+  # ===========================================================================
+  resolve-base-image:
+    name: Resolve base image
+    needs: [quick-check]
+    if: needs.quick-check.outputs.should_run == 'true'
+    runs-on: ${{ vars.ACTION_RUNNER_VERSION || 'ubuntu-latest' }}
+    timeout-minutes: 5
+    outputs:
+      base_image: ${{ steps.resolve.outputs.base_image }}
+    steps:
+      - name: Test and resolve base image
+        id: resolve
+        shell: bash
+        env:
+          PRIMARY_IMAGE: ${{ github.event.inputs.base_image || vars.BASE_IMAGE_DEFAULT || '' }}
+          FALLBACK_IMAGE: 'python:3.13-slim'
+        run: |
+          set -euo pipefail
+
+          if [[ -z "$PRIMARY_IMAGE" ]]; then
+            echo "No primary image configured, using fallback: $FALLBACK_IMAGE"
+            echo "base_image=$FALLBACK_IMAGE" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "Testing primary base image: $PRIMARY_IMAGE"
+          if docker pull "$PRIMARY_IMAGE" --quiet 2>/dev/null; then
+            echo "Primary base image available: $PRIMARY_IMAGE"
+            echo "base_image=$PRIMARY_IMAGE" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::Primary base image unreachable: $PRIMARY_IMAGE — falling back to $FALLBACK_IMAGE"
+            echo "base_image=$FALLBACK_IMAGE" >> "$GITHUB_OUTPUT"
+          fi
+
+  # ===========================================================================
   build-versions:
     name: Build selected versions
-    needs: [preflight, fetch-releases]
+    needs: [preflight, fetch-releases, resolve-base-image]
     if: >-
       needs.fetch-releases.outputs.should_build == 'true' &&
       !startsWith(needs.fetch-releases.outputs.normalized_action, 'promote') &&
@@ -277,7 +313,7 @@ jobs:
       versions_json: ${{ needs.fetch-releases.outputs.versions_json }}
       build_profile: ${{ github.event.inputs.build_profile || 'production' }}
       force_build: ${{ needs.fetch-releases.outputs.normalized_force_build }}
-      base_image_default: ${{ github.event.inputs.base_image || vars.BASE_IMAGE_DEFAULT || 'python:3.13-slim' }}
+      base_image_default: ${{ needs.resolve-base-image.outputs.base_image }}
       ghcr_repo: ${{ vars.GHCR_REPO || format('ghcr.io/{0}/vllm-cpu', github.repository_owner) }}
       dockerhub_repo: ${{ vars.DOCKERHUB_REPO || 'mekayelanik/vllm-cpu' }}
       default_platforms: ${{ vars.DEFAULT_PLATFORMS || 'linux/amd64,linux/arm64' }}
