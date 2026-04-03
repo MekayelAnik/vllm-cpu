@@ -348,18 +348,11 @@ jobs:
 
               # Also install vLLM's build requirements so --no-isolation works
               if [[ -f pyproject.toml ]]; then
-                # Extract build-system.requires and install them
-                python3 -c "
-import tomllib, subprocess, sys
-with open('pyproject.toml', 'rb') as f:
-    cfg = tomllib.load(f)
-reqs = cfg.get('build-system', {}).get('requires', [])
-# Filter out torch (already installed as CPU) and cmake (already installed)
-reqs = [r for r in reqs if not r.startswith(('torch', 'cmake'))]
-if reqs:
-    print('Installing build requirements:', reqs)
-    subprocess.check_call([sys.executable, '-m', 'uv', 'pip', 'install', '--system'] + reqs)
-"
+                BUILD_REQS="$(python3 -c "import tomllib; f=open('pyproject.toml','rb'); c=tomllib.load(f); print(' '.join(r for r in c.get('build-system',{}).get('requires',[]) if not r.startswith(('torch','cmake'))))")"
+                if [[ -n "$BUILD_REQS" ]]; then
+                  echo "Installing build requirements: $BUILD_REQS"
+                  uv pip install --system $BUILD_REQS
+                fi
               fi
 
               # --- Build the wheel ---
