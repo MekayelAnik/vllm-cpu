@@ -51,15 +51,27 @@ CPU-Optimized vLLM: Easy, Fast LLM Inference Without a GPU
 - Ideal for development, testing, and moderate-scale deployments
 - ARM64 support for AWS Graviton, Apple Silicon, and Raspberry Pi
 
-**Why this package instead of upstream?**
+**Key Features:**
+- `pip install vllm-cpu` -- no manual URLs or GitHub Release downloads
+- Built with `manylinux_2_28` for broad compatibility (Debian 10+, Ubuntu 18.04+)
+- Stable ABI (cp38-abi3) -- one wheel for Python 3.8+
+- Automatic AVX2/AVX512/AMX detection at runtime
 
-| Feature | Upstream (`vllm`) | This package (`vllm-cpu`) |
-|---------|-------------------|---------------------------|
-| Install | Manual URL from GitHub Releases | `pip install vllm-cpu` |
-| PyPI | Not available (PEP 440 blocks `+cpu`) | Available |
-| glibc | `manylinux_2_35` (Ubuntu 22.04+) | `manylinux_2_28` (Debian 10+, Ubuntu 18.04+) |
-| ISA detection | Runtime auto-detect | Runtime auto-detect (same) |
-| Python ABI | Stable ABI (cp38-abi3) | Stable ABI (cp38-abi3) |
+---
+
+## Table of Contents
+
+- [Quick Start](#quick-start)
+- [Installation](#installation)
+- [Supported CPU Instructions](#supported-cpu-instructions)
+- [CPU Compatibility Guide](#cpu-compatibility-guide)
+- [Usage Examples](#usage-examples)
+- [Performance Tips](#performance-tips)
+- [Environment Variables](#environment-variables)
+- [Supported Models](#supported-models)
+- [Version Support](#version-support)
+- [Troubleshooting](#troubleshooting)
+- [Links & Resources](#links--resources)
 
 ---
 
