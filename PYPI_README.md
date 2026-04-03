@@ -70,18 +70,18 @@ CPU-Optimized vLLM: Easy, Fast LLM Inference Without a GPU
 
 ## Table of Contents
 
-- [Quick Start](#-quick-start)
-- [Installation](#-installation)
-- [Supported CPU Instructions](#-supported-cpu-instructions)
-- [CPU Compatibility Guide](#-cpu-compatibility-guide)
-- [Usage Examples](#-usage-examples)
-- [Performance Tips](#-performance-tips)
-- [Environment Variables](#-environment-variables)
-- [Supported Models](#-supported-models)
-- [Framework Integrations](#-framework-integrations)
-- [Version Support](#-version-support)
-- [Troubleshooting](#-troubleshooting)
-- [Links & Resources](#-links--resources)
+- [Quick Start](#quick-start)
+- [Installation](#installation)
+- [Supported CPU Instructions](#supported-cpu-instructions)
+- [CPU Compatibility Guide](#cpu-compatibility-guide)
+- [Usage Examples](#usage-examples)
+- [Performance Tips](#performance-tips)
+- [Environment Variables](#environment-variables)
+- [Supported Models](#supported-models)
+- [Framework Integrations](#framework-integrations)
+- [Version Support](#version-support)
+- [Troubleshooting](#troubleshooting)
+- [Links & Resources](#links--resources)
 
 ---
 
