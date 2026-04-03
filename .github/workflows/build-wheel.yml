@@ -1,0 +1,672 @@
+# =============================================================================
+# build-wheel.yml — vLLM CPU Wheel Pipeline (v0.17.0+ Unified Build)
+# =============================================================================
+# Detects new vLLM releases from upstream (vllm-project/vllm), builds unified
+# CPU wheels from source in manylinux_2_28 containers (stable ABI cp38-abi3),
+# and publishes to PyPI + GitHub Releases.
+#
+# Pipeline: Detect upstream → Build wheels (x86_64 + aarch64) → Publish PyPI → GH Release
+#
+# Option A: Build own wheels from source for manylinux_2_28 compatibility.
+# =============================================================================
+
+name: Build vLLM CPU Wheels
+
+on:
+  schedule:
+    - cron: '5 */6 * * *'  # Every 6 hours at :05
+  workflow_dispatch:
+    inputs:
+      action:
+        description: Action to perform
+        required: true
+        type: choice
+        options:
+          - auto-check
+          - build
+        default: auto-check
+      versions:
+        description: 'vLLM versions (comma-separated, e.g., 0.17.0,0.18.0). Empty for auto.'
+        required: false
+        type: string
+        default: ''
+      force_build:
+        description: Force build even if wheels already exist on PyPI
+        required: false
+        type: boolean
+        default: false
+      skip_pypi:
+        description: Skip publishing to PyPI
+        required: false
+        type: boolean
+        default: false
+      skip_github_release:
+        description: Skip uploading to GitHub Releases
+        required: false
+        type: boolean
+        default: false
+      version_postfix:
+        description: 'Version postfix (e.g., .post1, .dev1)'
+        required: false
+        type: string
+        default: ''
+      dry_run:
+        description: Dry run (build but do not publish)
+        required: false
+        type: boolean
+        default: false
+
+  repository_dispatch:
+    types: [vllm-cpu-wheel-build]
+
+permissions:
+  contents: write
+  actions: read
+
+concurrency:
+  group: wheel-${{ github.event_name == 'workflow_dispatch' && 'manual' || github.event_name == 'repository_dispatch' && 'dispatch' || 'scheduled' }}
+  cancel-in-progress: false
+
+env:
+  PYPI_PACKAGE: 'vllm-cpu'
+  PYPI_REGISTRY: 'https://pypi.org'
+  MIN_VERSION: '0.17.0'
+  MAX_VERSIONS: '5'
+  TZ: ${{ vars.TZ || 'Asia/Dhaka' }}
+  EXCLUDE_VERSIONS: ${{ vars.EXCLUDE_VERSIONS || '' }}
+
+jobs:
+  # ===========================================================================
+  # Job 1: Quick check — skip pipeline if no new upstream release
+  # ===========================================================================
+  quick-check:
+    name: Check for new upstream releases
+    runs-on: ${{ vars.ACTION_RUNNER_VERSION || 'ubuntu-latest' }}
+    timeout-minutes: 10
+    outputs:
+      should_run: ${{ steps.check.outputs.should_run }}
+    steps:
+      - name: Compare upstream latest against stored state
+        id: check
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT_NAME: ${{ github.event_name }}
+          INPUT_FORCE_BUILD: ${{ github.event.inputs.force_build || 'false' }}
+          CLIENT_FORCE_BUILD: ${{ github.event.client_payload.force_build || 'false' }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+
+          STATE_BRANCH="pipeline-state"
+          STATE_FILE="wheel-state.json"
+
+          # Manual triggers always run
+          if [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then
+            echo "Manual trigger — running pipeline"
+            echo "should_run=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Repository dispatch with force_build
+          if [[ "$CLIENT_FORCE_BUILD" == "true" ]]; then
+            echo "Force build requested — running pipeline"
+            echo "should_run=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Fetch latest upstream release tag
+          UPSTREAM_LATEST="$(curl -fsSL \
+            -H "Authorization: token ${GH_TOKEN}" \
+            "https://api.github.com/repos/vllm-project/vllm/releases/latest" \
+            | jq -r '.tag_name // "" | ltrimstr("v")' 2>/dev/null || echo "")"
+
+          if [[ -z "$UPSTREAM_LATEST" ]]; then
+            echo "Could not fetch upstream latest — running pipeline as fallback"
+            echo "should_run=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "Upstream latest: $UPSTREAM_LATEST"
+
+          # Read stored state from pipeline-state branch
+          STORED_LATEST=""
+          STATE_JSON="$(gh api "repos/${REPO}/contents/${STATE_FILE}?ref=${STATE_BRANCH}" \
+            --jq '.content' 2>/dev/null | base64 -d 2>/dev/null || echo "")"
+          if [[ -n "$STATE_JSON" ]]; then
+            STORED_LATEST="$(echo "$STATE_JSON" | jq -r '.upstream_latest_version // ""' 2>/dev/null || echo "")"
+          fi
+
+          if [[ -z "$STORED_LATEST" ]]; then
+            echo "No stored state — first run, running pipeline"
+            echo "should_run=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if [[ "$UPSTREAM_LATEST" != "$STORED_LATEST" ]]; then
+            echo "Upstream changed: ${STORED_LATEST} -> ${UPSTREAM_LATEST} — running pipeline"
+            echo "should_run=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "Upstream unchanged (${UPSTREAM_LATEST}) — skipping pipeline"
+          echo "should_run=false" >> "$GITHUB_OUTPUT"
+
+  # ===========================================================================
+  # Job 2: Fetch releases — determine which versions to build
+  # ===========================================================================
+  fetch-releases:
+    name: Detect versions to build
+    needs: [quick-check]
+    if: needs.quick-check.outputs.should_run == 'true'
+    runs-on: ${{ vars.ACTION_RUNNER_VERSION || 'ubuntu-latest' }}
+    timeout-minutes: 10
+    outputs:
+      build_matrix: ${{ steps.releases.outputs.build_matrix }}
+      versions_json: ${{ steps.releases.outputs.versions_json }}
+      latest_version: ${{ steps.releases.outputs.latest_version }}
+      should_build: ${{ steps.releases.outputs.should_build }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Normalize inputs
+        id: normalize
+        shell: bash
+        env:
+          ACTION_INPUT: ${{ github.event.inputs.action || '' }}
+          CLIENT_ACTION: ${{ github.event.client_payload.action || '' }}
+          VERSIONS_INPUT: ${{ github.event.inputs.versions || '' }}
+          CLIENT_VERSIONS: ${{ github.event.client_payload.versions || '' }}
+          FORCE_INPUT: ${{ github.event.inputs.force_build || '' }}
+          CLIENT_FORCE: ${{ github.event.client_payload.force_build || '' }}
+        run: |
+          set -euo pipefail
+          bash .github/scripts/normalize-dispatch-inputs.sh
+
+      - name: Detect upstream releases
+        id: releases
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          REQUESTED_ACTION: ${{ steps.normalize.outputs.action }}
+          MANUAL_VERSIONS_RAW: ${{ steps.normalize.outputs.versions }}
+          MIN_VERSION: ${{ env.MIN_VERSION }}
+          MAX_VERSIONS: ${{ env.MAX_VERSIONS }}
+          PYPI_PACKAGE: ${{ env.PYPI_PACKAGE }}
+          PYPI_REGISTRY: ${{ env.PYPI_REGISTRY }}
+          EXCLUDE_VERSIONS: ${{ env.EXCLUDE_VERSIONS }}
+        run: |
+          set -euo pipefail
+          bash .github/scripts/fetch-upstream-releases.sh
+
+  # ===========================================================================
+  # Job 3: Build wheels — matrix over platforms (x86_64, aarch64)
+  # ===========================================================================
+  build:
+    name: Build wheel (${{ matrix.platform }}) — v${{ matrix.version }}
+    needs: [fetch-releases]
+    if: needs.fetch-releases.outputs.should_build == 'true'
+    runs-on: ${{ matrix.platform == 'aarch64' && 'ubuntu-24.04-arm' || 'ubuntu-latest' }}
+    timeout-minutes: ${{ matrix.platform == 'aarch64' && 300 || 240 }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.fetch-releases.outputs.build_matrix || '[]') }}
+    concurrency:
+      group: build-wheel-${{ matrix.version }}-${{ matrix.platform }}
+      cancel-in-progress: false
+    outputs:
+      success: ${{ steps.result.outputs.success }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Free disk space
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache 2>/dev/null || true
+          df -h /
+
+      - name: Set up build variables
+        id: vars
+        shell: bash
+        env:
+          VERSION: ${{ matrix.version }}
+          PLATFORM: ${{ matrix.platform }}
+          VERSION_POSTFIX: ${{ github.event.inputs.version_postfix || '' }}
+        run: |
+          set -euo pipefail
+
+          FULL_VERSION="${VERSION}${VERSION_POSTFIX}"
+          MANYLINUX_IMAGE="quay.io/pypa/manylinux_2_28_${PLATFORM}"
+          ARTIFACT_NAME="wheels-unified-${PLATFORM}-${FULL_VERSION}"
+
+          echo "full_version=${FULL_VERSION}" >> "$GITHUB_OUTPUT"
+          echo "manylinux_image=${MANYLINUX_IMAGE}" >> "$GITHUB_OUTPUT"
+          echo "artifact_name=${ARTIFACT_NAME}" >> "$GITHUB_OUTPUT"
+
+      - name: Restore ccache
+        uses: actions/cache@v5
+        with:
+          path: ~/.cache/ccache
+          key: ccache-${{ matrix.platform }}-${{ matrix.version }}-${{ github.sha }}
+          restore-keys: |
+            ccache-${{ matrix.platform }}-${{ matrix.version }}-
+            ccache-${{ matrix.platform }}-
+
+      - name: Build unified wheel in manylinux_2_28
+        id: build
+        shell: bash
+        env:
+          VERSION: ${{ matrix.version }}
+          FULL_VERSION: ${{ steps.vars.outputs.full_version }}
+          MANYLINUX_IMAGE: ${{ steps.vars.outputs.manylinux_image }}
+          PLATFORM: ${{ matrix.platform }}
+          VERSION_POSTFIX: ${{ github.event.inputs.version_postfix || '' }}
+        run: |
+          set -euo pipefail
+
+          mkdir -p dist ccache-cache
+
+          # Platform tag for wheel filename
+          if [[ "$PLATFORM" == "x86_64" ]]; then
+            PLAT_TAG="manylinux_2_28_x86_64"
+          else
+            PLAT_TAG="manylinux_2_28_aarch64"
+          fi
+
+          docker pull "$MANYLINUX_IMAGE"
+
+          docker run --rm \
+            -v "$PWD/dist:/output" \
+            -v "$HOME/.cache/ccache:/root/.cache/ccache" \
+            -e "VLLM_VERSION=${VERSION}" \
+            -e "FULL_VERSION=${FULL_VERSION}" \
+            -e "VERSION_POSTFIX=${VERSION_POSTFIX}" \
+            -e "VLLM_TARGET_DEVICE=cpu" \
+            -e "VLLM_SKIP_DEPS_CHECK=1" \
+            -e "MAX_JOBS=$(nproc)" \
+            -e "CCACHE_DIR=/root/.cache/ccache" \
+            -e "PLAT_TAG=${PLAT_TAG}" \
+            "$MANYLINUX_IMAGE" \
+            bash -exc '
+              set -euo pipefail
+
+              # --- Install build dependencies ---
+              dnf install -y numactl-devel ccache jq git ninja-build wget
+              source /opt/rh/gcc-toolset-14/enable
+
+              # --- Install uv package manager ---
+              curl -LsSf https://astral.sh/uv/install.sh | sh
+              export PATH="$HOME/.local/bin:$PATH"
+
+              # --- Use Python from manylinux (latest available 3.x) ---
+              # With stable ABI (cp38-abi3), we only need one Python to build
+              PYTHON_BIN="$(ls -d /opt/python/cp3*/bin | sort -V | tail -n1)"
+              export PATH="${PYTHON_BIN}:${PATH}"
+              python3 --version
+
+              # --- Clone vLLM source ---
+              cd /tmp
+              git clone --depth 1 --branch "v${VLLM_VERSION}" \
+                https://github.com/vllm-project/vllm.git
+              cd vllm
+
+              # --- Patch pyproject.toml: rename package to vllm-cpu ---
+              sed -i "s/^name = \"vllm\"/name = \"vllm-cpu\"/" pyproject.toml
+
+              # Remove +cpu local version suffix (PyPI forbids local identifiers)
+              if [[ -f vllm/version.py ]]; then
+                sed -i "s/+cpu//g" vllm/version.py
+              fi
+              # Also handle _version.py if it exists
+              if [[ -f vllm/_version.py ]]; then
+                sed -i "s/+cpu//g" vllm/_version.py
+              fi
+
+              # Apply version postfix if specified
+              if [[ -n "${VERSION_POSTFIX}" ]]; then
+                # Escape dots for sed regex (0.17.0 -> 0\.17\.0)
+                ESCAPED_VER="$(echo "${VLLM_VERSION}" | sed "s/\./\\\\./g")"
+                if [[ -f vllm/version.py ]]; then
+                  sed -i "s/__version__ = \"${ESCAPED_VER}\"/__version__ = \"${FULL_VERSION}\"/" vllm/version.py
+                fi
+                if [[ -f vllm/_version.py ]]; then
+                  sed -i "s/__version__ = \"${ESCAPED_VER}\"/__version__ = \"${FULL_VERSION}\"/" vllm/_version.py
+                fi
+              fi
+
+              # --- Install build dependencies ---
+              uv pip install --system build wheel setuptools cmake numpy torch --extra-index-url https://download.pytorch.org/whl/cpu
+
+              # --- Build the wheel ---
+              python3 -m build --wheel --outdir /tmp/wheel-out
+
+              # --- Rename wheel to manylinux_2_28 platform tag ---
+              cd /tmp/wheel-out
+              for whl in *.whl; do
+                # Replace linux_* or manylinux* platform tag with our target
+                NEW_NAME="$(echo "$whl" | sed -E "s/(linux_|manylinux[0-9_]+)(x86_64|aarch64)/${PLAT_TAG//_/.}/")"
+                # Ensure it uses the manylinux_2_28 tag format
+                NEW_NAME="$(echo "$NEW_NAME" | sed -E "s/manylinux\.2\.28/manylinux_2_28/")"
+                if [[ "$whl" != "$NEW_NAME" ]]; then
+                  mv "$whl" "$NEW_NAME"
+                fi
+              done
+
+              # --- Copy wheels to output ---
+              cp /tmp/wheel-out/*.whl /output/
+
+              echo "=== Built wheels ==="
+              ls -la /output/*.whl
+            '
+
+          echo "=== Wheels in dist/ ==="
+          ls -la dist/
+
+      - name: Verify glibc compatibility
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          for whl in dist/*.whl; do
+            echo "Checking: $whl"
+            TMPDIR="$(mktemp -d)"
+            unzip -q "$whl" -d "$TMPDIR"
+
+            # Find compiled .so files
+            MAX_GLIBC="2.0"
+            while IFS= read -r so_file; do
+              GLIBC_VERS="$(objdump -T "$so_file" 2>/dev/null \
+                | grep -oP 'GLIBC_\K[0-9]+\.[0-9]+' \
+                | sort -Vr | head -n1 || true)"
+              if [[ -n "$GLIBC_VERS" ]]; then
+                if [[ "$(printf '%s\n%s' "$GLIBC_VERS" "$MAX_GLIBC" | sort -Vr | head -n1)" == "$GLIBC_VERS" ]]; then
+                  MAX_GLIBC="$GLIBC_VERS"
+                fi
+              fi
+            done < <(find "$TMPDIR" -name '*.so' -o -name '*.so.*')
+
+            echo "  Max GLIBC required: $MAX_GLIBC"
+
+            # Verify <= 2.28
+            REQUIRED="2.28"
+            if [[ "$(printf '%s\n%s' "$MAX_GLIBC" "$REQUIRED" | sort -Vr | head -n1)" != "$REQUIRED" ]]; then
+              echo "ERROR: Wheel requires GLIBC $MAX_GLIBC > $REQUIRED"
+              rm -rf "$TMPDIR"
+              exit 1
+            fi
+
+            echo "  OK: compatible with manylinux_2_28"
+            rm -rf "$TMPDIR"
+          done
+
+      - name: Upload wheel artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ steps.vars.outputs.artifact_name }}
+          path: dist/*.whl
+          retention-days: 30
+          if-no-files-found: error
+
+      - name: Set result
+        id: result
+        if: always()
+        shell: bash
+        env:
+          BUILD_OUTCOME: ${{ steps.build.outcome }}
+        run: |
+          if [[ "$BUILD_OUTCOME" == "success" ]]; then
+            echo "success=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "success=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  # ===========================================================================
+  # Job 4: Publish to PyPI
+  # ===========================================================================
+  publish-pypi:
+    name: Publish to PyPI — v${{ matrix.version }}
+    needs: [fetch-releases, build]
+    if: |
+      needs.build.result == 'success' &&
+      github.event.inputs.skip_pypi != 'true' &&
+      github.event.inputs.dry_run != 'true'
+    runs-on: ${{ vars.ACTION_RUNNER_VERSION || 'ubuntu-latest' }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.fetch-releases.outputs.versions_json || '[{"version":"skip"}]') }}
+    steps:
+      - name: Download all wheel artifacts for this version
+        uses: actions/download-artifact@v8
+        with:
+          pattern: wheels-unified-*-${{ matrix.version }}${{ github.event.inputs.version_postfix || '' }}
+          merge-multiple: true
+          path: dist/
+
+      - name: List wheels
+        shell: bash
+        run: ls -la dist/
+
+      - name: Install twine
+        shell: bash
+        run: pip install --upgrade twine
+
+      - name: Publish to PyPI
+        shell: bash
+        env:
+          TWINE_USERNAME: __token__
+          TWINE_PASSWORD: ${{ secrets.PYPI_TOKEN_CPU || secrets.PYPI_API_TOKEN }}
+        run: |
+          set -euo pipefail
+          twine upload --skip-existing dist/*.whl
+          echo "Published to PyPI successfully"
+
+  # ===========================================================================
+  # Job 5: Upload to GitHub Releases
+  # ===========================================================================
+  github-release:
+    name: GitHub Release — v${{ matrix.version }}
+    needs: [fetch-releases, build]
+    if: |
+      needs.build.result == 'success' &&
+      github.event.inputs.skip_github_release != 'true' &&
+      github.event.inputs.dry_run != 'true'
+    runs-on: ${{ vars.ACTION_RUNNER_VERSION || 'ubuntu-latest' }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.fetch-releases.outputs.versions_json || '[]') }}
+    steps:
+      - name: Download wheel artifacts
+        uses: actions/download-artifact@v8
+        with:
+          pattern: wheels-unified-*-${{ matrix.version }}${{ github.event.inputs.version_postfix || '' }}
+          merge-multiple: true
+          path: dist/
+
+      - name: Set release variables
+        id: release-vars
+        shell: bash
+        env:
+          VERSION: ${{ matrix.version }}
+          VERSION_POSTFIX: ${{ github.event.inputs.version_postfix || '' }}
+        run: |
+          set -euo pipefail
+          FULL_VERSION="${VERSION}${VERSION_POSTFIX}"
+          TAG="v${FULL_VERSION}"
+          IS_PRERELEASE="false"
+          if echo "$VERSION_POSTFIX" | grep -qEi '(dev|rc|alpha|beta)'; then
+            IS_PRERELEASE="true"
+          fi
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+          echo "full_version=${FULL_VERSION}" >> "$GITHUB_OUTPUT"
+          echo "is_prerelease=${IS_PRERELEASE}" >> "$GITHUB_OUTPUT"
+
+      - name: Generate release body
+        id: release-body
+        shell: bash
+        env:
+          FULL_VERSION: ${{ steps.release-vars.outputs.full_version }}
+        run: |
+          set -euo pipefail
+          BODY="## vllm-cpu ${FULL_VERSION}
+
+          Unified CPU wheel (AVX2 + AVX512 auto-detection at runtime).
+
+          ### Install
+
+          \`\`\`bash
+          pip install vllm-cpu==${FULL_VERSION}
+          \`\`\`
+
+          ### Wheels
+
+          | Platform | Wheel |
+          |----------|-------|"
+
+          for whl in dist/*.whl; do
+            BASENAME="$(basename "$whl")"
+            if echo "$BASENAME" | grep -q "x86_64"; then
+              BODY="${BODY}
+          | x86_64 | \`${BASENAME}\` |"
+            elif echo "$BASENAME" | grep -q "aarch64"; then
+              BODY="${BODY}
+          | aarch64 | \`${BASENAME}\` |"
+            fi
+          done
+
+          BODY="${BODY}
+
+          Built with manylinux_2_28 (glibc 2.28+) and stable ABI (cp38-abi3, Python 3.8+)."
+
+          # Write multiline output
+          {
+            echo "body<<RELEASE_EOF"
+            echo "$BODY"
+            echo "RELEASE_EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.release-vars.outputs.tag }}
+          name: vllm-cpu ${{ steps.release-vars.outputs.full_version }}
+          body: ${{ steps.release-body.outputs.body }}
+          files: dist/*.whl
+          prerelease: ${{ steps.release-vars.outputs.is_prerelease == 'true' }}
+          make_latest: ${{ matrix.version == needs.fetch-releases.outputs.latest_version }}
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+
+  # ===========================================================================
+  # Job 6: Update pipeline state
+  # ===========================================================================
+  update-state:
+    name: Update wheel pipeline state
+    needs: [fetch-releases, publish-pypi, github-release]
+    if: |
+      always() &&
+      needs.fetch-releases.outputs.latest_version != '' &&
+      (needs.publish-pypi.result == 'success' || needs.publish-pypi.result == 'skipped') &&
+      (needs.github-release.result == 'success' || needs.github-release.result == 'skipped')
+    runs-on: ${{ vars.ACTION_RUNNER_VERSION || 'ubuntu-latest' }}
+    timeout-minutes: 10
+    steps:
+      - name: Checkout state branch
+        uses: actions/checkout@v6
+        with:
+          ref: pipeline-state
+          fetch-depth: 1
+        continue-on-error: true
+        id: checkout-state
+
+      - name: Initialize orphan branch if needed
+        if: steps.checkout-state.outcome == 'failure'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          git init
+          git checkout --orphan pipeline-state
+          git reset --hard
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git remote add origin "https://x-access-token:${GH_TOKEN}@github.com/${REPO}.git" 2>/dev/null || true
+
+      - name: Write and push state
+        shell: bash
+        env:
+          LATEST: ${{ needs.fetch-releases.outputs.latest_version }}
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+
+          if [[ -z "$LATEST" ]]; then
+            echo "No latest version to store"
+            exit 0
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          NOW="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+
+          # Read existing state
+          EXISTING_VERSION=""
+          if [[ -f wheel-state.json ]]; then
+            EXISTING_VERSION="$(jq -r '.upstream_latest_version // ""' wheel-state.json)"
+          fi
+
+          jq -n \
+            --arg v "$LATEST" \
+            --arg t "$NOW" \
+            '{upstream_latest_version: $v, updated_at: $t}' > wheel-state.json
+
+          git add wheel-state.json
+
+          if git diff --cached --quiet 2>/dev/null; then
+            echo "State unchanged — skipping commit"
+            exit 0
+          fi
+
+          git commit -m "state: update upstream_latest_version to ${LATEST}"
+          git push "https://x-access-token:${GH_TOKEN}@github.com/${REPO}.git" HEAD:pipeline-state
+
+  # ===========================================================================
+  # Job 7: Trigger Docker build after wheels are published
+  # ===========================================================================
+  trigger-docker:
+    name: Trigger Docker image pipeline
+    needs: [fetch-releases, publish-pypi]
+    if: |
+      needs.publish-pypi.result == 'success' &&
+      github.event.inputs.dry_run != 'true'
+    runs-on: ${{ vars.ACTION_RUNNER_VERSION || 'ubuntu-latest' }}
+    timeout-minutes: 5
+    steps:
+      - name: Dispatch Docker build
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          LATEST_VERSION: ${{ needs.fetch-releases.outputs.latest_version }}
+        run: |
+          set -euo pipefail
+
+          gh api "repos/${REPO}/dispatches" \
+            -f event_type="vllm-cpu-docker-build" \
+            -f "client_payload[action]=build-versions" \
+            -f "client_payload[versions]=${LATEST_VERSION}" \
+            -f "client_payload[force_build]=false" \
+            -f "client_payload[auto_promote]=true"
+
+          echo "Dispatched Docker build for v${LATEST_VERSION}"
