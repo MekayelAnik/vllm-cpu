@@ -348,9 +348,10 @@ jobs:
               # Install PyTorch CPU-only from dedicated index
               uv pip install --python "$PYTHON3" torch --index-url https://download.pytorch.org/whl/cpu
 
-              # Also install vLLM's build requirements so --no-isolation works
+              # Also install vLLM build requirements so --no-isolation works
+              # Note: avoid single quotes inside this block (breaks bash -exc quoting)
               if [[ -f pyproject.toml ]]; then
-                BUILD_REQS="$("$PYTHON3" -c "import tomllib; f=open('pyproject.toml','rb'); c=tomllib.load(f); print(' '.join(r for r in c.get('build-system',{}).get('requires',[]) if not r.startswith(('torch','cmake'))))")"
+                BUILD_REQS="$("$PYTHON3" -c "import tomllib; f=open(\"pyproject.toml\",\"rb\"); c=tomllib.load(f); print(\" \".join(r for r in c.get(\"build-system\",{}).get(\"requires\",[]) if not r.startswith((\"torch\",\"cmake\"))))")"
                 if [[ -n "$BUILD_REQS" ]]; then
                   echo "Installing build requirements: $BUILD_REQS"
                   uv pip install --python "$PYTHON3" $BUILD_REQS
