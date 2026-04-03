@@ -344,12 +344,29 @@ jobs:
               # Install build tools from PyPI
               uv pip install --system build wheel setuptools cmake numpy
               # Install PyTorch CPU-only from dedicated index.
-              # Use --index-url (not --extra-index-url) to force CPU wheel
-              # and prevent uv from picking the CUDA variant from PyPI.
               uv pip install --system torch --index-url https://download.pytorch.org/whl/cpu
 
+              # Also install vLLM's build requirements so --no-isolation works
+              if [[ -f pyproject.toml ]]; then
+                # Extract build-system.requires and install them
+                python3 -c "
+import tomllib, subprocess, sys
+with open('pyproject.toml', 'rb') as f:
+    cfg = tomllib.load(f)
+reqs = cfg.get('build-system', {}).get('requires', [])
+# Filter out torch (already installed as CPU) and cmake (already installed)
+reqs = [r for r in reqs if not r.startswith(('torch', 'cmake'))]
+if reqs:
+    print('Installing build requirements:', reqs)
+    subprocess.check_call([sys.executable, '-m', 'uv', 'pip', 'install', '--system'] + reqs)
+"
+              fi
+
               # --- Build the wheel ---
-              python3 -m build --wheel --outdir /tmp/wheel-out
+              # Use --no-isolation to use our system-installed CPU torch.
+              # Without this, build creates an isolated env and installs
+              # CUDA torch from PyPI, causing cmake CUDA errors.
+              python3 -m build --wheel --no-isolation --outdir /tmp/wheel-out
 
               # --- Rename wheel to manylinux_2_28 platform tag ---
               cd /tmp/wheel-out
