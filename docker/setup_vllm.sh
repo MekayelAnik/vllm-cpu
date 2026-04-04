@@ -396,6 +396,9 @@ fi
 # Fix: Directly patch opentelemetry/context/__init__.py to not rely on entry_points
 echo ""
 echo "=== Fixing opentelemetry compatibility ==="
+# Install opentelemetry-sdk which provides tracecontext propagator
+# (required by vLLM tracing module, missing on Python 3.13)
+uv pip install opentelemetry-sdk opentelemetry-api 2>/dev/null || pip install opentelemetry-sdk opentelemetry-api 2>/dev/null || true
 SITE_PACKAGES=$(python -c "import site; print(site.getsitepackages()[0])")
 OTEL_CONTEXT_FILE="${SITE_PACKAGES}/opentelemetry/context/__init__.py"
 
