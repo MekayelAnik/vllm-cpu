@@ -98,7 +98,7 @@ pip install vllm-cpu
 ```python
 from vllm import LLM, SamplingParams
 
-llm = LLM(model="facebook/opt-125m", dtype="float32")
+llm = LLM(model="Qwen/Qwen3-0.6B", dtype="bfloat16")
 outputs = llm.generate(["Hello, my name is"], SamplingParams(max_tokens=50))
 print(outputs[0].outputs[0].text)
 ```
@@ -106,13 +106,13 @@ print(outputs[0].outputs[0].text)
 **3. Or start an OpenAI-compatible server**
 
 ```bash
-vllm serve facebook/opt-125m --dtype auto
+vllm serve Qwen/Qwen3-0.6B --dtype auto
 ```
 
 ```bash
 curl http://localhost:8000/v1/completions \
   -H "Content-Type: application/json" \
-  -d '{"model": "facebook/opt-125m", "prompt": "The future of AI is", "max_tokens": 128}'
+  -d '{"model": "Qwen/Qwen3-0.6B", "prompt": "The future of AI is", "max_tokens": 128}'
 ```
 
 ---
@@ -212,7 +212,7 @@ lscpu | grep -E "avx512|vnni|bf16|amx"
 from vllm import LLM, SamplingParams
 
 llm = LLM(
-    model="microsoft/phi-2",
+    model="google/gemma-3-1b-it",
     dtype="bfloat16",
     max_model_len=2048
 )
@@ -236,7 +236,7 @@ from openai import OpenAI
 client = OpenAI(base_url="http://localhost:8000/v1", api_key="not-needed")
 
 response = client.chat.completions.create(
-    model="mistralai/Mistral-7B-Instruct-v0.2",
+    model="Qwen/Qwen3-4B",
     messages=[{"role": "user", "content": "What is the capital of France?"}]
 )
 print(response.choices[0].message.content)
@@ -247,7 +247,7 @@ print(response.choices[0].message.content)
 ```bash
 curl http://localhost:8000/v1/chat/completions \
   -H "Content-Type: application/json" \
-  -d '{"model": "mistralai/Mistral-7B-Instruct-v0.2",
+  -d '{"model": "Qwen/Qwen3-4B",
        "messages": [{"role": "user", "content": "Hello!"}]}'
 ```
 
@@ -314,7 +314,7 @@ export VLLM_CPU_SGL_KERNEL=1                  # Low-latency online serving
 ### 7. Quantized models
 
 ```python
-llm = LLM(model="TheBloke/Llama-2-7B-GPTQ", quantization="gptq")
+llm = LLM(model="Qwen/Qwen3-8B-GPTQ-Int4", quantization="gptq")
 ```
 
 ### Memory Estimation
@@ -374,7 +374,7 @@ from langchain_openai import ChatOpenAI
 llm = ChatOpenAI(
     base_url="http://localhost:8000/v1",
     api_key="not-needed",
-    model="mistralai/Mistral-7B-Instruct-v0.2"
+    model="Qwen/Qwen3-4B"
 )
 response = llm.invoke("Explain machine learning in simple terms")
 ```
@@ -387,7 +387,7 @@ from llama_index.llms.openai_like import OpenAILike
 llm = OpenAILike(
     api_base="http://localhost:8000/v1",
     api_key="not-needed",
-    model="mistralai/Mistral-7B-Instruct-v0.2"
+    model="Qwen/Qwen3-4B"
 )
 response = llm.complete("What is the capital of France?")
 ```
