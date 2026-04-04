@@ -474,17 +474,55 @@ jobs:
           print(f'_C module found: {c_spec is not None}')
           print(f'_C_AVX2 module found: {c_avx2_spec is not None}')
 
-          # Check AVX512 support (x86_64 only)
-          import platform
-          if platform.machine() == 'x86_64':
+          # Detect ISA features
+          import platform, subprocess
+          arch = platform.machine()
+          print(f'Architecture: {arch}')
+
+          if arch == 'x86_64':
               avx512 = torch._C._cpu._is_avx512_supported()
               print(f'AVX512 supported: {avx512}')
               if avx512:
-                  print('ISA: AVX512 (optimal path)')
+                  print('ISA path: AVX512 (optimal)')
               else:
-                  print('ISA: AVX2 (fallback path)')
-          else:
-              print(f'Architecture: {platform.machine()}')
+                  print('ISA path: AVX2 (fallback)')
+              # Detect specific x86 features from /proc/cpuinfo
+              try:
+                  flags = open('/proc/cpuinfo').read()
+                  for feat in ['avx2', 'avx512f', 'avx512_vnni', 'avx512_bf16', 'amx_bf16']:
+                      found = feat in flags
+                      print(f'  {feat}: {\"YES\" if found else \"no\"}')
+              except Exception:
+                  pass
+
+          elif arch == 'aarch64':
+              print('ISA path: ARM NEON')
+              # Detect ARM features from /proc/cpuinfo or hwcaps
+              try:
+                  cpuinfo = open('/proc/cpuinfo').read()
+                  # ARM features are listed in 'Features' line
+                  for line in cpuinfo.splitlines():
+                      if line.startswith('Features'):
+                          feats = line.split(':',1)[1].strip()
+                          print(f'  CPU features: {feats}')
+                          for feat in ['neon', 'bf16', 'dotprod', 'fp16', 'sve', 'sve2', 'sme']:
+                              found = feat in feats.split()
+                              print(f'  {feat}: {\"YES\" if found else \"no\"}')
+                          break
+              except Exception:
+                  pass
+              # Also check hwcaps
+              try:
+                  hwcaps = open('/proc/self/auxv', 'rb')
+                  hwcaps.close()
+                  result = subprocess.run(['getconf', 'HWCAP'], capture_output=True, text=True)
+                  if result.returncode == 0:
+                      print(f'  HWCAP: {result.stdout.strip()}')
+                  result = subprocess.run(['getconf', 'HWCAP2'], capture_output=True, text=True)
+                  if result.returncode == 0:
+                      print(f'  HWCAP2: {result.stdout.strip()}')
+              except Exception:
+                  pass
           "
 
           # Test 3: Basic LLM class instantiation (no model download)
