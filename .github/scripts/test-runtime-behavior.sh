@@ -80,9 +80,11 @@ assert_file_not_empty "cpu-build requirements non-empty" "resources/cpu-build.tx
 # ---------------------------------------------------------------------------
 # DockerfileModifier.sh content sanity checks
 # ---------------------------------------------------------------------------
-assert_file_contains "modifier references base image" "DockerfileModifier.sh" "FROM"
-assert_file_contains "modifier references COPY" "DockerfileModifier.sh" "COPY"
-assert_file_contains "modifier references platform" "DockerfileModifier.sh" "TARGETPLATFORM"
+assert_file_contains "modifier references base image" "DockerfileModifier.sh" "BASE_IMAGE"
+assert_file_contains "modifier references version" "DockerfileModifier.sh" "VLLM_VERSION"
+assert_file_contains "dockerfile references FROM" "docker/Dockerfile" "FROM"
+assert_file_contains "dockerfile references COPY" "docker/Dockerfile" "COPY"
+assert_file_contains "dockerfile references platform" "docker/Dockerfile" "TARGETPLATFORM"
 
 # ---------------------------------------------------------------------------
 # Multi-arch platform verification
