@@ -445,6 +445,7 @@ jobs:
         shell: bash
         env:
           PLATFORM: ${{ matrix.platform }}
+          VLLM_TARGET_DEVICE: cpu
         run: |
           set -euo pipefail
 
