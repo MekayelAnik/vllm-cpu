@@ -1,0 +1,108 @@
+# Docker build context optimization
+# Excludes unnecessary files from the build context to improve build performance
+
+# Version control
+.git/
+.gitignore
+.gitattributes
+
+# Python artifacts
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+env/
+.env
+
+# IDE and editor files
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.project
+.pydevproject
+.settings/
+
+# Testing and coverage
+.pytest_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+.tox/
+.nox/
+coverage.xml
+*.cover
+*.log
+
+# Documentation
+docs/
+*.md
+!README.md
+LICENSE
+
+# CI/CD files (not needed in container)
+.github/
+.gitlab-ci.yml
+.travis.yml
+Jenkinsfile
+azure-pipelines.yml
+
+# Build artifacts and temporary files
+*.tar
+*.tar.gz
+*.zip
+tmp/
+temp/
+*.tmp
+*.bak
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Secrets and local configs (should never be in container)
+*.pem
+*.key
+secrets/
+.secrets
+*.env.local
+*.env.*.local
+
+# Large files that shouldn't be in context
+*.whl
+*.model
+*.bin
+*.pt
+*.onnx
+*.safetensors
+
+# Experimental directories
+docker-experimental/
+
+# Build scripts (not needed in final image)
+build_wheels.sh
+test_and_publish.sh
+docker-build.sh
+docker-buildx.sh
