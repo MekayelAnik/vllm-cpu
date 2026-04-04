@@ -321,13 +321,19 @@ jobs:
               cp /repo-readme/README.md README.md
 
               # Remove +cpu local version suffix (PyPI forbids local identifiers)
+              # Strip from all Python files and configs that might contain it
               if [[ -f vllm/version.py ]]; then
                 sed -i "s/+cpu//g" vllm/version.py
               fi
-              # Also handle _version.py if it exists
               if [[ -f vllm/_version.py ]]; then
                 sed -i "s/+cpu//g" vllm/_version.py
               fi
+              # Also strip from pyproject.toml and setup.py/setup.cfg
+              sed -i "s/+cpu//g" pyproject.toml
+              if [[ -f setup.py ]]; then sed -i "s/+cpu//g" setup.py; fi
+              if [[ -f setup.cfg ]]; then sed -i "s/+cpu//g" setup.cfg; fi
+              # Override VLLM_TARGET_DEVICE to prevent +cpu suffix injection at build time
+              export VLLM_PRERELEASE_SUFFIX=""
 
               # Apply version postfix if specified
               if [[ -n "${VERSION_POSTFIX}" ]]; then
@@ -376,9 +382,11 @@ jobs:
               for whl in *.whl; do
                 echo "Original wheel: $whl"
                 NEW_NAME="$whl"
-                # Fix 1: ABI tag cp3XX-cp3XX -> cp38-abi3 (stable ABI)
+                # Fix 1: Strip +cpu local version suffix from filename
+                NEW_NAME="$(echo "$NEW_NAME" | sed -E "s/\+cpu//")"
+                # Fix 2: ABI tag cp3XX-cp3XX -> cp38-abi3 (stable ABI)
                 NEW_NAME="$(echo "$NEW_NAME" | sed -E "s/cp[0-9]+-cp[0-9]+/cp38-abi3/")"
-                # Fix 2: Platform tag -> manylinux_2_28_{arch} (exact string, no variables)
+                # Fix 3: Platform tag -> manylinux_2_28_{arch}
                 NEW_NAME="$(echo "$NEW_NAME" | sed -E "s/(linux|manylinux)[0-9_.]*_(x86_64|aarch64)/manylinux_2_28_\2/")"
                 if [[ "$whl" != "$NEW_NAME" ]]; then
                   mv "$whl" "$NEW_NAME"
@@ -548,7 +556,11 @@ jobs:
 
           MODEL = 'HuggingFaceTB/SmolLM2-135M-Instruct'
           print(f'Loading {MODEL}...')
-          llm = LLM(model=MODEL, device='cpu', dtype='float32', max_model_len=256)
+          # Use try/except for device param — removed in v0.19.0+
+          try:
+              llm = LLM(model=MODEL, device='cpu', dtype='float32', max_model_len=256)
+          except TypeError:
+              llm = LLM(model=MODEL, dtype='float32', max_model_len=256)
           print('Model loaded successfully')
 
           prompts = ['What is 2 + 2? Answer briefly.']
