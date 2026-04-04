@@ -848,9 +848,12 @@ jobs:
               "Highlights",
               "Model Support",
               "Hardware & Performance",
+              "Kernel",
               "Quantization",
               "API & Frontend",
               "Security",
+              "Breaking Changes",
+              "Deprecation & Breaking Changes",
           ]
 
           # Split by markdown headings (## or ###)
