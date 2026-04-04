@@ -462,6 +462,7 @@ pip install vllm-cpu==0.12.0.post2
 |---|:---------|:-----|
 | **Source** | GitHub Repository | [github.com/MekayelAnik/vllm-cpu](https://github.com/MekayelAnik/vllm-cpu) |
 | **Docker** | Docker Hub Images | [hub.docker.com/r/mekayelanik/vllm-cpu](https://hub.docker.com/r/mekayelanik/vllm-cpu) |
+| **GHCR** | GitHub Container Registry | [ghcr.io/mekayelanik/vllm-cpu](https://github.com/MekayelAnik/vllm-cpu/pkgs/container/vllm-cpu) |
 | **Docs** | vLLM Documentation | [docs.vllm.ai](https://docs.vllm.ai/en/latest/) |
 | **Upstream** | vLLM Project | [github.com/vllm-project/vllm](https://github.com/vllm-project/vllm) |
 | **Issues** | Report a Bug | [github.com/MekayelAnik/vllm-cpu/issues](https://github.com/MekayelAnik/vllm-cpu/issues) |
