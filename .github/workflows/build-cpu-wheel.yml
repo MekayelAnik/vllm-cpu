@@ -633,9 +633,9 @@ jobs:
           print(f'Loading {MODEL}...')
           # Use try/except for device param — removed in v0.19.0+
           try:
-              llm = LLM(model=MODEL, device='cpu', dtype='float32', max_model_len=512)
+              llm = LLM(model=MODEL, device='cpu', dtype='float32', max_model_len=512, trust_remote_code=True)
           except TypeError:
-              llm = LLM(model=MODEL, dtype='float32', max_model_len=512)
+              llm = LLM(model=MODEL, dtype='float32', max_model_len=512, trust_remote_code=True)
           print('Model loaded successfully')
 
           prompts = ['The meaning of life is']
