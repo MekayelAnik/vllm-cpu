@@ -525,7 +525,7 @@ jobs:
                   pass
           "
 
-          # Test 3: Basic LLM class instantiation (no model download)
+          # Test 3: Basic LLM class instantiation
           echo "--- Test 3: LLM class available ---"
           python3 -c "
           from vllm import LLM, SamplingParams
@@ -540,6 +540,34 @@ jobs:
           m = metadata('vllm-cpu')
           print(f'Name: {m[\"Name\"]}')
           print(f'Version: {m[\"Version\"]}')
+          "
+
+          # Test 5: End-to-end inference with facebook/opt-125m (~250MB)
+          echo "--- Test 5: End-to-end inference (facebook/opt-125m) ---"
+          export VLLM_CPU_KVCACHE_SPACE=2
+          python3 -c "
+          from vllm import LLM, SamplingParams
+
+          print('Loading facebook/opt-125m...')
+          llm = LLM(model='facebook/opt-125m', device='cpu', dtype='float32', max_model_len=256)
+          print('Model loaded successfully')
+
+          prompts = ['The future of artificial intelligence is']
+          params = SamplingParams(temperature=0.0, max_tokens=32)
+
+          print('Generating text...')
+          outputs = llm.generate(prompts, params)
+
+          for output in outputs:
+              text = output.outputs[0].text.strip()
+              print(f'Prompt: {output.prompt}')
+              print(f'Generated ({len(output.outputs[0].token_ids)} tokens): {text}')
+
+              # Validate: must produce non-empty text
+              assert len(text) > 0, 'ERROR: Generated text is empty!'
+              assert len(output.outputs[0].token_ids) > 0, 'ERROR: No tokens generated!'
+
+          print('Inference validation PASSED')
           "
 
           deactivate
