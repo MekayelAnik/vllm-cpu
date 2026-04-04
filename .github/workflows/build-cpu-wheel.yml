@@ -722,6 +722,31 @@ jobs:
         shell: bash
         run: pip install "twine>=6.1.0"
 
+      - name: Fix wheel metadata (strip PEP 639 fields incompatible with twine)
+        shell: bash
+        run: |
+          set -euo pipefail
+          pip install wheel
+          for whl in dist/*.whl; do
+            echo "Fixing metadata in: $(basename "$whl")"
+            TMPDIR="$(mktemp -d)"
+            unzip -q "$whl" -d "$TMPDIR"
+            # Remove license-expression and license-file from METADATA
+            # These are PEP 639 fields that declare Metadata-Version 2.4
+            # but setuptools emits them with 2.1, causing twine rejection
+            METAFILE="$(find "$TMPDIR" -name METADATA -path '*.dist-info/*')"
+            if [[ -n "$METAFILE" ]]; then
+              grep -vi '^license-expression:' "$METAFILE" | grep -vi '^license-file:' > "${METAFILE}.fixed"
+              mv "${METAFILE}.fixed" "$METAFILE"
+            fi
+            # Repack the wheel
+            cd "$TMPDIR"
+            zip -q -r "$whl" .
+            cd -
+            rm -rf "$TMPDIR"
+          done
+          echo "Metadata fixed for all wheels"
+
       - name: Remove no_bf16 wheels (GH Releases only, not PyPI)
         shell: bash
         run: |
