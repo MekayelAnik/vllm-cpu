@@ -206,7 +206,17 @@ rm -vrf /usr/share/doc /usr/share/man /usr/share/info 2>/dev/null || true
 # =============================================================================
 echo "Step 14: Removing build tools..."
 rm -vf /usr/local/bin/uv
-apt-get purge -y --auto-remove binutils wget 2>/dev/null || true
+# Remove wget but keep binutils (--auto-remove would cascade-remove g++ symlink)
+# g++ is required at runtime for PyTorch inductor (torch.compile) JIT compilation
+apt-get purge -y wget 2>/dev/null || true
+# Ensure g++ is available after cleanup
+if ! command -v g++ &>/dev/null; then
+    G_REAL="$(find /usr -name 'g++-*' -type f 2>/dev/null | sort -V | tail -1)"
+    if [ -n "$G_REAL" ]; then
+        ln -sf "$G_REAL" /usr/bin/g++
+        echo "Restored g++ symlink -> $G_REAL"
+    fi
+fi
 rm -vrf /var/lib/apt/lists/* /var/cache/apt/archives/* /var/log/apt/* /var/log/dpkg.log 2>/dev/null || true
 
 # =============================================================================
