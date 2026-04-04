@@ -481,15 +481,17 @@ jobs:
 
           echo "=== Smoke testing wheel on $(uname -m) (${PLATFORM}) ==="
 
-          # Install and preload tcmalloc (required by vLLM v0.18.0+ CPU worker)
+          # Install and preload required libs (vLLM v0.18.0+ CPU worker requires these)
           sudo apt-get update -qq && sudo apt-get install -y -qq libtcmalloc-minimal4 2>/dev/null || true
+          PRELOAD_LIBS=""
+          # tcmalloc
           TCMALLOC_LIB="$(find /usr -name 'libtcmalloc_minimal.so*' 2>/dev/null | head -1)"
           if [[ -n "$TCMALLOC_LIB" ]]; then
-            export LD_PRELOAD="$TCMALLOC_LIB"
-            echo "TCMalloc preloaded: $TCMALLOC_LIB"
-          else
-            echo "WARNING: tcmalloc not found, some vLLM versions may fail"
+            PRELOAD_LIBS="$TCMALLOC_LIB"
+            echo "Found tcmalloc: $TCMALLOC_LIB"
           fi
+          # libiomp5 (Intel OpenMP, bundled with PyTorch — found after wheel install)
+          # Will be added to LD_PRELOAD after pip install below
 
           # Install the wheel in a temp venv
           python3 -m venv /tmp/test-venv
@@ -513,6 +515,17 @@ jobs:
           Version: ${VLLM_VER}+cpu" > "${SITE_DIR}/vllm-${VLLM_VER}+cpu.dist-info/METADATA"
           echo "vllm" > "${SITE_DIR}/vllm-${VLLM_VER}+cpu.dist-info/top_level.txt"
           echo "created vllm shim: version ${VLLM_VER}+cpu"
+
+          # Find and preload libiomp5 (Intel OpenMP, bundled with PyTorch) + tcmalloc
+          IOMP_LIB="$(find /tmp/test-venv -name 'libiomp5.so' 2>/dev/null | head -1)"
+          if [[ -n "$IOMP_LIB" ]]; then
+            PRELOAD_LIBS="${PRELOAD_LIBS:+$PRELOAD_LIBS:}$IOMP_LIB"
+            echo "Found libiomp5: $IOMP_LIB"
+          fi
+          if [[ -n "$PRELOAD_LIBS" ]]; then
+            export LD_PRELOAD="$PRELOAD_LIBS"
+            echo "LD_PRELOAD=$LD_PRELOAD"
+          fi
 
           # Test 1: Import vllm and check version
           echo "--- Test 1: Import and version ---"
