@@ -170,9 +170,10 @@ fi
 
 # --- Build output JSON: cross-product of versions × platforms ---
 # GitHub Actions matrix.include needs the full cross-product pre-computed
+# Includes aarch64_no_bf16 variant for Graviton2/Pi5/Altra compatibility
 BUILD_MATRIX="$(echo "$VERSIONS_SORTED" | jq -Rnc --arg latest "$LATEST_VERSION" '
   [inputs | select(length > 0)] |
-  [.[] as $ver | ("x86_64","aarch64") as $plat | {
+  [.[] as $ver | ("x86_64","aarch64","aarch64_no_bf16") as $plat | {
     version: $ver,
     platform: $plat
   }]

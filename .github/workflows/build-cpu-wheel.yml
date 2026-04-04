@@ -207,8 +207,8 @@ jobs:
     name: Build wheel (${{ matrix.platform }}) — v${{ matrix.version }}
     needs: [fetch-releases]
     if: needs.fetch-releases.outputs.should_build == 'true'
-    runs-on: ${{ matrix.platform == 'aarch64' && format('{0}-arm', vars.ACTION_RUNNER_VERSION || 'ubuntu-24.04') || (vars.ACTION_RUNNER_VERSION || 'ubuntu-24.04') }}
-    timeout-minutes: ${{ matrix.platform == 'aarch64' && 300 || 240 }}
+    runs-on: ${{ startsWith(matrix.platform, 'aarch64') && format('{0}-arm', vars.ACTION_RUNNER_VERSION || 'ubuntu-24.04') || (vars.ACTION_RUNNER_VERSION || 'ubuntu-24.04') }}
+    timeout-minutes: ${{ startsWith(matrix.platform, 'aarch64') && 300 || 240 }}
     strategy:
       fail-fast: false
       matrix:
@@ -241,7 +241,9 @@ jobs:
           set -euo pipefail
 
           FULL_VERSION="${VERSION}${VERSION_POSTFIX}"
-          MANYLINUX_IMAGE="quay.io/pypa/manylinux_2_28_${PLATFORM}"
+          # Map platform variant to base arch for docker image
+          BASE_ARCH="${PLATFORM%%_no_bf16}"
+          MANYLINUX_IMAGE="quay.io/pypa/manylinux_2_28_${BASE_ARCH}"
           ARTIFACT_NAME="wheels-unified-${PLATFORM}-${FULL_VERSION}"
 
           echo "full_version=${FULL_VERSION}" >> "$GITHUB_OUTPUT"
@@ -271,8 +273,9 @@ jobs:
 
           mkdir -p dist ccache-cache
 
-          # Platform tag for wheel filename
-          if [[ "$PLATFORM" == "x86_64" ]]; then
+          # Platform tag for wheel filename (strip _no_bf16 variant suffix)
+          BASE_ARCH="${PLATFORM%%_no_bf16}"
+          if [[ "$BASE_ARCH" == "x86_64" ]]; then
             PLAT_TAG="manylinux_2_28_x86_64"
           else
             PLAT_TAG="manylinux_2_28_aarch64"
@@ -381,6 +384,15 @@ jobs:
               # Without this, scm generates 0.17.1.dev0+g<hash>.cpu which PyPI rejects
               export SETUPTOOLS_SCM_PRETEND_VERSION="${FULL_VERSION}"
 
+              # --- Disable ARM BF16 for no_bf16 variant ---
+              if [[ "$PLATFORM" == *"_no_bf16"* ]]; then
+                echo "Disabling ARM BF16 for compatibility build"
+                # Patch cmake to force ARM_BF16_FOUND=OFF regardless of host CPU
+                sed -i "s/find_isa(\${CPUINFO} \"bf16\" ARM_BF16_FOUND)/set(ARM_BF16_FOUND OFF)/" cmake/cpu_extension.cmake
+                # Also prevent env var override
+                sed -i "s/if (ENABLE_ARM_BF16)/if (FALSE)/" cmake/cpu_extension.cmake
+              fi
+
               # --- Build the wheel ---
               # Use --no-isolation to use our system-installed CPU torch.
               # Without this, build creates an isolated env and installs
@@ -398,6 +410,10 @@ jobs:
                 NEW_NAME="$(echo "$NEW_NAME" | sed -E "s/cp[0-9]+-cp[0-9]+/cp38-abi3/")"
                 # Fix 3: Platform tag -> manylinux_2_28_{arch}
                 NEW_NAME="$(echo "$NEW_NAME" | sed -E "s/(linux|manylinux)[0-9_.]*_(x86_64|aarch64)/manylinux_2_28_\2/")"
+                # Fix 4: Add _no_bf16 suffix for compat variant (GH Releases only)
+                if [[ "$PLATFORM" == *"_no_bf16"* ]]; then
+                  NEW_NAME="$(echo "$NEW_NAME" | sed -E "s/\.whl$/_no_bf16.whl/")"
+                fi
                 if [[ "$whl" != "$NEW_NAME" ]]; then
                   mv "$whl" "$NEW_NAME"
                   echo "Renamed to: $NEW_NAME"
@@ -456,6 +472,7 @@ jobs:
         env:
           PLATFORM: ${{ matrix.platform }}
           VLLM_TARGET_DEVICE: cpu
+          SMOKE_TEST_MODEL: ${{ vars.SMOKE_TEST_MODEL || 'facebook/opt-125m' }}
         run: |
           set -euo pipefail
 
@@ -575,15 +592,15 @@ jobs:
           print(f'Version: {m[\"Version\"]}')
           "
 
-          # Test 5: End-to-end inference with SmolLM2-135M-Instruct (~270MB)
-          echo "--- Test 5: End-to-end inference (SmolLM2-135M-Instruct) ---"
+          # Test 5: End-to-end inference
+          echo "--- Test 5: End-to-end inference ($SMOKE_TEST_MODEL) ---"
           export VLLM_CPU_KVCACHE_SPACE=2
           VLLM_TARGET_DEVICE=cpu python3 -c "
           import os
           os.environ['VLLM_TARGET_DEVICE'] = 'cpu'
           from vllm import LLM, SamplingParams
 
-          MODEL = 'facebook/opt-125m'
+          MODEL = os.environ.get('SMOKE_TEST_MODEL', 'facebook/opt-125m')
           print(f'Loading {MODEL}...')
           # Use try/except for device param — removed in v0.19.0+
           try:
@@ -668,6 +685,19 @@ jobs:
       - name: Install twine
         shell: bash
         run: pip install --upgrade twine
+
+      - name: Remove no_bf16 wheels (GH Releases only, not PyPI)
+        shell: bash
+        run: |
+          set -euo pipefail
+          for f in dist/*_no_bf16.whl; do
+            if [[ -f "$f" ]]; then
+              echo "Excluding from PyPI: $f"
+              rm "$f"
+            fi
+          done
+          echo "Wheels for PyPI:"
+          ls -la dist/
 
       - name: Publish to PyPI
         shell: bash
