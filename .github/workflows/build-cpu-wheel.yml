@@ -728,9 +728,10 @@ jobs:
           set -euo pipefail
           pip install wheel
           for whl in dist/*.whl; do
-            echo "Fixing metadata in: $(basename "$whl")"
+            ABS_WHL="$(realpath "$whl")"
+            echo "Fixing metadata in: $(basename "$ABS_WHL")"
             TMPDIR="$(mktemp -d)"
-            unzip -q "$whl" -d "$TMPDIR"
+            unzip -q "$ABS_WHL" -d "$TMPDIR"
             # Remove license-expression and license-file from METADATA
             # These are PEP 639 fields that declare Metadata-Version 2.4
             # but setuptools emits them with 2.1, causing twine rejection
@@ -739,9 +740,10 @@ jobs:
               grep -vi '^license-expression:' "$METAFILE" | grep -vi '^license-file:' > "${METAFILE}.fixed"
               mv "${METAFILE}.fixed" "$METAFILE"
             fi
-            # Repack the wheel
+            # Repack the wheel (use absolute path)
+            rm "$ABS_WHL"
             cd "$TMPDIR"
-            zip -q -r "$whl" .
+            zip -q -r "$ABS_WHL" .
             cd -
             rm -rf "$TMPDIR"
           done
