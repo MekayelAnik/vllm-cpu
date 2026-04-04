@@ -419,6 +419,14 @@ jobs:
                 fi
               done
 
+              # --- Fix metadata inside wheels (strip +cpu from Version) ---
+              # PyPI rejects local version identifiers like 0.17.0+cpu
+              printf "%s\n" "import zipfile,os,sys,shutil,tempfile" "whl=sys.argv[1]" "tmpdir=tempfile.mkdtemp()" "with zipfile.ZipFile(whl,\"r\") as z: z.extractall(tmpdir)" "changed=False" "for root,dirs,files in os.walk(tmpdir):" "  for fn in files:" "    fpath=os.path.join(root,fn)" "    if fn in (\"METADATA\",\"RECORD\"):" "      with open(fpath) as f: content=f.read()" "      if \"+cpu\" in content:" "        with open(fpath,\"w\") as f: f.write(content.replace(\"+cpu\",\"\"))" "        changed=True; print(\"  Fixed +cpu in \"+fn)" "for item in os.listdir(tmpdir):" "  full=os.path.join(tmpdir,item)" "  if os.path.isdir(full) and \"+cpu\" in item:" "    nn=item.replace(\"+cpu\",\"\")" "    os.rename(full,os.path.join(tmpdir,nn))" "    changed=True; print(\"  Renamed dir: \"+item+\" -> \"+nn)" "if changed:" "  os.remove(whl)" "  with zipfile.ZipFile(whl,\"w\",zipfile.ZIP_DEFLATED) as z:" "    for root,dirs,files in os.walk(tmpdir):" "      for fn in files:" "        full=os.path.join(root,fn)" "        z.write(full,os.path.relpath(full,tmpdir))" "  print(\"  Repacked: \"+whl)" "else: print(\"  No +cpu in metadata\")" "shutil.rmtree(tmpdir)" > /tmp/fix_wheel_meta.py
+              for whl in *.whl; do
+                echo "Fixing metadata in: $whl"
+                python3 /tmp/fix_wheel_meta.py "$whl"
+              done
+
               # --- Copy wheels to output ---
               cp /tmp/wheel-out/*.whl /output/
 
