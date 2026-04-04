@@ -475,7 +475,11 @@ jobs:
         run: |
           set -euo pipefail
 
-          echo "=== Smoke testing wheel on $(uname -m) ==="
+          # Use unique HF cache per platform to avoid lock conflicts on shared runners
+          export HF_HOME="/tmp/hf-cache-${PLATFORM}"
+          mkdir -p "$HF_HOME"
+
+          echo "=== Smoke testing wheel on $(uname -m) (${PLATFORM}) ==="
 
           # Install the wheel in a temp venv
           python3 -m venv /tmp/test-venv
