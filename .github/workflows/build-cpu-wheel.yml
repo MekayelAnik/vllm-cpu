@@ -639,7 +639,7 @@ jobs:
           print('Model loaded successfully')
 
           prompts = ['The meaning of life is']
-          params = SamplingParams(temperature=0.8, top_p=0.95, max_tokens=32)
+          params = SamplingParams(temperature=0.8, top_p=0.95, max_tokens=128)
 
           print('Generating text...')
           outputs = llm.generate(prompts, params)
