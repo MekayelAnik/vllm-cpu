@@ -45,6 +45,7 @@ TEMP_FILE=$(mktemp "${DOCKERFILE_NAME}.XXXXXX") || {
 {
     echo "ARG BASE_IMAGE=$BASE_IMAGE"
     echo "ARG VLLM_VERSION=$VLLM_VERSION"
+    echo "ARG TARGETPLATFORM"
     echo "FROM $BASE_IMAGE"
     
     # Only add additional content for non-publication builds
