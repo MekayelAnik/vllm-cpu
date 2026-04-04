@@ -629,6 +629,13 @@ jobs:
               assert tokens > 0, 'ERROR: No tokens generated!'
 
           print('Inference validation PASSED')
+
+          # Clean shutdown to suppress 'EngineCore died unexpectedly' message
+          del llm
+          import gc
+          gc.collect()
+          import time
+          time.sleep(1)
           "
 
           deactivate
