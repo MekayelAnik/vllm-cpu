@@ -465,6 +465,82 @@ else
     echo "opentelemetry not installed, skipping fix"
 fi
 
+# Fix opentelemetry propagators (Python 3.13 entry_points discovery broken)
+OTEL_PROPAGATE_FILE="${SITE_PACKAGES}/opentelemetry/propagate/__init__.py"
+if [ -f "${OTEL_PROPAGATE_FILE}" ]; then
+    if grep -q "PATCHED_PROPAGATOR_FIX" "${OTEL_PROPAGATE_FILE}" 2>/dev/null; then
+        echo "opentelemetry propagators already patched"
+    else
+        echo "Patching ${OTEL_PROPAGATE_FILE} for propagator discovery..."
+        python3 << 'PROP_PATCH_EOF'
+import sys, site
+
+otel_file = site.getsitepackages()[0] + "/opentelemetry/propagate/__init__.py"
+
+with open(otel_file, 'r') as f:
+    content = f.read()
+
+if 'PATCHED_PROPAGATOR_FIX' in content:
+    print("Already patched")
+    sys.exit(0)
+
+# Add direct imports before the entry_points-based discovery
+patch = '''
+# PATCHED_PROPAGATOR_FIX - Direct propagator registration for Python 3.13 compat
+def _patch_propagators():
+    """Register propagators directly without entry_points."""
+    try:
+        from opentelemetry.propagators.tracecontext import TraceContextTextMapPropagator
+        from opentelemetry.propagators.b3 import B3MultiFormat
+        from opentelemetry.propagators.composite import CompositeHTTPPropagator
+        _PROPAGATORS = {
+            "tracecontext": TraceContextTextMapPropagator,
+            "b3multi": B3MultiFormat,
+        }
+        return _PROPAGATORS
+    except ImportError:
+        return {}
+
+_DIRECT_PROPAGATORS = _patch_propagators()
+'''
+
+# Insert at the top of the file (after imports)
+import_end = content.find('\n\n', content.find('import'))
+if import_end == -1:
+    import_end = 0
+content = content[:import_end] + '\n' + patch + content[import_end:]
+
+# Patch the propagator lookup to use direct registry as fallback
+old_error = 'raise ValueError(\n        f"Propagator {propagator} not found.'
+new_error = '''if propagator in _DIRECT_PROPAGATORS:
+                propagators.append(_DIRECT_PROPAGATORS[propagator]())
+            else:
+                raise ValueError(
+        f"Propagator {propagator} not found.'''
+
+if old_error in content:
+    content = content.replace(old_error, new_error)
+else:
+    # Try single-line variant
+    content = content.replace(
+        'raise ValueError(\n            f"Propagator {propagator} not found.',
+        'if propagator in _DIRECT_PROPAGATORS:\n                propagators.append(_DIRECT_PROPAGATORS[propagator]())\n            else:\n                raise ValueError(\n            f"Propagator {propagator} not found.'
+    )
+
+with open(otel_file, 'w') as f:
+    f.write(content)
+
+print("Propagator patch applied")
+PROP_PATCH_EOF
+
+        if python3 -c "from opentelemetry.propagate import inject; print('propagators: OK')" 2>/dev/null; then
+            echo "opentelemetry propagator loading: OK"
+        else
+            echo "WARNING: propagator patch may not have fully resolved the issue"
+        fi
+    fi
+fi
+
 # =============================================================================
 # Fix aimv2 config registration conflict (vLLM <0.11 with transformers 4.47+)
 # =============================================================================
