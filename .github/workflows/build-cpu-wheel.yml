@@ -361,21 +361,31 @@ jobs:
                 pip3 install $BUILD_REQS
               fi
 
+              # --- Fix version: override setuptools-scm to use exact version ---
+              # Without this, scm generates 0.17.1.dev0+g<hash>.cpu which PyPI rejects
+              export SETUPTOOLS_SCM_PRETEND_VERSION="${FULL_VERSION}"
+
               # --- Build the wheel ---
               # Use --no-isolation to use our system-installed CPU torch.
               # Without this, build creates an isolated env and installs
               # CUDA torch from PyPI, causing cmake CUDA errors.
               python3 -m build --wheel --no-isolation --outdir /tmp/wheel-out
 
-              # --- Rename wheel to manylinux_2_28 platform tag ---
+              # --- Fix wheel tags ---
+              pip3 install wheel-filename auditwheel-symbols 2>/dev/null || true
               cd /tmp/wheel-out
               for whl in *.whl; do
-                # Replace linux_* or manylinux* platform tag with our target
-                NEW_NAME="$(echo "$whl" | sed -E "s/(linux_|manylinux[0-9_]+)(x86_64|aarch64)/${PLAT_TAG//_/.}/")"
-                # Ensure it uses the manylinux_2_28 tag format
-                NEW_NAME="$(echo "$NEW_NAME" | sed -E "s/manylinux\.2\.28/manylinux_2_28/")"
+                echo "Original wheel: $whl"
+                # Rename to correct manylinux_2_28 platform tag and cp38-abi3 ABI tag
+                # 1. Fix platform: any linux tag -> manylinux_2_28_{arch}
+                # 2. Fix ABI: cp312-cp312 -> cp38-abi3 (wheel uses stable ABI .abi3.so)
+                NEW_NAME="$(echo "$whl" | sed -E "s/cp[0-9]+-cp[0-9]+/cp38-abi3/")"
+                NEW_NAME="$(echo "$NEW_NAME" | sed -E "s/(linux|manylinux[0-9_.]+)_(x86_64|aarch64)/${PLAT_TAG}_\2/" | sed -E "s/${PLAT_TAG}_(x86_64|aarch64)/${PLAT_TAG}/")"
+                # Ensure platform tag uses underscores not dots
+                NEW_NAME="$(echo "$NEW_NAME" | sed -E "s/manylinux[._]2[._]28[._](x86_64|aarch64)/manylinux_2_28_\1/")"
                 if [[ "$whl" != "$NEW_NAME" ]]; then
                   mv "$whl" "$NEW_NAME"
+                  echo "Renamed to: $NEW_NAME"
                 fi
               done
 
