@@ -411,10 +411,8 @@ jobs:
                 NEW_NAME="$(echo "$NEW_NAME" | sed -E "s/cp[0-9]+-cp[0-9]+/cp38-abi3/")"
                 # Fix 3: Platform tag -> manylinux_2_28_{arch}
                 NEW_NAME="$(echo "$NEW_NAME" | sed -E "s/(linux|manylinux)[0-9_.]*_(x86_64|aarch64)/manylinux_2_28_\2/")"
-                # Fix 4: Add _no_bf16 suffix for compat variant (GH Releases only)
-                if [[ "$PLATFORM" == *"_no_bf16"* ]]; then
-                  NEW_NAME="$(echo "$NEW_NAME" | sed -E "s/\.whl$/_no_bf16.whl/")"
-                fi
+                # Fix 4: For no_bf16 variant, keep valid wheel name but store in subfolder
+                # The wheel filename stays pip-compatible; the artifact name distinguishes them
                 if [[ "$whl" != "$NEW_NAME" ]]; then
                   mv "$whl" "$NEW_NAME"
                   echo "Renamed to: $NEW_NAME"
