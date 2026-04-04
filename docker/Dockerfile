@@ -16,6 +16,7 @@
 #   docker run --cap-add SYS_NICE --security-opt seccomp=unconfined --shm-size 4g ...
 
 ARG BASE_IMAGE=debian:trixie-slim
+ARG TARGETPLATFORM
 
 # Stage 1: Detect Python version from available wheels
 FROM ${BASE_IMAGE} AS python-detector
