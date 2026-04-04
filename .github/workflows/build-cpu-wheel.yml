@@ -13,8 +13,8 @@
 name: Build vLLM CPU Wheels
 
 on:
-  schedule:
-    - cron: '5 */6 * * *'  # Every 6 hours at :05
+  # schedule:
+  #   - cron: '5 */6 * * *'  # Every 6 hours at :05
   workflow_dispatch:
     inputs:
       action:

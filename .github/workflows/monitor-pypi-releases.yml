@@ -15,8 +15,8 @@
 name: vLLM CPU Docker Build Pipeline
 
 on:
-  schedule:
-    - cron: '35 */6 * * *'  # Every 6 hours at :35 (30 min after wheel check)
+  # schedule:
+  #   - cron: '35 */6 * * *'  # Every 6 hours at :35 (30 min after wheel check)
   workflow_dispatch:
     inputs:
       action:
