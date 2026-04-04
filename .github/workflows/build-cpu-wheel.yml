@@ -295,6 +295,7 @@ jobs:
             -e "MAX_JOBS=$(nproc)" \
             -e "CCACHE_DIR=/root/.cache/ccache" \
             -e "PLAT_TAG=${PLAT_TAG}" \
+            -e "PLATFORM=${PLATFORM}" \
             "$MANYLINUX_IMAGE" \
             bash -exc '
               set -euo pipefail
