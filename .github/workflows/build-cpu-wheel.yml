@@ -720,47 +720,7 @@ jobs:
 
       - name: Install twine
         shell: bash
-        run: pip install "twine>=6.1.0"
-
-      - name: Fix wheel metadata (strip PEP 639 fields incompatible with twine)
-        shell: bash
-        run: |
-          set -euo pipefail
-          # Use Python to strip PEP 639 fields — handles ZIP64 and large .so files
-          python3 << 'PYEOF'
-          import glob, zipfile, os, tempfile, shutil
-
-          for whl in glob.glob("dist/*.whl"):
-              print(f"Fixing metadata in: {os.path.basename(whl)}")
-              tmpdir = tempfile.mkdtemp()
-              # Extract
-              with zipfile.ZipFile(whl, "r") as z:
-                  z.extractall(tmpdir)
-              # Find and fix METADATA
-              for root, dirs, files in os.walk(tmpdir):
-                  if "METADATA" in files and ".dist-info" in root:
-                      meta = os.path.join(root, "METADATA")
-                      with open(meta) as f:
-                          lines = f.readlines()
-                      with open(meta, "w") as f:
-                          for line in lines:
-                              low = line.lower()
-                              if low.startswith("license-expression:") or low.startswith("license-file:"):
-                                  continue
-                              f.write(line)
-                      print(f"  Stripped license-expression/license-file from {meta}")
-              # Repack
-              os.remove(whl)
-              with zipfile.ZipFile(whl, "w", zipfile.ZIP_DEFLATED) as z:
-                  for root, dirs, files in os.walk(tmpdir):
-                      for fn in files:
-                          full = os.path.join(root, fn)
-                          arcname = os.path.relpath(full, tmpdir)
-                          z.write(full, arcname)
-              shutil.rmtree(tmpdir)
-              print(f"  Repacked: {os.path.basename(whl)}")
-          print("Metadata fixed for all wheels")
-          PYEOF
+        run: pip install "twine==5.1.1"
 
       - name: Remove no_bf16 wheels (GH Releases only, not PyPI)
         shell: bash
