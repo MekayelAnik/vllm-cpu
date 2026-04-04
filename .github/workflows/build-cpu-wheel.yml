@@ -372,17 +372,14 @@ jobs:
               python3 -m build --wheel --no-isolation --outdir /tmp/wheel-out
 
               # --- Fix wheel tags ---
-              pip3 install wheel-filename auditwheel-symbols 2>/dev/null || true
               cd /tmp/wheel-out
               for whl in *.whl; do
                 echo "Original wheel: $whl"
-                # Rename to correct manylinux_2_28 platform tag and cp38-abi3 ABI tag
-                # 1. Fix platform: any linux tag -> manylinux_2_28_{arch}
-                # 2. Fix ABI: cp312-cp312 -> cp38-abi3 (wheel uses stable ABI .abi3.so)
-                NEW_NAME="$(echo "$whl" | sed -E "s/cp[0-9]+-cp[0-9]+/cp38-abi3/")"
-                NEW_NAME="$(echo "$NEW_NAME" | sed -E "s/(linux|manylinux[0-9_.]+)_(x86_64|aarch64)/${PLAT_TAG}_\2/" | sed -E "s/${PLAT_TAG}_(x86_64|aarch64)/${PLAT_TAG}/")"
-                # Ensure platform tag uses underscores not dots
-                NEW_NAME="$(echo "$NEW_NAME" | sed -E "s/manylinux[._]2[._]28[._](x86_64|aarch64)/manylinux_2_28_\1/")"
+                NEW_NAME="$whl"
+                # Fix 1: ABI tag cp3XX-cp3XX -> cp38-abi3 (stable ABI)
+                NEW_NAME="$(echo "$NEW_NAME" | sed -E "s/cp[0-9]+-cp[0-9]+/cp38-abi3/")"
+                # Fix 2: Platform tag -> manylinux_2_28_{arch} (exact string, no variables)
+                NEW_NAME="$(echo "$NEW_NAME" | sed -E "s/(linux|manylinux)[0-9_.]*_(x86_64|aarch64)/manylinux_2_28_\2/")"
                 if [[ "$whl" != "$NEW_NAME" ]]; then
                   mv "$whl" "$NEW_NAME"
                   echo "Renamed to: $NEW_NAME"
