@@ -58,7 +58,7 @@ CPU-Optimized vLLM: Easy, Fast LLM Inference Without a GPU
 - Run LLMs on any server, laptop, or edge device
 - Lower power consumption and operational costs
 - Ideal for development, testing, and moderate-scale deployments
-- ARM64 support for AWS Graviton, Apple Silicon, and Raspberry Pi
+- ARM64 support for AWS Graviton 3+, Apple Silicon, and Ampere (BF16-capable ARM)
 
 **Key Features:**
 - `pip install vllm-cpu` -- no manual URLs or GitHub Release downloads
@@ -98,7 +98,7 @@ pip install vllm-cpu
 ```python
 from vllm import LLM, SamplingParams
 
-llm = LLM(model="facebook/opt-125m", device="cpu")
+llm = LLM(model="facebook/opt-125m", dtype="float32")
 outputs = llm.generate(["Hello, my name is"], SamplingParams(max_tokens=50))
 print(outputs[0].outputs[0].text)
 ```
@@ -106,7 +106,7 @@ print(outputs[0].outputs[0].text)
 **3. Or start an OpenAI-compatible server**
 
 ```bash
-vllm serve facebook/opt-125m --device cpu --dtype auto
+vllm serve facebook/opt-125m --dtype auto
 ```
 
 ```bash
@@ -213,7 +213,6 @@ from vllm import LLM, SamplingParams
 
 llm = LLM(
     model="microsoft/phi-2",
-    device="cpu",
     dtype="bfloat16",
     max_model_len=2048
 )
@@ -267,7 +266,7 @@ sudo dnf install gperftools-libs              # RHEL/Fedora
 
 # Preload
 export LD_PRELOAD=$(find /usr -name "libtcmalloc_minimal.so*" | head -1)
-vllm serve your-model --device cpu
+vllm serve your-model --dtype auto
 ```
 
 ### 2. Set thread count to physical cores
@@ -286,7 +285,7 @@ export VLLM_CPU_NUM_OF_RESERVED_CPU=2          # Reserve for HTTP serving
 > **Note:** Float16 is unstable on CPU. Always use `bfloat16`.
 
 ```python
-llm = LLM(model="your-model", device="cpu", dtype="bfloat16")
+llm = LLM(model="your-model", dtype="bfloat16")
 ```
 
 ### 4. NUMA optimization (multi-socket systems)
@@ -297,7 +296,7 @@ numactl --cpunodebind=0 --membind=0 python your_script.py
 
 # Advanced: Tensor Parallel across NUMA nodes
 VLLM_CPU_OMP_THREADS_BIND=0-31|32-63 vllm serve your-model \
-  --device cpu --tensor-parallel-size 2
+  --dtype auto --tensor-parallel-size 2
 ```
 
 ### 5. Tune KV cache
@@ -315,7 +314,7 @@ export VLLM_CPU_SGL_KERNEL=1                  # Low-latency online serving
 ### 7. Quantized models
 
 ```python
-llm = LLM(model="TheBloke/Llama-2-7B-GPTQ", device="cpu", quantization="gptq")
+llm = LLM(model="TheBloke/Llama-2-7B-GPTQ", quantization="gptq")
 ```
 
 ### Memory Estimation
@@ -423,7 +422,7 @@ lscpu | grep -E "avx512|vnni|bf16|amx"    # Check supported features
 ### Out of Memory (OOM)
 
 ```python
-llm = LLM(model="your-model", device="cpu", max_model_len=2048, dtype="bfloat16")
+llm = LLM(model="your-model", max_model_len=2048, dtype="bfloat16")
 ```
 
 ```bash
