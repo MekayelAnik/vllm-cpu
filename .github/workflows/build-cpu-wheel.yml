@@ -516,11 +516,14 @@ jobs:
           echo "vllm" > "${SITE_DIR}/vllm-${VLLM_VER}+cpu.dist-info/top_level.txt"
           echo "created vllm shim: version ${VLLM_VER}+cpu"
 
-          # Find and preload libiomp5 (Intel OpenMP, bundled with PyTorch) + tcmalloc
-          IOMP_LIB="$(find /tmp/test-venv -name 'libiomp5.so' 2>/dev/null | head -1)"
-          if [[ -n "$IOMP_LIB" ]]; then
-            PRELOAD_LIBS="${PRELOAD_LIBS:+$PRELOAD_LIBS:}$IOMP_LIB"
-            echo "Found libiomp5: $IOMP_LIB"
+          # Find and preload libiomp5 (x86_64 only, bundled with PyTorch)
+          # Upstream Dockerfile: x86_64 needs tcmalloc + libiomp5, aarch64 needs tcmalloc only
+          if [[ "$(uname -m)" == "x86_64" ]]; then
+            IOMP_LIB="$(find /tmp/test-venv -name 'libiomp5.so' 2>/dev/null | head -1)"
+            if [[ -n "$IOMP_LIB" ]]; then
+              PRELOAD_LIBS="${PRELOAD_LIBS:+$PRELOAD_LIBS:}$IOMP_LIB"
+              echo "Found libiomp5: $IOMP_LIB"
+            fi
           fi
           if [[ -n "$PRELOAD_LIBS" ]]; then
             export LD_PRELOAD="$PRELOAD_LIBS"
