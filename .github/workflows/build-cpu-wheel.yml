@@ -447,11 +447,9 @@ jobs:
           source /tmp/test-venv/bin/activate
           pip install --upgrade pip
 
-          # Install torch CPU first
-          pip install torch --index-url https://download.pytorch.org/whl/cpu
-
-          # Install our wheel
-          pip install dist/*.whl
+          # Install our wheel with PyTorch CPU index
+          # The wheel depends on torch==X.Y.Z+cpu which is only on the PyTorch index
+          pip install dist/*.whl --extra-index-url https://download.pytorch.org/whl/cpu
 
           # Test 1: Import vllm and check version
           echo "--- Test 1: Import and version ---"
