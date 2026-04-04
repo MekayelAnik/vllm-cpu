@@ -726,28 +726,41 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          pip install wheel
-          for whl in dist/*.whl; do
-            ABS_WHL="$(realpath "$whl")"
-            echo "Fixing metadata in: $(basename "$ABS_WHL")"
-            TMPDIR="$(mktemp -d)"
-            unzip -q "$ABS_WHL" -d "$TMPDIR"
-            # Remove license-expression and license-file from METADATA
-            # These are PEP 639 fields that declare Metadata-Version 2.4
-            # but setuptools emits them with 2.1, causing twine rejection
-            METAFILE="$(find "$TMPDIR" -name METADATA -path '*.dist-info/*')"
-            if [[ -n "$METAFILE" ]]; then
-              grep -vi '^license-expression:' "$METAFILE" | grep -vi '^license-file:' > "${METAFILE}.fixed"
-              mv "${METAFILE}.fixed" "$METAFILE"
-            fi
-            # Repack the wheel (use absolute path)
-            rm "$ABS_WHL"
-            cd "$TMPDIR"
-            zip -q -r "$ABS_WHL" .
-            cd -
-            rm -rf "$TMPDIR"
-          done
-          echo "Metadata fixed for all wheels"
+          # Use Python to strip PEP 639 fields — handles ZIP64 and large .so files
+          python3 << 'PYEOF'
+          import glob, zipfile, os, tempfile, shutil
+
+          for whl in glob.glob("dist/*.whl"):
+              print(f"Fixing metadata in: {os.path.basename(whl)}")
+              tmpdir = tempfile.mkdtemp()
+              # Extract
+              with zipfile.ZipFile(whl, "r") as z:
+                  z.extractall(tmpdir)
+              # Find and fix METADATA
+              for root, dirs, files in os.walk(tmpdir):
+                  if "METADATA" in files and ".dist-info" in root:
+                      meta = os.path.join(root, "METADATA")
+                      with open(meta) as f:
+                          lines = f.readlines()
+                      with open(meta, "w") as f:
+                          for line in lines:
+                              low = line.lower()
+                              if low.startswith("license-expression:") or low.startswith("license-file:"):
+                                  continue
+                              f.write(line)
+                      print(f"  Stripped license-expression/license-file from {meta}")
+              # Repack
+              os.remove(whl)
+              with zipfile.ZipFile(whl, "w", zipfile.ZIP_DEFLATED) as z:
+                  for root, dirs, files in os.walk(tmpdir):
+                      for fn in files:
+                          full = os.path.join(root, fn)
+                          arcname = os.path.relpath(full, tmpdir)
+                          z.write(full, arcname)
+              shutil.rmtree(tmpdir)
+              print(f"  Repacked: {os.path.basename(whl)}")
+          print("Metadata fixed for all wheels")
+          PYEOF
 
       - name: Remove no_bf16 wheels (GH Releases only, not PyPI)
         shell: bash
