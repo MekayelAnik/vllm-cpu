@@ -104,7 +104,7 @@ jobs:
   # ===========================================================================
   quick-check:
     name: Check if pipeline run is needed
-    runs-on: ${{ vars.ACTION_RUNNER_VERSION || 'ubuntu-latest' }}
+    runs-on: ${{ vars.ACTION_RUNNER_VERSION || 'ubuntu-24.04' }}
     timeout-minutes: 10
     outputs:
       should_run: ${{ steps.check.outputs.should_run }}
@@ -180,7 +180,7 @@ jobs:
     name: Preflight checks
     needs: [quick-check]
     if: needs.quick-check.outputs.should_run == 'true'
-    runs-on: ${{ vars.ACTION_RUNNER_VERSION || 'ubuntu-latest' }}
+    runs-on: ${{ vars.ACTION_RUNNER_VERSION || 'ubuntu-24.04' }}
     timeout-minutes: 10
     steps:
       - name: Checkout
@@ -211,7 +211,7 @@ jobs:
     name: Fetch and filter PyPI releases
     needs: [quick-check]
     if: needs.quick-check.outputs.should_run == 'true'
-    runs-on: ${{ vars.ACTION_RUNNER_VERSION || 'ubuntu-latest' }}
+    runs-on: ${{ vars.ACTION_RUNNER_VERSION || 'ubuntu-24.04' }}
     timeout-minutes: 10
     outputs:
       normalized_action: ${{ steps.normalize.outputs.action }}
@@ -271,7 +271,7 @@ jobs:
     name: Base image repo test
     needs: [quick-check]
     if: needs.quick-check.outputs.should_run == 'true'
-    runs-on: ${{ vars.ACTION_RUNNER_VERSION || 'ubuntu-latest' }}
+    runs-on: ${{ vars.ACTION_RUNNER_VERSION || 'ubuntu-24.04' }}
     timeout-minutes: 5
     outputs:
       base_image: ${{ steps.resolve.outputs.base_image }}
@@ -369,7 +369,7 @@ jobs:
       always() &&
       needs.fetch-releases.outputs.latest_version != '' &&
       (needs.promote-latest.result == 'success' || needs.promote-latest.result == 'skipped')
-    runs-on: ${{ vars.ACTION_RUNNER_VERSION || 'ubuntu-latest' }}
+    runs-on: ${{ vars.ACTION_RUNNER_VERSION || 'ubuntu-24.04' }}
     timeout-minutes: 10
     steps:
       - name: Checkout state branch
@@ -456,7 +456,7 @@ jobs:
     if: |
       needs.promote-latest.result == 'success' &&
       needs.fetch-releases.outputs.latest_version != ''
-    runs-on: ${{ vars.ACTION_RUNNER_VERSION || 'ubuntu-latest' }}
+    runs-on: ${{ vars.ACTION_RUNNER_VERSION || 'ubuntu-24.04' }}
     timeout-minutes: 10
     permissions:
       contents: write
@@ -499,7 +499,7 @@ jobs:
     if: |
       always() &&
       needs.promote-latest.result == 'success'
-    runs-on: ${{ vars.ACTION_RUNNER_VERSION || 'ubuntu-latest' }}
+    runs-on: ${{ vars.ACTION_RUNNER_VERSION || 'ubuntu-24.04' }}
     timeout-minutes: 10
     steps:
       - name: Checkout

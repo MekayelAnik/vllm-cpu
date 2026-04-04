@@ -81,7 +81,7 @@ jobs:
   # ===========================================================================
   quick-check:
     name: Check for new upstream releases
-    runs-on: ${{ vars.ACTION_RUNNER_VERSION || 'ubuntu-latest' }}
+    runs-on: ${{ vars.ACTION_RUNNER_VERSION || 'ubuntu-24.04' }}
     timeout-minutes: 10
     outputs:
       should_run: ${{ steps.check.outputs.should_run }}
@@ -159,7 +159,7 @@ jobs:
     name: Detect versions to build
     needs: [quick-check]
     if: needs.quick-check.outputs.should_run == 'true'
-    runs-on: ${{ vars.ACTION_RUNNER_VERSION || 'ubuntu-latest' }}
+    runs-on: ${{ vars.ACTION_RUNNER_VERSION || 'ubuntu-24.04' }}
     timeout-minutes: 10
     outputs:
       build_matrix: ${{ steps.releases.outputs.build_matrix }}
@@ -207,7 +207,7 @@ jobs:
     name: Build wheel (${{ matrix.platform }}) — v${{ matrix.version }}
     needs: [fetch-releases]
     if: needs.fetch-releases.outputs.should_build == 'true'
-    runs-on: ${{ matrix.platform == 'aarch64' && 'ubuntu-24.04-arm' || 'ubuntu-latest' }}
+    runs-on: ${{ matrix.platform == 'aarch64' && format('{0}-arm', vars.ACTION_RUNNER_VERSION || 'ubuntu-24.04') || (vars.ACTION_RUNNER_VERSION || 'ubuntu-24.04') }}
     timeout-minutes: ${{ matrix.platform == 'aarch64' && 300 || 240 }}
     strategy:
       fail-fast: false
@@ -457,7 +457,7 @@ jobs:
       needs.build.result == 'success' &&
       github.event.inputs.skip_pypi != 'true' &&
       github.event.inputs.dry_run != 'true'
-    runs-on: ${{ vars.ACTION_RUNNER_VERSION || 'ubuntu-latest' }}
+    runs-on: ${{ vars.ACTION_RUNNER_VERSION || 'ubuntu-24.04' }}
     timeout-minutes: 30
     strategy:
       fail-fast: false
@@ -499,7 +499,7 @@ jobs:
       needs.build.result == 'success' &&
       github.event.inputs.skip_github_release != 'true' &&
       github.event.inputs.dry_run != 'true'
-    runs-on: ${{ vars.ACTION_RUNNER_VERSION || 'ubuntu-latest' }}
+    runs-on: ${{ vars.ACTION_RUNNER_VERSION || 'ubuntu-24.04' }}
     timeout-minutes: 15
     strategy:
       fail-fast: false
@@ -598,7 +598,7 @@ jobs:
       needs.fetch-releases.outputs.latest_version != '' &&
       (needs.publish-pypi.result == 'success' || needs.publish-pypi.result == 'skipped') &&
       (needs.github-release.result == 'success' || needs.github-release.result == 'skipped')
-    runs-on: ${{ vars.ACTION_RUNNER_VERSION || 'ubuntu-latest' }}
+    runs-on: ${{ vars.ACTION_RUNNER_VERSION || 'ubuntu-24.04' }}
     timeout-minutes: 10
     steps:
       - name: Checkout state branch
@@ -672,7 +672,7 @@ jobs:
     if: |
       needs.publish-pypi.result == 'success' &&
       github.event.inputs.dry_run != 'true'
-    runs-on: ${{ vars.ACTION_RUNNER_VERSION || 'ubuntu-latest' }}
+    runs-on: ${{ vars.ACTION_RUNNER_VERSION || 'ubuntu-24.04' }}
     timeout-minutes: 5
     steps:
       - name: Dispatch Docker build
