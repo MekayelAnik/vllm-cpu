@@ -335,10 +335,13 @@ jobs:
               fi
 
               # Remove +cpu local version suffix (PyPI forbids local identifiers)
-              # setup.py appends +cpu to version; neutralize that line using temp script
+              # setup.py line 902: version += f"{sep}cpu"
+              # Replace with pass statement to keep indentation valid
               if [[ -f setup.py ]]; then
-                printf "%s\n" "import re" "data = open(\"setup.py\").read()" "data = re.sub(r\"(version\s*\\+=\s*f.*cpu.*)\", r\"# \\1  # disabled for PyPI\", data)" "open(\"setup.py\",\"w\").write(data)" "print(\"Patched setup.py: disabled +cpu version suffix\")" > /tmp/patch_setup.py
-                python3 /tmp/patch_setup.py
+                sed -i "s|version += f\"{sep}cpu\"|pass  # +cpu disabled for PyPI|g" setup.py
+                sed -i "s|version += f'{sep}cpu'|pass  # +cpu disabled for PyPI|g" setup.py
+                echo "Patched setup.py: disabled +cpu version suffix"
+                grep -n "disabled for PyPI" setup.py || echo "  (pattern not found, may use different quote style)"
               fi
               # Also strip +cpu from version.py if already baked in
               for vf in vllm/version.py vllm/_version.py; do
