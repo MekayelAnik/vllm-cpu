@@ -108,9 +108,9 @@ jobs:
             exit 0
           fi
 
-          # Repository dispatch with force_build
-          if [[ "$CLIENT_FORCE_BUILD" == "true" ]]; then
-            echo "Force build requested — running pipeline"
+          # Repository dispatch always runs (triggered externally for a reason)
+          if [[ "$EVENT_NAME" == "repository_dispatch" ]]; then
+            echo "Repository dispatch — running pipeline"
             echo "should_run=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
