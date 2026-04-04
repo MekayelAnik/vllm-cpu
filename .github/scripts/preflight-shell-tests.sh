@@ -7,9 +7,11 @@ bash -n .github/scripts/fetch-releases.sh
 bash -n .github/scripts/check-existing-tags.sh
 bash -n .github/scripts/registry-sync.sh
 bash -n .github/scripts/test-registry-sync.sh
+bash -n .github/scripts/test-api-key-validation.sh
 
 echo "script_syntax_ok"
 
+bash .github/scripts/test-api-key-validation.sh
 bash .github/scripts/test-runtime-behavior.sh
 bash .github/scripts/test-registry-sync.sh
 
