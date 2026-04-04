@@ -481,6 +481,16 @@ jobs:
 
           echo "=== Smoke testing wheel on $(uname -m) (${PLATFORM}) ==="
 
+          # Install and preload tcmalloc (required by vLLM v0.18.0+ CPU worker)
+          sudo apt-get update -qq && sudo apt-get install -y -qq libtcmalloc-minimal4 2>/dev/null || true
+          TCMALLOC_LIB="$(find /usr -name 'libtcmalloc_minimal.so*' 2>/dev/null | head -1)"
+          if [[ -n "$TCMALLOC_LIB" ]]; then
+            export LD_PRELOAD="$TCMALLOC_LIB"
+            echo "TCMalloc preloaded: $TCMALLOC_LIB"
+          else
+            echo "WARNING: tcmalloc not found, some vLLM versions may fail"
+          fi
+
           # Install the wheel in a temp venv
           python3 -m venv /tmp/test-venv
           source /tmp/test-venv/bin/activate
