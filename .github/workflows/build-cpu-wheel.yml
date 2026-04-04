@@ -762,12 +762,41 @@ jobs:
       matrix:
         include: ${{ fromJSON(needs.fetch-releases.outputs.versions_json || '[]') }}
     steps:
-      - name: Download wheel artifacts
+      - name: Download standard wheel artifacts
         uses: actions/download-artifact@v8
         with:
-          pattern: wheels-unified-*-${{ matrix.version }}${{ github.event.inputs.version_postfix || '' }}
+          pattern: wheels-unified-x86_64-${{ matrix.version }}${{ github.event.inputs.version_postfix || '' }}
           merge-multiple: true
           path: dist/
+
+      - name: Download aarch64 bf16 wheel
+        uses: actions/download-artifact@v8
+        with:
+          pattern: wheels-unified-aarch64-${{ matrix.version }}${{ github.event.inputs.version_postfix || '' }}
+          merge-multiple: true
+          path: dist/
+
+      - name: Download aarch64 no_bf16 wheel and rename for GH Release
+        uses: actions/download-artifact@v8
+        with:
+          pattern: wheels-unified-aarch64_no_bf16-${{ matrix.version }}${{ github.event.inputs.version_postfix || '' }}
+          merge-multiple: true
+          path: dist-no-bf16/
+
+      - name: Rename no_bf16 wheel for GitHub Release
+        shell: bash
+        run: |
+          set -euo pipefail
+          for whl in dist-no-bf16/*.whl; do
+            if [[ -f "$whl" ]]; then
+              BASENAME="$(basename "$whl")"
+              NEW_NAME="$(echo "$BASENAME" | sed -E 's/manylinux_2_28_aarch64\.whl$/manylinux_2_28_aarch64-no-bf16.whl/')"
+              cp "$whl" "dist/${NEW_NAME}"
+              echo "Renamed no_bf16: $BASENAME -> $NEW_NAME"
+            fi
+          done
+          echo "All wheels for GH Release:"
+          ls -la dist/
 
       - name: Set release variables
         id: release-vars
@@ -806,23 +835,29 @@ jobs:
 
           ### Wheels
 
-          | Platform | Wheel |
-          |----------|-------|"
+          | Platform | Wheel | Notes |
+          |----------|-------|-------|"
 
           for whl in dist/*.whl; do
             BASENAME="$(basename "$whl")"
             if echo "$BASENAME" | grep -q "x86_64"; then
               BODY="${BODY}
-          | x86_64 | \`${BASENAME}\` |"
+          | x86_64 | \`${BASENAME}\` | All x86_64 CPUs (AVX2+) |"
+            elif echo "$BASENAME" | grep -q "no-bf16"; then
+              BODY="${BODY}
+          | aarch64 (compat) | \`${BASENAME}\` | Graviton2, Ampere Altra, Pi5 (no BF16) |"
             elif echo "$BASENAME" | grep -q "aarch64"; then
               BODY="${BODY}
-          | aarch64 | \`${BASENAME}\` |"
+          | aarch64 | \`${BASENAME}\` | Graviton3+, AmpereOne, Apple M1+ (BF16) |"
             fi
           done
 
           BODY="${BODY}
 
-          Built with manylinux_2_28 (glibc 2.28+) and stable ABI (cp38-abi3, Python 3.8+)."
+          Built with manylinux_2_28 (glibc 2.28+) and stable ABI (cp38-abi3, Python 3.8+).
+
+          **PyPI:** \`pip install vllm-cpu==${FULL_VERSION}\` (x86_64 + aarch64 bf16)
+          **No-BF16 aarch64:** Download the \`-no-bf16.whl\` above and install with \`pip install <file>.whl\`"
 
           # Write multiline output
           {
