@@ -320,6 +320,16 @@ jobs:
               # Use our README as the PyPI long description
               cp /repo-readme/README.md README.md
 
+              # --- Patch platform detection to recognize vllm-cpu package ---
+              # vLLM detects CPU platform via version("vllm") containing "cpu".
+              # Since our package is "vllm-cpu", version("vllm") fails.
+              # Add fallback to check "vllm-cpu" package name.
+              if [[ -f vllm/platforms/__init__.py ]]; then
+                sed -i "s/vllm_version = version(\"vllm\")/try:\n            vllm_version = version(\"vllm\")\n        except PackageNotFoundError:\n            vllm_version = version(\"vllm-cpu\") + \"+cpu\"/" vllm/platforms/__init__.py
+                echo "Patched vllm/platforms/__init__.py for vllm-cpu detection"
+                grep -A3 "vllm_version = " vllm/platforms/__init__.py | head -5
+              fi
+
               # Remove +cpu local version suffix (PyPI forbids local identifiers)
               # Strip from all Python files and configs that might contain it
               if [[ -f vllm/version.py ]]; then
@@ -462,6 +472,17 @@ jobs:
           # Install our wheel with PyTorch CPU index
           # The wheel depends on torch==X.Y.Z+cpu which is only on the PyTorch index
           pip install dist/*.whl --extra-index-url https://download.pytorch.org/whl/cpu
+
+          # vLLM v0.19.0+ detects CPU platform by checking version("vllm") for "cpu" substring.
+          # Since our package is named "vllm-cpu" (not "vllm"), we create a vllm dist-info shim.
+          VLLM_VER=$(python3 -c "from importlib.metadata import version; print(version('vllm-cpu'))")
+          SITE_DIR=$(python3 -c "import site; print(site.getsitepackages()[0])")
+          mkdir -p "${SITE_DIR}/vllm-${VLLM_VER}+cpu.dist-info"
+          echo "Metadata-Version: 2.1
+          Name: vllm
+          Version: ${VLLM_VER}+cpu" > "${SITE_DIR}/vllm-${VLLM_VER}+cpu.dist-info/METADATA"
+          echo "vllm" > "${SITE_DIR}/vllm-${VLLM_VER}+cpu.dist-info/top_level.txt"
+          echo "created vllm shim: version ${VLLM_VER}+cpu"
 
           # Test 1: Import vllm and check version
           echo "--- Test 1: Import and version ---"
