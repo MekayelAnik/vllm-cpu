@@ -92,6 +92,10 @@ ENV VLLM_ASSETS_CACHE=/data/cache/vllm/assets
 # Memory optimization
 ENV MALLOC_TRIM_THRESHOLD_=100000
 
+# Disable OpenTelemetry propagator auto-discovery (broken on Python 3.13 entry_points)
+ENV OTEL_PROPAGATORS=none
+ENV OTEL_TRACES_EXPORTER=none
+
 # Logging
 ENV VLLM_CONFIGURE_LOGGING=1
 ENV VLLM_LOGGING_LEVEL=INFO

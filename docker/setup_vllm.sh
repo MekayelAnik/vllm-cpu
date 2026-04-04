@@ -466,20 +466,9 @@ else
 fi
 
 # Fix opentelemetry propagators (Python 3.13 entry_points discovery broken)
-# The tracecontext propagator can't be discovered via entry_points on Python 3.13.
-# Fix: Patch the propagate module to import propagators directly instead of via entry_points.
-OTEL_PROPAGATE_FILE="${SITE_PACKAGES}/opentelemetry/propagate/__init__.py"
-if [ -f "${OTEL_PROPAGATE_FILE}" ] && ! grep -q "PATCHED_PROPAGATOR_FIX" "${OTEL_PROPAGATE_FILE}" 2>/dev/null; then
-    echo "Patching opentelemetry propagators..."
-    printf "%s\n" "import site, os" "f=site.getsitepackages()[0]+'/opentelemetry/propagate/__init__.py'" "d=open(f).read()" "if 'PATCHED_PROPAGATOR_FIX' not in d:" "  # Add direct propagator loading at module level" "  inject_code='# PATCHED_PROPAGATOR_FIX\\nimport importlib\\ndef _direct_load_propagator(name):\\n    _map={\"tracecontext\":\"opentelemetry.propagators.tracecontext.TraceContextTextMapPropagator\",\"b3\":\"opentelemetry.propagators.b3.B3SingleFormat\",\"b3multi\":\"opentelemetry.propagators.b3.B3MultiFormat\",\"baggage\":\"opentelemetry.baggage.propagation.W3CBaggagePropagator\"}\\n    if name in _map:\\n        parts=_map[name].rsplit(\".\",1)\\n        mod=importlib.import_module(parts[0])\\n        return getattr(mod,parts[1])()\\n    return None\\n'" "  d=d.replace('raise ValueError(','_p=_direct_load_propagator(propagator)\\n            if _p is not None:\\n                propagators.append(_p)\\n                continue\\n            raise ValueError(',1)" "  d=inject_code+d" "  open(f,'w').write(d)" "  print('Propagator patch applied')" "else:" "  print('Already patched')" > /tmp/fix_propagators.py
-    python3 /tmp/fix_propagators.py
-    # Verify
-    if python3 -c "from opentelemetry.propagate import inject; print('propagators: OK')" 2>/dev/null; then
-        echo "opentelemetry propagator loading: OK"
-    else
-        echo "WARNING: propagator fix incomplete"
-    fi
-fi
+# Instead of patching Python files (fragile), disable propagator auto-discovery
+# via environment variable. vLLM CPU doesn't need distributed tracing.
+echo "Setting OTEL_PROPAGATORS=none to avoid Python 3.13 entry_points issue"
 
 # =============================================================================
 # Fix aimv2 config registration conflict (vLLM <0.11 with transformers 4.47+)
