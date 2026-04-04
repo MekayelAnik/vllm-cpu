@@ -720,7 +720,7 @@ jobs:
 
       - name: Install twine
         shell: bash
-        run: pip install --upgrade twine
+        run: pip install "twine>=6.1.0"
 
       - name: Remove no_bf16 wheels (GH Releases only, not PyPI)
         shell: bash
