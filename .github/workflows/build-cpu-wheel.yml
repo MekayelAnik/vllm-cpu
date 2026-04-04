@@ -433,6 +433,82 @@ jobs:
             rm -rf "$TMPDIR"
           done
 
+      - name: Smoke test wheel
+        shell: bash
+        env:
+          PLATFORM: ${{ matrix.platform }}
+        run: |
+          set -euo pipefail
+
+          echo "=== Smoke testing wheel on $(uname -m) ==="
+
+          # Install the wheel in a temp venv
+          python3 -m venv /tmp/test-venv
+          source /tmp/test-venv/bin/activate
+          pip install --upgrade pip
+
+          # Install torch CPU first
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+
+          # Install our wheel
+          pip install dist/*.whl
+
+          # Test 1: Import vllm and check version
+          echo "--- Test 1: Import and version ---"
+          python3 -c "
+          import vllm
+          print(f'vllm version: {vllm.__version__}')
+          "
+
+          # Test 2: CPU platform detection and ISA
+          echo "--- Test 2: CPU platform and ISA detection ---"
+          python3 -c "
+          import torch
+          print(f'PyTorch version: {torch.__version__}')
+          print(f'CPU count: {torch.get_num_threads()}')
+
+          # Check which _C library was loaded
+          import importlib.util
+          c_spec = importlib.util.find_spec('vllm._C')
+          c_avx2_spec = importlib.util.find_spec('vllm._C_AVX2')
+          print(f'_C module found: {c_spec is not None}')
+          print(f'_C_AVX2 module found: {c_avx2_spec is not None}')
+
+          # Check AVX512 support (x86_64 only)
+          import platform
+          if platform.machine() == 'x86_64':
+              avx512 = torch._C._cpu._is_avx512_supported()
+              print(f'AVX512 supported: {avx512}')
+              if avx512:
+                  print('ISA: AVX512 (optimal path)')
+              else:
+                  print('ISA: AVX2 (fallback path)')
+          else:
+              print(f'Architecture: {platform.machine()}')
+          "
+
+          # Test 3: Basic LLM class instantiation (no model download)
+          echo "--- Test 3: LLM class available ---"
+          python3 -c "
+          from vllm import LLM, SamplingParams
+          print('LLM and SamplingParams imported successfully')
+          print('SamplingParams defaults:', SamplingParams())
+          "
+
+          # Test 4: Check package metadata
+          echo "--- Test 4: Package metadata ---"
+          python3 -c "
+          from importlib.metadata import metadata
+          m = metadata('vllm-cpu')
+          print(f'Name: {m[\"Name\"]}')
+          print(f'Version: {m[\"Version\"]}')
+          "
+
+          deactivate
+          rm -rf /tmp/test-venv
+
+          echo "=== All smoke tests passed ==="
+
       - name: Upload wheel artifact
         uses: actions/upload-artifact@v7
         with:
