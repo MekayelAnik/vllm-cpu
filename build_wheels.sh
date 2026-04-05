@@ -1545,7 +1545,7 @@ build_variant() {
 
     if [[ $DRY_RUN -eq 1 ]]; then
         log_info "[DRY RUN] Would create wheel directory: $wheel_dir"
-        log_info "[DRY RUN] Would execute: timeout 3600 python setup.py bdist_wheel --dist-dir=$wheel_dir --plat-name=$platform_tag"
+        log_info "[DRY RUN] Would execute: timeout 3600 python setup.py bdist_wheel --py-limited-api=cp38 --dist-dir=$wheel_dir --plat-name=$platform_tag"
         log_info "[DRY RUN] Would restore original pyproject.toml and README.md"
         log_info "[DRY RUN] Would copy wheel to: $final_output_dir"
         log_success "[DRY RUN] Would complete build for $variant"
@@ -1556,8 +1556,8 @@ build_variant() {
         fi
 
         # Use timeout for build (3600 seconds = 1 hour)
-        log_info "Executing: python setup.py bdist_wheel --dist-dir=$wheel_dir --plat-name=$platform_tag"
-        if ! timeout 3600 python setup.py bdist_wheel --dist-dir="$wheel_dir" --plat-name="$platform_tag"; then
+        log_info "Executing: python setup.py bdist_wheel --py-limited-api=cp38 --dist-dir=$wheel_dir --plat-name=$platform_tag"
+        if ! timeout 3600 python setup.py bdist_wheel --py-limited-api=cp38 --dist-dir="$wheel_dir" --plat-name="$platform_tag"; then
             log_error "Failed to build wheel (timeout or build error)"
             log_error "Check build logs for details or increase timeout"
             return 1
