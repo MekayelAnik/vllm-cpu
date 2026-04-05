@@ -65,6 +65,20 @@ CPU-Optimized vLLM: Easy, Fast LLM Inference Without a GPU
 
 ---
 
+<div align="center">
+
+## Buy Me a Coffee
+
+**Your support encourages me to keep creating/supporting my open-source projects.** If you found value in this project, you can buy me a coffee to keep me up all the sleepless nights.
+
+<a href="https://07mekayel07.gumroad.com/coffee" target="_blank">
+<img src="https://cdn.buymeacoffee.com/buttons/v2/default-yellow.png" alt="Buy Me A Coffee" width="217" height="60">
+</a>
+
+</div>
+
+---
+
 ## Why vllm-cpu?
 
 The upstream vLLM project publishes CPU wheels only on GitHub Releases with a `+cpu` local version suffix, which **cannot be uploaded to PyPI**. Users must manually copy long URLs to install. This project solves that:
