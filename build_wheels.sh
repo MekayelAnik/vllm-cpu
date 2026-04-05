@@ -1398,8 +1398,7 @@ build_variant() {
             # Check if [project.urls] section exists
             if grep -q "\[project\.urls\]" pyproject.toml; then
                 # Update existing URLs section
-                # Upstream uses no spaces: Homepage="url" — match with optional whitespace
-                sed -i 's|Homepage[[:space:]]*=.*|Homepage = "https://github.com/MekayelAnik/vllm-cpu"|' pyproject.toml
+                # Keep Homepage pointing to upstream vllm-project/vllm (intentional)
                 sed -i 's|Documentation[[:space:]]*=.*|Documentation = "https://docs.vllm.ai/en/latest/"|' pyproject.toml
                 sed -i 's|Repository[[:space:]]*=.*|Repository = "https://github.com/MekayelAnik/vllm-cpu"|' pyproject.toml
                 sed -i 's|Changelog[[:space:]]*=.*|Changelog = "https://github.com/MekayelAnik/vllm-cpu/releases"|' pyproject.toml
