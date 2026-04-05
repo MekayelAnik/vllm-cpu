@@ -335,7 +335,9 @@ jobs:
               cp /repo-readme/README.md README.md
 
               # --- Patch metadata: license, authors, URLs ---
-              python3 /scripts/patch-pyproject-metadata.py
+              # TEMPORARILY DISABLED to debug PyPI 400 rejection
+              # python3 /scripts/patch-pyproject-metadata.py
+              echo "Metadata patch SKIPPED (debugging PyPI rejection)"
 
               # --- Patch platform detection to recognize vllm-cpu package ---
               # vLLM detects CPU platform via version("vllm") containing "cpu".
