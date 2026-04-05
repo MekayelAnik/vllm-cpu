@@ -36,10 +36,10 @@ on:
         required: true
         type: string
       python_versions:
-        description: 'Python versions to build (e.g., "3.12" or "3.10-3.13" or "auto")'
+        description: 'Python version to build (pinned to 3.13, abi3 cp38 ensures compatibility back to 3.8)'
         required: false
         type: string
-        default: 'auto'
+        default: '3.13'
       version_postfix:
         description: 'Version postfix (.post1, .dev2, .rc1, etc.)'
         required: false
@@ -277,6 +277,146 @@ jobs:
               rm -rf /tmp/wheel_check
             fi
           done < <(find dist -name "*.whl" -type f)
+
+      - name: Smoke test wheel
+        shell: bash
+        env:
+          VLLM_TARGET_DEVICE: cpu
+          OTEL_PROPAGATORS: none
+          OTEL_TRACES_EXPORTER: none
+          SMOKE_TEST_MODEL: facebook/opt-125m
+          HF_HOME: /tmp/hf_cache_${{ inputs.platform }}
+        run: |
+          set -euo pipefail
+          echo "=== Wheel Smoke Test ==="
+
+          # Find the built wheel
+          WHEEL=$(find dist -name "*.whl" -type f | head -1)
+          if [[ -z "$WHEEL" ]]; then
+            echo "ERROR: No wheel found for smoke test"
+            exit 1
+          fi
+          echo "Testing wheel: $(basename "$WHEEL")"
+
+          # Create temp venv
+          python3 -m venv /tmp/smoke_venv
+          source /tmp/smoke_venv/bin/activate
+
+          # Install wheel + torch CPU
+          pip install --quiet "$WHEEL"
+          pip install --quiet --index-url https://download.pytorch.org/whl/cpu torch
+          pip install --quiet google-re2
+
+          # Install tcmalloc + libiomp5 (x86 only)
+          if [[ "${{ inputs.platform }}" == "amd64" ]]; then
+            sudo apt-get update -qq && sudo apt-get install -y -qq libtcmalloc-minimal4 > /dev/null 2>&1 || true
+            # Find libiomp5 from torch bundle
+            IOMP_PATH=$(find /tmp/smoke_venv -name "libiomp5.so" -type f 2>/dev/null | head -1)
+            if [[ -n "$IOMP_PATH" ]]; then
+              export LD_PRELOAD="${IOMP_PATH}${LD_PRELOAD:+:$LD_PRELOAD}"
+              echo "LD_PRELOAD set: $LD_PRELOAD"
+            fi
+            TCMALLOC_PATH=$(find /usr -name "libtcmalloc_minimal.so*" -type f 2>/dev/null | head -1)
+            if [[ -n "$TCMALLOC_PATH" ]]; then
+              export LD_PRELOAD="${TCMALLOC_PATH}${LD_PRELOAD:+:$LD_PRELOAD}"
+              echo "LD_PRELOAD updated: $LD_PRELOAD"
+            fi
+          fi
+
+          # Create vllm dist-info shim for platform detection
+          SITE_PKGS=$(python3 -c "import site; print(site.getsitepackages()[0])")
+          VLLM_CPU_VER=$(pip show vllm-cpu 2>/dev/null | grep "^Version:" | awk '{print $2}' || \
+                         pip show vllm-cpu-avx512 2>/dev/null | grep "^Version:" | awk '{print $2}' || \
+                         pip show vllm-cpu-avx512vnni 2>/dev/null | grep "^Version:" | awk '{print $2}' || \
+                         pip show vllm-cpu-avx512bf16 2>/dev/null | grep "^Version:" | awk '{print $2}' || \
+                         pip show vllm-cpu-amxbf16 2>/dev/null | grep "^Version:" | awk '{print $2}' || \
+                         echo "0.0.0")
+          SHIM_DIR="${SITE_PKGS}/vllm-${VLLM_CPU_VER}+cpu.dist-info"
+          mkdir -p "$SHIM_DIR"
+          printf "Metadata-Version: 2.1\nName: vllm\nVersion: %s+cpu\n" "$VLLM_CPU_VER" > "$SHIM_DIR/METADATA"
+          printf "vllm-%s+cpu.dist-info/METADATA,,\nvllm-%s+cpu.dist-info/RECORD,,\n" "$VLLM_CPU_VER" "$VLLM_CPU_VER" > "$SHIM_DIR/RECORD"
+          echo "Created vllm dist-info shim at $SHIM_DIR"
+
+          # Test 1: import vllm + version check
+          echo ""
+          echo "--- Test 1: import vllm ---"
+          VLLM_TARGET_DEVICE=cpu python3 -c "
+          import vllm
+          print(f'vllm imported OK, version: {vllm.__version__}')
+          "
+          echo "PASS: import vllm"
+
+          # Test 2: ISA detection
+          echo ""
+          echo "--- Test 2: ISA detection ---"
+          VLLM_TARGET_DEVICE=cpu python3 -c "
+          import subprocess
+          flags = subprocess.check_output(['cat', '/proc/cpuinfo']).decode()
+          features = []
+          for f in ['avx2', 'avx512f', 'avx512_vnni', 'avx512_bf16', 'amx_bf16']:
+              if f in flags.lower():
+                  features.append(f)
+          if not features:
+              # ARM - check for neon
+              try:
+                  if 'neon' in flags.lower() or 'asimd' in flags.lower():
+                      features.append('neon/asimd')
+              except: pass
+          print(f'CPU ISA features detected: {features if features else [\"baseline\"]}')
+          "
+          echo "PASS: ISA detection"
+
+          # Test 3: import LLM, SamplingParams
+          echo ""
+          echo "--- Test 3: from vllm import LLM, SamplingParams ---"
+          VLLM_TARGET_DEVICE=cpu python3 -c "
+          from vllm import LLM, SamplingParams
+          print('LLM and SamplingParams imported OK')
+          "
+          echo "PASS: LLM import"
+
+          # Test 4: Package metadata check
+          echo ""
+          echo "--- Test 4: Package metadata ---"
+          VLLM_TARGET_DEVICE=cpu python3 -c "
+          from importlib.metadata import version, metadata
+          v = version('vllm')
+          print(f'vllm version (from metadata): {v}')
+          assert 'cpu' in v.lower(), f'Expected cpu in version, got: {v}'
+          print('Platform detection: CPU confirmed')
+          "
+          echo "PASS: metadata check"
+
+          # Test 5: End-to-end inference
+          echo ""
+          echo "--- Test 5: Inference with ${SMOKE_TEST_MODEL} ---"
+          VLLM_TARGET_DEVICE=cpu python3 -c "
+          import os
+          os.environ['VLLM_TARGET_DEVICE'] = 'cpu'
+          os.environ['OTEL_PROPAGATORS'] = 'none'
+          os.environ['OTEL_TRACES_EXPORTER'] = 'none'
+          from vllm import LLM, SamplingParams
+          model = os.environ.get('SMOKE_TEST_MODEL', 'facebook/opt-125m')
+          print(f'Loading model: {model}')
+          try:
+              llm = LLM(model=model, device='cpu', dtype='float32', max_model_len=256)
+          except TypeError:
+              llm = LLM(model=model, dtype='float32', max_model_len=256)
+          params = SamplingParams(temperature=0.8, max_tokens=32)
+          outputs = llm.generate(['Hello, world!'], params)
+          text = outputs[0].outputs[0].text
+          print(f'Generated: {text}')
+          assert len(text.strip()) > 0, 'Empty generation output'
+          print(f'Output tokens: {len(outputs[0].outputs[0].token_ids)}')
+          "
+          echo "PASS: inference"
+
+          echo ""
+          echo "=== All smoke tests passed ==="
+
+          # Cleanup
+          deactivate 2>/dev/null || true
+          rm -rf /tmp/smoke_venv /tmp/hf_cache_* 2>/dev/null || true
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v6

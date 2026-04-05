@@ -82,7 +82,7 @@ readonly LOG_TIMESTAMP_FORMAT='%Y-%m-%d %H:%M:%S'
 VARIANT=""
 VLLM_VERSION=""
 VLLM_VERSIONS=()       # Array of vLLM versions to build (empty = use VLLM_VERSION or latest)
-PYTHON_VERSION="3.12"  # Default to 3.12 for broader compatibility
+PYTHON_VERSION="3.13"  # Build with 3.13, abi3 cp38 ensures compatibility back to 3.8
 PYTHON_VERSIONS=()     # Array of Python versions to build (empty = use PYTHON_VERSION)
 VERSION_SUFFIX=""      # Optional version suffix (e.g., ".post1", ".post2") for re-uploads
 OUTPUT_DIR="$SCRIPT_DIR/dist"

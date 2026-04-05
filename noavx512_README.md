@@ -66,6 +66,14 @@ Easy, fast, and cheap LLM serving for everyone
 
 ---
 
+> **Info:** Starting with v0.17.0, `vllm-cpu` ships a unified build with automatic CPU ISA
+> detection at runtime (AVX2, AVX-512, VNNI, BF16, AMX). No more choosing between variant packages.
+> Just `pip install vllm-cpu` and it works on any x86_64 or aarch64 CPU.
+>
+> See [github.com/MekayelAnik/vllm-cpu](https://github.com/MekayelAnik/vllm-cpu) for details.
+
+---
+
 <div align="center">
 
 ## Buy Me a Coffee

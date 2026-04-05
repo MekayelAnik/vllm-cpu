@@ -66,6 +66,14 @@ Easy, fast, and cheap LLM serving for everyone
 
 ---
 
+> **Deprecation Notice:** `vllm-cpu-avx512bf16` v0.16.0 is the last release of this variant package.
+> Starting with v0.17.0, all CPU ISA variants are unified into a single package with automatic
+> ISA detection at runtime. Migrate to: `pip install vllm-cpu`
+>
+> See [github.com/MekayelAnik/vllm-cpu](https://github.com/MekayelAnik/vllm-cpu) for details.
+
+---
+
 <div align="center">
 
 ## Buy Me a Coffee

@@ -151,6 +151,10 @@ ENV VLLM_ENGINE_ITERATION_TIMEOUT_S=60
 ENV VLLM_RINGBUFFER_WARNING_INTERVAL=60
 ENV VLLM_SLEEP_WHEN_IDLE=0
 
+# OpenTelemetry (disable broken propagators on Python 3.13)
+ENV OTEL_PROPAGATORS=none
+ENV OTEL_TRACES_EXPORTER=none
+
 # Plugins
 ENV VLLM_PLUGINS=""
 
@@ -171,8 +175,8 @@ ENV VLLM_PATTERN_MATCH_DEBUG=""
 ENV VLLM_COMPUTE_NANS_IN_LOGITS=0
 
 # Compilation
-ENV VLLM_DISABLE_COMPILE_CACHE=""
-ENV VLLM_USE_AOT_COMPILE=""
+ENV VLLM_DISABLE_COMPILE_CACHE=0
+ENV VLLM_USE_AOT_COMPILE=0
 ENV VLLM_FORCE_AOT_LOAD=0
 ENV VLLM_USE_BYTECODE_HOOK=1
 ENV VLLM_USE_STANDALONE_COMPILE=1
@@ -237,6 +241,13 @@ RUN --mount=type=cache,id=uv-${VARIANT},target=/root/.cache/uv,sharing=locked \
     /tmp/setup_vllm.sh "${VARIANT}" "${VLLM_VERSION}" "${USE_GITHUB_RELEASE}" && \
     /tmp/cleanup.sh && \
     rm -f /tmp/setup_vllm.sh /tmp/cleanup.sh
+
+# Restore torch inductor C++ headers (CPU wheel may be missing them after cleanup)
+# Must run in SEPARATE layer after cleanup — uses curl + PyPI JSON API (no pip/uv needed)
+COPY restore_torch_headers.sh /tmp/restore_torch_headers.sh
+RUN chmod +x /tmp/restore_torch_headers.sh && \
+    /tmp/restore_torch_headers.sh && \
+    rm -f /tmp/restore_torch_headers.sh
 
 # Store Python version
 RUN echo "VLLM_PYTHON_VERSION=$(cat /vllm/python_version.txt)" >> /etc/environment

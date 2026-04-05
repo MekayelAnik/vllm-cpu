@@ -351,6 +351,57 @@ jobs:
               python -c "import vllm; print(f'vLLM version: {vllm.__version__}')"
           fi
 
+      - name: Docker smoke test (inference)
+        shell: bash
+        env:
+          SMOKE_TEST_MODEL: facebook/opt-125m
+        run: |
+          echo "=== Docker Inference Smoke Test ==="
+          VARIANT="${{ matrix.variant }}"
+          VERSION="${{ matrix.version }}"
+
+          # Determine which registry image to test
+          if [[ "${{ inputs.skip_dockerhub }}" != "true" ]]; then
+            IMAGE="${{ env.DOCKERHUB_IMAGE }}:${VERSION}-${VARIANT}"
+          elif [[ "${{ inputs.skip_ghcr }}" != "true" ]]; then
+            IMAGE="${{ env.GHCR_IMAGE }}:${VERSION}-${VARIANT}"
+          else
+            echo "No registry to test from, skipping"
+            exit 0
+          fi
+
+          echo "Testing image: $IMAGE"
+          docker pull "$IMAGE"
+
+          # Run inference test inside container
+          docker run --rm \
+            --shm-size 4g \
+            -e VLLM_TARGET_DEVICE=cpu \
+            -e OTEL_PROPAGATORS=none \
+            -e OTEL_TRACES_EXPORTER=none \
+            "$IMAGE" \
+            python3 -c "
+          import os
+          os.environ['VLLM_TARGET_DEVICE'] = 'cpu'
+          os.environ['OTEL_PROPAGATORS'] = 'none'
+          os.environ['OTEL_TRACES_EXPORTER'] = 'none'
+          from vllm import LLM, SamplingParams
+          model = '${SMOKE_TEST_MODEL}'
+          print(f'Loading model: {model}')
+          try:
+              llm = LLM(model=model, device='cpu', dtype='float32', max_model_len=256)
+          except TypeError:
+              llm = LLM(model=model, dtype='float32', max_model_len=256)
+          params = SamplingParams(temperature=0.8, max_tokens=32)
+          outputs = llm.generate(['Hello, world!'], params)
+          text = outputs[0].outputs[0].text
+          n_tokens = len(outputs[0].outputs[0].token_ids)
+          print(f'Generated ({n_tokens} tokens): {text}')
+          assert n_tokens > 0, 'No output tokens generated'
+          print('Docker inference smoke test: PASS')
+          "
+          echo "=== Docker smoke test passed ==="
+
       - name: Generate build summary
         if: always()
         shell: bash
