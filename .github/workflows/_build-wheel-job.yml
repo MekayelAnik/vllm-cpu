@@ -304,11 +304,25 @@ jobs:
           python3 -m venv /tmp/smoke_venv
           source /tmp/smoke_venv/bin/activate
 
-          # Install torch CPU first (wheel depends on torch+cpu which isn't on PyPI)
-          pip install --quiet --index-url https://download.pytorch.org/whl/cpu torch
-          # Install wheel with --no-deps to avoid PyPI trying to resolve torch+cpu
+          # Install wheel with --no-deps first to extract torch version requirement
           pip install --quiet --no-deps "$WHEEL"
-          # Install remaining deps from PyPI (excluding torch which is already installed)
+
+          # Detect the torch version the wheel requires
+          TORCH_VER=$(pip show vllm-cpu 2>/dev/null | grep -i "^Requires:" | grep -oP 'torch[>=<~!]*\K[0-9][0-9.]*' | head -1 || echo "")
+          if [[ -z "$TORCH_VER" ]]; then
+            # Fallback: extract from wheel METADATA directly
+            TORCH_VER=$(unzip -p "$WHEEL" "*/METADATA" 2>/dev/null | grep -oP 'Requires-Dist: torch[>=<~!=]*\K[0-9][0-9.]*' | head -1 || echo "")
+          fi
+
+          if [[ -n "$TORCH_VER" ]]; then
+            echo "Installing torch==${TORCH_VER} from CPU index"
+            pip install --quiet "torch==${TORCH_VER}" --index-url https://download.pytorch.org/whl/cpu
+          else
+            echo "Could not detect torch version, installing latest from CPU index"
+            pip install --quiet torch --index-url https://download.pytorch.org/whl/cpu
+          fi
+
+          # Install remaining deps from CPU+PyPI indexes
           pip install --quiet --index-url https://download.pytorch.org/whl/cpu --extra-index-url https://pypi.org/simple "$WHEEL"
           pip install --quiet google-re2
 
