@@ -55,6 +55,11 @@ on:
         required: false
         type: boolean
         default: false
+      build_branch:
+        description: 'Branch to build from (default: main)'
+        required: false
+        type: string
+        default: 'main'
 
   repository_dispatch:
     types: [vllm-cpu-wheel-build]
@@ -169,6 +174,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.inputs.build_branch || github.event.client_payload.build_branch || 'main' }}
 
       - name: Normalize inputs
         id: normalize
@@ -222,6 +229,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.inputs.build_branch || github.event.client_payload.build_branch || 'main' }}
 
       - name: Free disk space
         shell: bash
