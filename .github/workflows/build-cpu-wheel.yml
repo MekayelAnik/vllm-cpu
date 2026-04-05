@@ -716,6 +716,9 @@ jobs:
       github.event.inputs.dry_run != 'true'
     runs-on: ${{ vars.ACTION_RUNNER_VERSION || 'ubuntu-24.04' }}
     timeout-minutes: 30
+    permissions:
+      id-token: write
+      contents: read
     strategy:
       fail-fast: false
       matrix:
@@ -744,7 +747,7 @@ jobs:
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@v1.13.0
         with:
-          password: ${{ secrets.PYPI_TOKEN_CPU || secrets.PYPI_API_TOKEN }}
+          attestations: true
           skip-existing: true
           verbose: true
 
