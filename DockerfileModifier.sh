@@ -24,10 +24,12 @@ VLLM_VERSION=$(cat ./resources/build_data/version)
 
 # Use docker/Dockerfile as template, substitute default build args
 if [ -f ./docker/Dockerfile ]; then
+    CACHEBUST="$(date +%s)"
     sed \
         -e "s|^ARG BASE_IMAGE=.*|ARG BASE_IMAGE=${BASE_IMAGE}|" \
         -e "s|^ARG VLLM_VERSION\$|ARG VLLM_VERSION=${VLLM_VERSION}|" \
         -e "s|^ARG VLLM_VERSION=.*|ARG VLLM_VERSION=${VLLM_VERSION}|" \
+        -e "s|^ARG CACHEBUST=.*|ARG CACHEBUST=${CACHEBUST}|" \
         ./docker/Dockerfile > "$DOCKERFILE_NAME"
 else
     echo "Error: docker/Dockerfile not found" >&2

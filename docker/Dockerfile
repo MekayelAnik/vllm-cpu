@@ -234,6 +234,8 @@ ENV UV_LINK_MODE=copy \
     UV_PYTHON_DOWNLOADS=never
 
 # Install Python, vLLM, and cleanup in single layer to minimize image size
+# CACHEBUST forces rebuild when cleanup.sh changes (GHA cache may retain old layers)
+ARG CACHEBUST=1
 COPY docker/setup_vllm.sh docker/cleanup.sh /tmp/
 RUN --mount=type=cache,id=uv-${VARIANT},target=/root/.cache/uv,sharing=locked \
     --mount=type=secret,id=GITHUB_TOKEN,required=false \
