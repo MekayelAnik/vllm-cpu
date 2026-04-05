@@ -19,26 +19,37 @@ TORCH_VER="$(python3 -c 'import torch;print(torch.__version__.split("+")[0])')"
 
 mkdir -p /tmp/thdr
 
-# Download the CUDA wheel (just for headers)
-if pip download "torch==${TORCH_VER}" --no-deps --no-cache-dir -d /tmp/thdr 2>/dev/null; then
-    echo "Downloaded CUDA wheel for torch==${TORCH_VER}"
-elif uv pip download "torch==${TORCH_VER}" --no-deps -d /tmp/thdr 2>/dev/null; then
-    echo "Downloaded CUDA wheel via uv for torch==${TORCH_VER}"
-else
-    echo "WARNING: Could not download CUDA wheel — torch.compile may not work"
+# Download CUDA wheel using curl + PyPI JSON API (pip/uv may be removed by cleanup)
+echo "Looking up torch==${TORCH_VER} wheel URL from PyPI..."
+ARCH="$(uname -m)"
+PY_VER="$(python3 -c 'import sys;print(f"cp{sys.version_info.major}{sys.version_info.minor}")')"
+
+WHL_URL="$(python3 -c "
+import json, urllib.request, sys
+ver, arch, py = sys.argv[1], sys.argv[2], sys.argv[3]
+data = json.loads(urllib.request.urlopen(f'https://pypi.org/pypi/torch/{ver}/json').read())
+for f in data.get('urls', []):
+    name = f['filename']
+    if arch in name and py in name and name.endswith('.whl') and 'include' not in name.lower():
+        print(f['url']); break
+" "${TORCH_VER}" "${ARCH}" "${PY_VER}" 2>/dev/null)"
+
+if [ -z "$WHL_URL" ]; then
+    echo "WARNING: Could not find CUDA wheel URL — torch.compile may not work"
     echo "Set TORCHDYNAMO_DISABLE=1 to use eager mode as fallback"
     rm -rf /tmp/thdr
     exit 0
 fi
 
-# Extract only include/ files from the wheel
-WHL_FILE="$(find /tmp/thdr -name 'torch-*.whl' | head -1)"
-if [ -z "$WHL_FILE" ]; then
-    echo "WARNING: No wheel found in download"
+echo "Downloading $(basename "$WHL_URL")..."
+curl -fsSL "$WHL_URL" -o /tmp/thdr/torch.whl 2>/dev/null
+if [ ! -f /tmp/thdr/torch.whl ]; then
+    echo "WARNING: Download failed — torch.compile may not work"
     rm -rf /tmp/thdr
     exit 0
 fi
 
+# Extract only include/ files from the wheel
 python3 -c "
 import zipfile,sys,os
 whl=sys.argv[1]; dest=sys.argv[2]
@@ -51,7 +62,7 @@ with zipfile.ZipFile(whl) as z:
             os.makedirs(os.path.dirname(t),exist_ok=True)
             open(t,'wb').write(z.read(m))
     print(f'Extracted {len(members)} header files')
-" "$WHL_FILE" "$TORCH_INC"
+" /tmp/thdr/torch.whl "$TORCH_INC"
 
 rm -rf /tmp/thdr
 
