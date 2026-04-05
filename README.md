@@ -186,7 +186,18 @@ Wheels are built from source inside `manylinux_2_28` containers with GCC 14, ens
 | v0.17.0+ | Unified CPU wheel | **Active** |
 | v0.8.5 -- v0.15.x | Legacy 5-variant wheels | Archived on PyPI |
 
-Legacy variant packages (`vllm-cpu-avx512`, `vllm-cpu-avx512vnni`, `vllm-cpu-avx512bf16`, `vllm-cpu-amxbf16`) remain available on PyPI for older vLLM versions but are no longer updated.
+### Deprecated Variant Packages
+
+The following variant packages have been **deprecated** as of v0.16.0 (last release). Starting with v0.17.0, the unified `vllm-cpu` package replaces all of them with automatic ISA detection at runtime.
+
+| Package | Status | Migration |
+|---------|--------|-----------|
+| [`vllm-cpu-avx512`](https://pypi.org/project/vllm-cpu-avx512/) | Deprecated (last: v0.16.0) | `pip install vllm-cpu` |
+| [`vllm-cpu-avx512vnni`](https://pypi.org/project/vllm-cpu-avx512vnni/) | Deprecated (last: v0.16.0) | `pip install vllm-cpu` |
+| [`vllm-cpu-avx512bf16`](https://pypi.org/project/vllm-cpu-avx512bf16/) | Deprecated (last: v0.16.0) | `pip install vllm-cpu` |
+| [`vllm-cpu-amxbf16`](https://pypi.org/project/vllm-cpu-amxbf16/) | Deprecated (last: v0.16.0) | `pip install vllm-cpu` |
+
+These packages remain available on PyPI for older vLLM versions but will not receive further updates.
 
 ## Pipeline
 
@@ -205,6 +216,22 @@ Upstream vLLM release (v0.17.0+)
 - [vLLM GitHub](https://github.com/vllm-project/vllm)
 - [Report Issues](https://github.com/MekayelAnik/vllm-cpu/issues)
 - [Changelog](https://github.com/MekayelAnik/vllm-cpu/releases)
+
+---
+
+<div align="center">
+
+## Buy Me a Coffee
+
+**Your support encourages me to keep creating/supporting my open-source projects.** If you found value in this project, you can buy me a coffee to keep me up all the sleepless nights.
+
+<a href="https://07mekayel07.gumroad.com/coffee" target="_blank">
+<img src="https://cdn.buymeacoffee.com/buttons/v2/default-yellow.png" alt="Buy Me A Coffee" width="217" height="60">
+</a>
+
+</div>
+
+---
 
 ## License
 
