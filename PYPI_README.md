@@ -8,7 +8,7 @@ CPU-Optimized vLLM: Easy, Fast LLM Inference Without a GPU
 </h3>
 
 <p align="center">
-  <strong>Unified CPU wheel with automatic AVX2/AVX512 detection at runtime</strong>
+  <strong>Unified CPU wheel with automatic ISA detection at runtime (AVX2, AVX-512, VNNI, BF16, AMX, NEON)</strong>
 </p>
 
 <p align="center">
