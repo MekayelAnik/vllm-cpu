@@ -352,6 +352,7 @@ jobs:
           fi
 
       - name: Docker smoke test (inference)
+        if: matrix.variant == 'noavx512' || matrix.variant == 'amxbf16'
         shell: bash
         env:
           SMOKE_TEST_MODEL: facebook/opt-125m

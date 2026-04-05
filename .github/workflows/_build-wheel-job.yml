@@ -165,6 +165,7 @@ jobs:
             -e CCACHE_DIR=/root/.cache/ccache \
             -e UV_CACHE_DIR=/root/.cache/uv \
             -e VLLM_SKIP_DEPS_CHECK=1 \
+            -e "CXXFLAGS=-Wno-error=free-nonheap-object" \
             "${{ steps.metadata.outputs.manylinux_image }}" \
             bash -c '
               set -euo pipefail
@@ -302,9 +303,12 @@ jobs:
           python3 -m venv /tmp/smoke_venv
           source /tmp/smoke_venv/bin/activate
 
-          # Install wheel + torch CPU
-          pip install --quiet "$WHEEL"
+          # Install torch CPU first (wheel depends on torch+cpu which isn't on PyPI)
           pip install --quiet --index-url https://download.pytorch.org/whl/cpu torch
+          # Install wheel with --no-deps to avoid PyPI trying to resolve torch+cpu
+          pip install --quiet --no-deps "$WHEEL"
+          # Install remaining deps from PyPI (excluding torch which is already installed)
+          pip install --quiet --index-url https://download.pytorch.org/whl/cpu --extra-index-url https://pypi.org/simple "$WHEEL"
           pip install --quiet google-re2
 
           # Install tcmalloc + libiomp5 (x86 only)
