@@ -96,10 +96,8 @@ ENV MALLOC_TRIM_THRESHOLD_=100000
 ENV OTEL_PROPAGATORS=none
 ENV OTEL_TRACES_EXPORTER=none
 
-# Disable torch.compile/dynamo JIT — CPU torch wheel (from PyPI) doesn't ship
-# torch/include/ headers needed by inductor. Upstream builds from source and has them.
-# Users can override with TORCHDYNAMO_DISABLE=0 if they build torch from source.
-ENV TORCHDYNAMO_DISABLE=1
+# torch.compile headers are downloaded from CUDA wheel at build time by setup_vllm.sh
+# If headers are still missing at runtime, set TORCHDYNAMO_DISABLE=1 as fallback
 
 # Logging
 ENV VLLM_CONFIGURE_LOGGING=1

@@ -504,6 +504,76 @@ else
 fi
 
 # =============================================================================
+# Fix missing torch inductor headers (CPU wheel doesn't ship torch/include/)
+# =============================================================================
+# PyTorch CPU wheels from download.pytorch.org/whl/cpu only include ATen/ headers.
+# torch.compile (inductor) needs torch/csrc/inductor/cpp_prefix.h and c10/ headers.
+# Fix: Download headers from the matching CUDA wheel if missing locally.
+echo ""
+echo "=== Checking torch inductor headers ==="
+TORCH_INCLUDE="${SITE_PACKAGES}/torch/include"
+CPP_PREFIX="${TORCH_INCLUDE}/torch/csrc/inductor/cpp_prefix.h"
+
+if [ ! -f "${CPP_PREFIX}" ]; then
+    echo "torch inductor headers missing — downloading from CUDA wheel..."
+    TORCH_VER="$(python3 -c 'import torch; print(torch.__version__.split("+")[0])')"
+    PY_TAG="cp$(python3 -c 'import sys; print(f"{sys.version_info.major}{sys.version_info.minor}")')"
+    ARCH="$(uname -m)"
+    # Map arch to wheel platform tag
+    case "$ARCH" in
+        x86_64)  PLAT="manylinux_2_28_x86_64" ;;
+        aarch64) PLAT="manylinux_2_28_aarch64" ;;
+        *)       PLAT="manylinux_2_28_${ARCH}" ;;
+    esac
+
+    # Try downloading CUDA wheel and extracting only include/
+    CUDA_WHL_URL="https://files.pythonhosted.org/packages/torch-${TORCH_VER}-${PY_TAG}-${PY_TAG}-${PLAT}.whl"
+    # Fallback: use pip download to find the correct URL
+    TMPWHL="/tmp/torch-headers-whl"
+    mkdir -p "$TMPWHL"
+
+    echo "Downloading torch==${TORCH_VER} headers (CUDA wheel, include/ only)..."
+    if pip download "torch==${TORCH_VER}" --no-deps --no-cache-dir -d "$TMPWHL" 2>/dev/null || \
+       uv pip download "torch==${TORCH_VER}" --no-deps -d "$TMPWHL" 2>/dev/null; then
+        WHL_FILE="$(find "$TMPWHL" -name 'torch-*.whl' | head -1)"
+        if [ -n "$WHL_FILE" ]; then
+            echo "Extracting include/ from $(basename "$WHL_FILE")..."
+            python3 -c "
+import zipfile, sys, os
+whl = sys.argv[1]
+dest = sys.argv[2]
+with zipfile.ZipFile(whl) as z:
+    members = [n for n in z.namelist() if '/include/' in n]
+    for m in members:
+        # Strip leading torch/ to get relative path under include/
+        parts = m.split('/include/', 1)
+        if len(parts) == 2 and parts[1]:
+            target = os.path.join(dest, parts[1])
+            os.makedirs(os.path.dirname(target), exist_ok=True)
+            with z.open(m) as src, open(target, 'wb') as dst:
+                dst.write(src.read())
+    print(f'Extracted {len(members)} header files')
+" "$WHL_FILE" "$TORCH_INCLUDE"
+        fi
+    else
+        echo "WARNING: Could not download CUDA wheel for headers"
+    fi
+
+    # Cleanup
+    rm -rf "$TMPWHL"
+
+    # Verify
+    if [ -f "${CPP_PREFIX}" ]; then
+        echo "torch inductor headers: OK"
+    else
+        echo "WARNING: torch inductor headers still missing — torch.compile may not work"
+        echo "Set TORCHDYNAMO_DISABLE=1 to use eager mode instead"
+    fi
+else
+    echo "torch inductor headers: already present"
+fi
+
+# =============================================================================
 # Verify installation
 # =============================================================================
 echo ""
