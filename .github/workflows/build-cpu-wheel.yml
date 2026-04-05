@@ -295,6 +295,7 @@ jobs:
           docker run --rm \
             -v "$PWD/dist:/output" \
             -v "$PWD/PYPI_README.md:/repo-readme/README.md:ro" \
+            -v "$PWD/.github/scripts/patch-pyproject-metadata.py:/scripts/patch-pyproject-metadata.py:ro" \
             -v "$HOME/.cache/ccache:/root/.cache/ccache" \
             -e "VLLM_VERSION=${VERSION}" \
             -e "FULL_VERSION=${FULL_VERSION}" \
@@ -334,10 +335,7 @@ jobs:
               cp /repo-readme/README.md README.md
 
               # --- Patch metadata: license, authors, URLs ---
-              # Write Python patch script to temp file (avoids all quoting issues)
-              printf '%s\n' 'import re, pathlib' 'p = pathlib.Path("pyproject.toml")' 't = p.read_text()' 't = re.sub(r"^license-files\s*=.*\n", "", t, flags=re.MULTILINE)' 't = re.sub(r"^license\s*=.*", "license = {text = \"GPL-3.0-only\"}", t, flags=re.MULTILINE)' 't = re.sub(r"^authors\s*=.*\n", "", t, flags=re.MULTILINE)' 't = re.sub(r"^maintainers\s*=.*\n", "", t, flags=re.MULTILINE)' 't = re.sub(r"^(description\s*=.*)", r"\1\nauthors = [{name = \"Mekayel Anik\", email = \"mekayel.anik@gmail.com\"}]\nmaintainers = [{name = \"Mekayel Anik\", email = \"mekayel.anik@gmail.com\"}]", t, count=1, flags=re.MULTILINE)' 't = re.sub(r"Repository\s*=.*", "Repository = \"https://github.com/MekayelAnik/vllm-cpu\"", t)' 't = re.sub(r"Changelog\s*=.*", "Changelog = \"https://github.com/MekayelAnik/vllm-cpu/releases\"", t)' 'if "Bug Tracker" not in t: t = t.replace("[project.urls]", "[project.urls]\n\"Bug Tracker\" = \"https://github.com/MekayelAnik/vllm-cpu/issues\"")' 'p.write_text(t)' 'print("Patched metadata: license=GPL-3.0-only, author=Mekayel Anik, URLs updated")' > /tmp/patch_meta.py
-              python3 /tmp/patch_meta.py
-              rm -f /tmp/patch_meta.py
+              python3 /scripts/patch-pyproject-metadata.py
 
               # --- Patch platform detection to recognize vllm-cpu package ---
               # vLLM detects CPU platform via version("vllm") containing "cpu".
