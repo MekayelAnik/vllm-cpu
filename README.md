@@ -125,7 +125,7 @@ curl http://localhost:8000/v1/completions \
 
 ## Requirements
 
-- **Python**: 3.8+ (stable ABI, one wheel for all versions)
+- **Python**: 3.10+ (stable ABI, one wheel for all versions)
 - **OS**: Linux (glibc 2.28+) — Debian 10+, Ubuntu 18.04+, RHEL 8+, Amazon Linux 2023+
 - **CPU**: x86_64 with AVX2 (minimum) or AVX512 (optimal), or aarch64
 
@@ -230,7 +230,7 @@ Starting with v0.17.0, vLLM ships a **unified CPU wheel** containing both AVX2 a
 
 ### Stable ABI (cp38-abi3)
 
-The wheels use Python's [stable ABI](https://docs.python.org/3/c-api/stable.html), meaning **one wheel works with Python 3.8+**. No per-Python-version builds needed.
+The wheels use Python's [stable ABI](https://docs.python.org/3/c-api/stable.html), meaning **one wheel works with Python 3.10+**. No per-Python-version builds needed.
 
 ### Build Process
 
