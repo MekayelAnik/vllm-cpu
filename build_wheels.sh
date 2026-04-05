@@ -1386,21 +1386,23 @@ build_variant() {
             # Add/Update author and maintainer information
             log_info "Adding author and maintainer metadata..."
             # Remove existing authors/maintainers lines if present
-            sed -i '/^authors = /d' pyproject.toml
-            sed -i '/^maintainers = /d' pyproject.toml
+            # Upstream uses: authors = [{name = "vLLM Team"}] (no leading whitespace)
+            sed -i '/^authors[[:space:]]*=/d' pyproject.toml
+            sed -i '/^maintainers[[:space:]]*=/d' pyproject.toml
             # Add new author and maintainer after the description line
-            sed -i '/^description = /a authors = [{name = "Mekayel Anik", email = "mekayel.anik@gmail.com"}]' pyproject.toml
-            sed -i '/^authors = /a maintainers = [{name = "Mekayel Anik", email = "mekayel.anik@gmail.com"}]' pyproject.toml
+            sed -i '/^description[[:space:]]*=/a authors = [{name = "Mekayel Anik", email = "mekayel.anik@gmail.com"}]' pyproject.toml
+            sed -i '/^authors[[:space:]]*=/a maintainers = [{name = "Mekayel Anik", email = "mekayel.anik@gmail.com"}]' pyproject.toml
 
             # Update project URLs
             log_info "Updating project URLs..."
             # Check if [project.urls] section exists
             if grep -q "\[project\.urls\]" pyproject.toml; then
                 # Update existing URLs section
-                sed -i 's|Homepage = .*|Homepage = "https://github.com/MekayelAnik/vllm-cpu"|' pyproject.toml
-                sed -i 's|Documentation = .*|Documentation = "https://docs.vllm.ai/en/latest/"|' pyproject.toml
-                sed -i 's|Repository = .*|Repository = "https://github.com/MekayelAnik/vllm-cpu"|' pyproject.toml
-                sed -i 's|Changelog = .*|Changelog = "https://github.com/MekayelAnik/vllm-cpu/releases"|' pyproject.toml
+                # Upstream uses no spaces: Homepage="url" — match with optional whitespace
+                sed -i 's|Homepage[[:space:]]*=.*|Homepage = "https://github.com/MekayelAnik/vllm-cpu"|' pyproject.toml
+                sed -i 's|Documentation[[:space:]]*=.*|Documentation = "https://docs.vllm.ai/en/latest/"|' pyproject.toml
+                sed -i 's|Repository[[:space:]]*=.*|Repository = "https://github.com/MekayelAnik/vllm-cpu"|' pyproject.toml
+                sed -i 's|Changelog[[:space:]]*=.*|Changelog = "https://github.com/MekayelAnik/vllm-cpu/releases"|' pyproject.toml
                 # Add Bug Tracker if not present
                 if ! grep -q "Bug Tracker" pyproject.toml; then
                     sed -i '/\[project\.urls\]/a "Bug Tracker" = "https://github.com/MekayelAnik/vllm-cpu/issues"' pyproject.toml
