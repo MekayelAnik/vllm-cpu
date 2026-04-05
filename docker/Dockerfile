@@ -96,8 +96,9 @@ ENV MALLOC_TRIM_THRESHOLD_=100000
 ENV OTEL_PROPAGATORS=none
 ENV OTEL_TRACES_EXPORTER=none
 
-# Disable torch.compile/dynamo JIT (CPU torch wheel lacks C++ headers for inductor)
-# Users can override by setting TORCHDYNAMO_DISABLE=0 if they install torch headers manually
+# Disable torch.compile/dynamo JIT — CPU torch wheel (from PyPI) doesn't ship
+# torch/include/ headers needed by inductor. Upstream builds from source and has them.
+# Users can override with TORCHDYNAMO_DISABLE=0 if they build torch from source.
 ENV TORCHDYNAMO_DISABLE=1
 
 # Logging
