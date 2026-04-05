@@ -96,9 +96,9 @@ ENV MALLOC_TRIM_THRESHOLD_=100000
 ENV OTEL_PROPAGATORS=none
 ENV OTEL_TRACES_EXPORTER=none
 
-# Disable torch.compile JIT (CPU torch wheel lacks C++ headers for inductor)
-# Users can override with --no-enforce-eager if they install headers manually
-ENV VLLM_ENFORCE_EAGER=1
+# Disable torch.compile/dynamo JIT (CPU torch wheel lacks C++ headers for inductor)
+# Users can override by setting TORCHDYNAMO_DISABLE=0 if they install torch headers manually
+ENV TORCHDYNAMO_DISABLE=1
 
 # Logging
 ENV VLLM_CONFIGURE_LOGGING=1
