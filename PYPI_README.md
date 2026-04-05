@@ -63,7 +63,7 @@ CPU-Optimized vLLM: Easy, Fast LLM Inference Without a GPU
 **Key Features:**
 - `pip install vllm-cpu` -- no manual URLs or GitHub Release downloads
 - Built with `manylinux_2_28` for broad compatibility (Debian 10+, Ubuntu 18.04+)
-- Stable ABI (cp38-abi3) -- one wheel for Python 3.8+
+- Stable ABI (cp38-abi3) -- one wheel for Python 3.10+
 - Automatic AVX2 / AVX512 / AMX detection at runtime
 
 ---
@@ -123,7 +123,7 @@ curl http://localhost:8000/v1/completions \
 
 | Requirement | Details |
 |-------------|---------|
-| **Python** | 3.8+ (stable ABI -- one wheel for all versions) |
+| **Python** | 3.10+ (stable ABI -- one wheel for all versions) |
 | **OS** | Linux (glibc 2.28+) -- Debian 10+, Ubuntu 18.04+, RHEL 8+, Amazon Linux 2023+ |
 | **CPU** | x86_64 with AVX2 (minimum) or AVX512 (optimal), or aarch64 |
 | **Windows** | Use WSL2 (Windows Subsystem for Linux) |
