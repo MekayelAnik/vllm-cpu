@@ -271,8 +271,8 @@ jobs:
           file: ./Dockerfile.vllm-cpu
           platforms: ${{ matrix.platform }}
           outputs: type=image,name=${{ steps.sanitize.outputs.ghcr_repo }},push-by-digest=true,name-canonical=true,push=true,oci-mediatypes=true,${{ steps.profile.outputs.compression_params }},export-cache-concurrency=${{ inputs.export_cache_concurrency }},export-layers-concurrency=${{ inputs.export_layers_concurrency }}
-          cache-from: type=gha,scope=vllm-cpu-v3-${{ matrix.version }}-${{ matrix.slug }}
-          cache-to: type=gha,scope=vllm-cpu-v3-${{ matrix.version }}-${{ matrix.slug }},mode=max,compression=zstd
+          cache-from: type=gha,scope=vllm-cpu-v4-${{ matrix.version }}-${{ matrix.slug }}
+          cache-to: type=gha,scope=vllm-cpu-v4-${{ matrix.version }}-${{ matrix.slug }},mode=max,compression=zstd
           build-args: |
             BUILDKIT_INLINE_CACHE=1
             VLLM_VERSION=${{ matrix.version }}
