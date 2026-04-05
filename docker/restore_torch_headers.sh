@@ -1,8 +1,8 @@
 #!/bin/sh
-# Restore torch inductor C++ headers if missing from CPU wheel
-# CPU wheels from download.pytorch.org/whl/cpu don't ship torch/csrc/ or c10/ headers
-# needed by torch.compile (inductor JIT). This script downloads them from the
-# matching CUDA wheel on PyPI if they're missing.
+# Restore torch inductor C++ headers if missing from abi3 CPU wheel
+# The cp38-abi3 CPU wheels strip torch/csrc/ and c10/ headers while per-Python
+# CPU wheels (cp310, cp312, cp313, etc.) include them. This script downloads
+# the matching per-Python CPU wheel and extracts the headers if missing.
 
 set -e
 
@@ -14,34 +14,60 @@ if [ -f "${CPP_PREFIX}" ]; then
     exit 0
 fi
 
-echo "torch inductor headers missing — downloading from CUDA wheel..."
+echo "torch inductor headers missing (abi3 wheel) — downloading from per-Python CPU wheel..."
 TORCH_VER="$(python3 -c 'import torch;print(torch.__version__.split("+")[0])')"
+ARCH="$(uname -m)"
+# Auto-detect Python version tag (cp313, cp314, cp315, etc.)
+PY_TAG="$(python3 -c 'import sys;print(f"cp{sys.version_info.major}{sys.version_info.minor}")')"
+
+echo "torch=${TORCH_VER} arch=${ARCH} python=${PY_TAG}"
 
 mkdir -p /tmp/thdr
 
-# Download CUDA wheel using curl + PyPI JSON API (pip/uv may be removed by cleanup)
-echo "Looking up torch==${TORCH_VER} wheel URL from PyPI..."
-ARCH="$(uname -m)"
-PY_VER="$(python3 -c 'import sys;print(f"cp{sys.version_info.major}{sys.version_info.minor}")')"
-
+# Try CPU index first (smaller ~180MB vs ~2GB CUDA wheel), fallback to PyPI
 WHL_URL="$(python3 -c "
-import json, urllib.request, sys
-ver, arch, py = sys.argv[1], sys.argv[2], sys.argv[3]
-data = json.loads(urllib.request.urlopen(f'https://pypi.org/pypi/torch/{ver}/json').read())
-for f in data.get('urls', []):
-    name = f['filename']
-    if arch in name and py in name and name.endswith('.whl') and 'include' not in name.lower():
-        print(f['url']); break
-" "${TORCH_VER}" "${ARCH}" "${PY_VER}" 2>/dev/null)"
+import json, urllib.request, sys, re
+
+ver, arch, py_tag = sys.argv[1], sys.argv[2], sys.argv[3]
+cpu_ver = ver + '%2Bcpu'  # URL-encoded +cpu
+
+# Strategy 1: CPU index — per-Python wheel (has headers, ~180MB)
+try:
+    index_url = f'https://download.pytorch.org/whl/cpu/torch/'
+    html = urllib.request.urlopen(index_url).read().decode()
+    # Find wheel matching: torch-{ver}+cpu-{py_tag}-{py_tag}-*{arch}*.whl
+    pattern = f'torch-{re.escape(ver)}\\+cpu-{py_tag}-{py_tag}-[^\"]*{arch}[^\"]*\\.whl'
+    matches = re.findall(pattern, html)
+    if matches:
+        whl_name = matches[0]
+        print(f'https://download.pytorch.org/whl/cpu/{whl_name}')
+        sys.exit(0)
+except Exception as e:
+    print(f'CPU index lookup failed: {e}', file=sys.stderr)
+
+# Strategy 2: PyPI — regular wheel (CUDA, larger but guaranteed headers)
+try:
+    data = json.loads(urllib.request.urlopen(f'https://pypi.org/pypi/torch/{ver}/json').read())
+    for f in data.get('urls', []):
+        name = f['filename']
+        if arch in name and py_tag in name and name.endswith('.whl'):
+            print(f['url'])
+            sys.exit(0)
+except Exception as e:
+    print(f'PyPI lookup failed: {e}', file=sys.stderr)
+
+# Nothing found
+sys.exit(1)
+" "${TORCH_VER}" "${ARCH}" "${PY_TAG}" 2>/dev/null)"
 
 if [ -z "$WHL_URL" ]; then
-    echo "WARNING: Could not find CUDA wheel URL — torch.compile may not work"
+    echo "WARNING: Could not find wheel with headers — torch.compile may not work"
     echo "Set TORCHDYNAMO_DISABLE=1 to use eager mode as fallback"
     rm -rf /tmp/thdr
     exit 0
 fi
 
-echo "Downloading $(basename "$WHL_URL")..."
+echo "Downloading $(echo "$WHL_URL" | grep -o '[^/]*$')..."
 curl -fsSL "$WHL_URL" -o /tmp/thdr/torch.whl 2>/dev/null
 if [ ! -f /tmp/thdr/torch.whl ]; then
     echo "WARNING: Download failed — torch.compile may not work"
