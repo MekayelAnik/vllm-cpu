@@ -49,19 +49,21 @@ if [ ! -f /tmp/thdr/torch.whl ]; then
     exit 0
 fi
 
-# Extract only include/ files from the wheel
+# Extract only include/ files from the wheel (skip dirs, handle existing)
 python3 -c "
 import zipfile,sys,os
-whl=sys.argv[1]; dest=sys.argv[2]
+whl=sys.argv[1]; dest=sys.argv[2]; count=0
 with zipfile.ZipFile(whl) as z:
-    members=[n for n in z.namelist() if '/include/' in n]
-    for m in members:
+    for m in z.namelist():
+        if '/include/' not in m: continue
         parts=m.split('/include/',1)
-        if len(parts)==2 and parts[1]:
-            t=os.path.join(dest,parts[1])
-            os.makedirs(os.path.dirname(t),exist_ok=True)
-            open(t,'wb').write(z.read(m))
-    print(f'Extracted {len(members)} header files')
+        if len(parts)!=2 or not parts[1]: continue
+        if m.endswith('/'): continue  # skip directory entries
+        t=os.path.join(dest,parts[1])
+        if os.path.isdir(t): continue  # skip if path is existing dir
+        os.makedirs(os.path.dirname(t),exist_ok=True)
+        open(t,'wb').write(z.read(m)); count+=1
+    print(f'Extracted {count} header files')
 " /tmp/thdr/torch.whl "$TORCH_INC"
 
 rm -rf /tmp/thdr
