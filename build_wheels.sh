@@ -1129,6 +1129,15 @@ build_variant() {
         fi
     fi
 
+    # Fix mla_decode.cpp build on AVX2-only x86 (upstream #34052)
+    # Must apply BEFORE dependency install which compiles C extensions
+    local mla_file="$WORKSPACE/vllm/csrc/cpu/mla_decode.cpp"
+    if [[ -f "$mla_file" ]] && grep -q '#elif defined(__s390x__)' "$mla_file"; then
+        log_info "Patching mla_decode.cpp: adding BFloat16 fallback for AVX2..."
+        sed -i '/#elif defined(__s390x__)/,/^};$/d; s/#elif defined(__aarch64__)/#else/' "$mla_file"
+        log_success "mla_decode.cpp patched"
+    fi
+
     # Detect version from git (after checkout if version was specified)
     if [[ $DRY_RUN -eq 1 ]]; then
         VLLM_VERSION="0.0.0"
@@ -1492,15 +1501,6 @@ build_variant() {
         else
             log_info "Skipping AVX512 force patch (architecture: $arch)"
         fi
-    fi
-
-    # Fix mla_decode.cpp build on AVX2-only x86 (upstream #34052)
-    # BFloat16 KernelVecType has no fallback — grep detects if patch is needed
-    local mla_file="$WORKSPACE/vllm/csrc/cpu/mla_decode.cpp"
-    if [[ -f "$mla_file" ]] && grep -q '#elif defined(__s390x__)' "$mla_file"; then
-        log_info "Patching mla_decode.cpp: adding BFloat16 fallback for AVX2..."
-        sed -i '/#elif defined(__s390x__)/,/^};$/d; s/#elif defined(__aarch64__)/#else/' "$mla_file"
-        log_success "mla_decode.cpp patched"
     fi
 
     # Inject CPU platform fix into vllm/__init__.py
