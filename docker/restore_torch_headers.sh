@@ -39,7 +39,7 @@ try:
     pattern = f'torch-{re.escape(ver)}\\+cpu-{py_tag}-{py_tag}-[^\"]*{arch}[^\"]*\\.whl'
     matches = re.findall(pattern, html)
     if matches:
-        whl_name = matches[0]
+        whl_name = matches[0].replace('+', '%2B')
         print(f'https://download.pytorch.org/whl/cpu/{whl_name}')
         sys.exit(0)
 except Exception as e:
