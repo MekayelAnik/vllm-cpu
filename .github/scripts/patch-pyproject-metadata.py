@@ -15,9 +15,24 @@ if not p.exists():
 
 t = p.read_text()
 
-# License: remove PEP 639 license-files, use PEP 621 table format
+# License: remove PEP 639 fields, use PEP 621 table format
+# PyPI doesn't fully support PEP 639 (License-Expression/License-File headers cause rejection)
 t = re.sub(r"^license-files\s*=.*\n", "", t, flags=re.MULTILINE)
 t = re.sub(r"^license\s*=.*", 'license = {text = "GPL-3.0-only"}', t, flags=re.MULTILINE)
+
+# Update license classifier
+t = t.replace(
+    '"License :: OSI Approved :: Apache Software License"',
+    '"License :: OSI Approved :: GNU General Public License v3 (GPLv3)"',
+)
+
+# Disable setuptools automatic license-files inclusion
+# Without this, setuptools auto-includes LICENSE* files, generating License-File metadata
+if "[tool.setuptools]" in t:
+    if "license-files" not in t.split("[tool.setuptools]")[1].split("[")[0]:
+        t = t.replace("[tool.setuptools]", "[tool.setuptools]\nlicense-files = []")
+else:
+    t += "\n[tool.setuptools]\nlicense-files = []\n"
 
 # Authors and maintainers
 t = re.sub(r"^authors\s*=.*\n", "", t, flags=re.MULTILINE)
