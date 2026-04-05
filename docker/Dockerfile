@@ -239,11 +239,14 @@ ARG CACHEBUST=1
 COPY docker/setup_vllm.sh docker/cleanup.sh /tmp/
 RUN --mount=type=cache,id=uv-${VARIANT},target=/root/.cache/uv,sharing=locked \
     --mount=type=secret,id=GITHUB_TOKEN,required=false \
+    echo "Build: ${CACHEBUST}" && \
     chmod +x /tmp/setup_vllm.sh /tmp/cleanup.sh && \
     export GITHUB_TOKEN=$(cat /run/secrets/GITHUB_TOKEN 2>/dev/null || echo "") && \
     /tmp/setup_vllm.sh "${VARIANT}" "${VLLM_VERSION}" "${USE_GITHUB_RELEASE}" && \
     /tmp/cleanup.sh && \
-    rm -f /tmp/setup_vllm.sh /tmp/cleanup.sh
+    rm -f /tmp/setup_vllm.sh /tmp/cleanup.sh && \
+    echo "Verifying torch/include exists:" && \
+    ls /vllm/venv/lib/*/site-packages/torch/include/torch/csrc/inductor/cpp_prefix.h
 
 # Store Python version
 RUN echo "VLLM_PYTHON_VERSION=$(cat /vllm/python_version.txt)" >> /etc/environment
