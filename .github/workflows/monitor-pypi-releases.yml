@@ -338,11 +338,74 @@ jobs:
       DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
 
   # ===========================================================================
-  # Job 5: Promote latest/stable tags
+  # Job 5: Docker inference smoke test
+  # ===========================================================================
+  smoke-test:
+    name: Docker inference smoke test
+    needs: [fetch-releases, build-versions]
+    if: needs.build-versions.result == 'success'
+    runs-on: ${{ vars.ACTION_RUNNER_VERSION || 'ubuntu-24.04' }}
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Pull Docker image
+        shell: bash
+        env:
+          IMAGE: ${{ vars.GHCR_REPO || format('ghcr.io/{0}/vllm-cpu', github.repository_owner) }}:${{ needs.fetch-releases.outputs.latest_version }}
+        run: |
+          set -euo pipefail
+          echo "Pulling image: $IMAGE"
+          docker pull "$IMAGE"
+
+      - name: Run inference smoke test
+        shell: bash
+        env:
+          IMAGE: ${{ vars.GHCR_REPO || format('ghcr.io/{0}/vllm-cpu', github.repository_owner) }}:${{ needs.fetch-releases.outputs.latest_version }}
+        run: |
+          set -euo pipefail
+          echo "Running inference smoke test with image: $IMAGE"
+          docker run --rm \
+            --shm-size 4g \
+            -e VLLM_TARGET_DEVICE=cpu \
+            -e OTEL_PROPAGATORS=none \
+            -e OTEL_TRACES_EXPORTER=none \
+            "$IMAGE" \
+            python3 -c "
+          import os
+          os.environ['VLLM_TARGET_DEVICE'] = 'cpu'
+          os.environ['OTEL_PROPAGATORS'] = 'none'
+          os.environ['OTEL_TRACES_EXPORTER'] = 'none'
+          from vllm import LLM, SamplingParams
+          model = 'facebook/opt-125m'
+          print(f'Loading model: {model}')
+          try:
+              llm = LLM(model=model, device='cpu', dtype='float32', max_model_len=256)
+          except TypeError:
+              llm = LLM(model=model, dtype='float32', max_model_len=256)
+          params = SamplingParams(temperature=0.8, max_tokens=32)
+          outputs = llm.generate(['Hello, world!'], params)
+          text = outputs[0].outputs[0].text
+          n_tokens = len(outputs[0].outputs[0].token_ids)
+          print(f'Generated ({n_tokens} tokens): {text}')
+          assert n_tokens > 0, 'No output tokens generated'
+          print('Docker inference smoke test: PASS')
+          "
+
+  # ===========================================================================
+  # Job 6: Promote latest/stable tags
   # ===========================================================================
   promote-latest:
     name: Promote latest tag
-    needs: [quick-check, fetch-releases, build-versions]
+    needs: [quick-check, fetch-releases, build-versions, smoke-test]
     if: |
       always() &&
       (needs.fetch-releases.outputs.latest_version != '' || needs.fetch-releases.outputs.normalized_action == 'force-promote-latest') &&
@@ -351,8 +414,8 @@ jobs:
         needs.fetch-releases.outputs.normalized_action == 'force-promote-latest' ||
         needs.fetch-releases.outputs.normalized_action == 'promote-stable' ||
         needs.fetch-releases.outputs.normalized_action == 'force-promote-stable' ||
-        (needs.build-versions.result == 'success' && needs.fetch-releases.outputs.normalized_auto_promote == 'true') ||
-        (needs.build-versions.result == 'success' && contains(needs.fetch-releases.outputs.versions_json, needs.fetch-releases.outputs.latest_version)) ||
+        (needs.build-versions.result == 'success' && needs.smoke-test.result == 'success' && needs.fetch-releases.outputs.normalized_auto_promote == 'true') ||
+        (needs.build-versions.result == 'success' && needs.smoke-test.result == 'success' && contains(needs.fetch-releases.outputs.versions_json, needs.fetch-releases.outputs.latest_version)) ||
         needs.fetch-releases.outputs.normalized_action == 'auto-check'
       )
     uses: ./.github/workflows/reusable-promote-latest.yml
@@ -369,7 +432,7 @@ jobs:
       DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
 
   # ===========================================================================
-  # Job 6: Update pipeline state
+  # Job 7: Update pipeline state
   # ===========================================================================
   update-state:
     name: Update pipeline state
@@ -457,7 +520,7 @@ jobs:
           git push "https://x-access-token:${GH_TOKEN}@github.com/${REPO}.git" HEAD:pipeline-state
 
   # ===========================================================================
-  # Job 7: Update README version
+  # Job 8: Update README version
   # ===========================================================================
   update-readme-version:
     name: Update README version
@@ -500,7 +563,7 @@ jobs:
           git push
 
   # ===========================================================================
-  # Job 8: Sync README to Docker Hub
+  # Job 9: Sync README to Docker Hub
   # ===========================================================================
   update-dockerhub-description:
     name: Update Docker Hub description
