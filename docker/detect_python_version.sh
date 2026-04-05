@@ -307,10 +307,10 @@ for DEP_SPEC in ${CRITICAL_DEPS}; do
     fi
 done
 
-# Try current version, then fall back: 3.13 -> 3.12 -> 3.11 -> 3.10 -> 3.9
+# Try current version, then fall back: 3.13 -> 3.12 -> 3.11 -> 3.10 (minimum, vllm requires >=3.10)
 echo "" >&2
 echo "Checking Python version compatibility..." >&2
-while [ "${PYTHON_MINOR}" -ge 9 ]; do
+while [ "${PYTHON_MINOR}" -ge 10 ]; do
     ALL_DEPS_OK=true
     MISSING_DEPS=""
 
@@ -343,8 +343,8 @@ while [ "${PYTHON_MINOR}" -ge 9 ]; do
 done
 
 if [ "${PYTHON_MINOR}" -lt 9 ]; then
-    echo "WARNING: No Python version found with all dependency wheels, using 3.9 as fallback" >&2
-    PYTHON_VER="3.9"
+    echo "WARNING: No Python version found with all dependency wheels, using 3.10 as fallback" >&2
+    PYTHON_VER="3.10"
 fi
 
 # =============================================================================
