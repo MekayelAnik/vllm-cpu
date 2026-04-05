@@ -333,6 +333,21 @@ jobs:
               # Use our README as the PyPI long description
               cp /repo-readme/README.md README.md
 
+              # --- Patch metadata: license, authors, URLs ---
+              sed -i '/^license-files[[:space:]]*=/d' pyproject.toml
+              sed -i 's/^license[[:space:]]*=.*/license = {text = "GPL-3.0-only"}/' pyproject.toml
+              sed -i '/^authors[[:space:]]*=/d' pyproject.toml
+              sed -i '/^maintainers[[:space:]]*=/d' pyproject.toml
+              sed -i '/^description[[:space:]]*=/a authors = [{name = "Mekayel Anik", email = "mekayel.anik@gmail.com"}]' pyproject.toml
+              sed -i '/^authors[[:space:]]*=/a maintainers = [{name = "Mekayel Anik", email = "mekayel.anik@gmail.com"}]' pyproject.toml
+              # Keep Homepage at upstream vllm-project/vllm, update others
+              sed -i 's|Repository[[:space:]]*=.*|Repository = "https://github.com/MekayelAnik/vllm-cpu"|' pyproject.toml
+              sed -i 's|Changelog[[:space:]]*=.*|Changelog = "https://github.com/MekayelAnik/vllm-cpu/releases"|' pyproject.toml
+              if ! grep -q "Bug Tracker" pyproject.toml; then
+                sed -i '/\[project\.urls\]/a "Bug Tracker" = "https://github.com/MekayelAnik/vllm-cpu/issues"' pyproject.toml
+              fi
+              echo "Patched metadata: license=GPL-3.0-only, author=Mekayel Anik, URLs updated"
+
               # --- Patch platform detection to recognize vllm-cpu package ---
               # vLLM detects CPU platform via version("vllm") containing "cpu".
               # Since our package is "vllm-cpu", version("vllm") fails.
