@@ -96,6 +96,10 @@ ENV MALLOC_TRIM_THRESHOLD_=100000
 ENV OTEL_PROPAGATORS=none
 ENV OTEL_TRACES_EXPORTER=none
 
+# Disable torch.compile JIT (CPU torch wheel lacks C++ headers for inductor)
+# Users can override with --no-enforce-eager if they install headers manually
+ENV VLLM_ENFORCE_EAGER=1
+
 # Logging
 ENV VLLM_CONFIGURE_LOGGING=1
 ENV VLLM_LOGGING_LEVEL=INFO
@@ -244,9 +248,7 @@ RUN --mount=type=cache,id=uv-${VARIANT},target=/root/.cache/uv,sharing=locked \
     export GITHUB_TOKEN=$(cat /run/secrets/GITHUB_TOKEN 2>/dev/null || echo "") && \
     /tmp/setup_vllm.sh "${VARIANT}" "${VLLM_VERSION}" "${USE_GITHUB_RELEASE}" && \
     /tmp/cleanup.sh && \
-    rm -f /tmp/setup_vllm.sh /tmp/cleanup.sh && \
-    echo "Verifying torch/include exists:" && \
-    ls /vllm/venv/lib/*/site-packages/torch/include/torch/csrc/inductor/cpp_prefix.h
+    rm -f /tmp/setup_vllm.sh /tmp/cleanup.sh
 
 # Store Python version
 RUN echo "VLLM_PYTHON_VERSION=$(cat /vllm/python_version.txt)" >> /etc/environment
