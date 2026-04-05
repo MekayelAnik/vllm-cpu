@@ -164,8 +164,9 @@ find /vllm/venv -path "*/.dist-info/*" -type f \
 # =============================================================================
 # 10. Remove __pycache__ and include directories
 # =============================================================================
-echo "Step 10: Removing __pycache__ and include directories..."
-find /vllm/venv -depth -type d \( -name "__pycache__" -o -name "include" \) \
+echo "Step 10: Removing __pycache__ directories..."
+# Only remove __pycache__ — keep 'include' dirs (torch/include + Python headers needed for JIT)
+find /vllm/venv -depth -type d -name "__pycache__" \
     -exec rm -vrf {} \; 2>/dev/null || true
 
 # =============================================================================
