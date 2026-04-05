@@ -112,8 +112,8 @@ rm -vrf /vllm/venv/lib/*/site-packages/torch/lib/*metal* || true
 rm -vrf /vllm/venv/lib/*/site-packages/tensorboard* || true
 rm -vrf /vllm/venv/lib/*/site-packages/torch/utils/tensorboard* || true
 
-# Torch C++ frontend headers (not needed at runtime)
-rm -vrf /vllm/venv/lib/*/site-packages/torch/include || true
+# Keep torch/include — needed by PyTorch inductor (torch.compile) JIT at runtime
+# rm -vrf /vllm/venv/lib/*/site-packages/torch/include || true
 
 # Torch share data (example scripts)
 rm -vrf /vllm/venv/lib/*/site-packages/torch/share || true
@@ -191,7 +191,8 @@ rm -vrf /root/.local/share/uv/python/*/share/doc 2>/dev/null || true
 rm -vrf /root/.local/share/uv/python/*/lib/*/lib-tk 2>/dev/null || true
 rm -vrf /root/.local/share/uv/python/*/lib/*/tkinter 2>/dev/null || true
 rm -vrf /root/.local/share/uv/python/*/lib/*/config-* 2>/dev/null || true
-rm -vrf /root/.local/share/uv/python/*/include 2>/dev/null || true
+# Keep Python include headers — needed by PyTorch inductor JIT (Python.h)
+# rm -vrf /root/.local/share/uv/python/*/include 2>/dev/null || true
 
 # =============================================================================
 # 13. Remove locale data (keep only en_US)
@@ -209,13 +210,13 @@ rm -vf /usr/local/bin/uv
 # Remove wget but keep binutils (--auto-remove would cascade-remove g++ symlink)
 # g++ is required at runtime for PyTorch inductor (torch.compile) JIT compilation
 apt-get purge -y wget 2>/dev/null || true
-# Ensure g++ is available after cleanup
-if ! command -v g++ &>/dev/null; then
-    G_REAL="$(find /usr -name 'g++-*' -type f 2>/dev/null | sort -V | tail -1)"
-    if [ -n "$G_REAL" ]; then
-        ln -sf "$G_REAL" /usr/bin/g++
-        echo "Restored g++ symlink -> $G_REAL"
-    fi
+# Ensure g++ points to the actual compiler (not the C++ module mapper)
+# The correct binary is x86_64-linux-gnu-g++-* or aarch64-linux-gnu-g++-*
+G_REAL="$(find /usr/bin -name '*-linux-gnu-g++-*' -type f 2>/dev/null | sort -V | tail -1)"
+if [ -n "$G_REAL" ]; then
+    ln -sf "$G_REAL" /usr/bin/g++
+    echo "g++ symlink -> $G_REAL"
+    g++ --version | head -1
 fi
 rm -vrf /var/lib/apt/lists/* /var/cache/apt/archives/* /var/log/apt/* /var/log/dpkg.log 2>/dev/null || true
 
