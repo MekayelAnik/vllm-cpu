@@ -1426,11 +1426,11 @@ build_variant() {
                 log_warning "Could not find classifiers section in pyproject.toml"
             fi
 
-            # Relax xgrammar pin from ==0.1.29 to >=0.1.29
+            # Override xgrammar pin to >=0.1.30
             # xgrammar 0.1.29 has no cp313 aarch64 wheel (only cp39-cp312)
-            # 0.1.30+ ships cp313 aarch64 wheels, avoiding GCC 14 build failures
-            log_info "Relaxing xgrammar version pin (>=0.1.29 for aarch64 cp313 compatibility)..."
-            sed -i 's/xgrammar==\([0-9.]*\)/xgrammar>=\1/' pyproject.toml
+            # 0.1.30+ ships cp313 aarch64 wheels and includes GCC 14 build fix
+            log_info "Overriding xgrammar version pin (>=0.1.30 for aarch64 cp313 compatibility)..."
+            sed -i 's/xgrammar==[0-9.]*/xgrammar>=0.1.30/' pyproject.toml
 
             # Copy variant-specific README file
             log_info "Copying variant-specific README: $readme_file..."
