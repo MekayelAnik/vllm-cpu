@@ -1,15 +1,67 @@
-![PyPI - Version](https://img.shields.io/pypi/v/vllm-cpu?logo=pypi&logoColor=white&label=PyPI)
-![PyPI - Downloads](https://img.shields.io/pypi/dm/vllm-cpu?logo=pypi&logoColor=white&label=Downloads)
-![PyPI - Python Version](https://img.shields.io/pypi/pyversions/vllm-cpu?logo=python&logoColor=white)
-![Docker Pulls](https://img.shields.io/docker/pulls/mekayelanik/vllm-cpu?logo=docker&logoColor=white&label=Docker%20Pulls)
-![GHCR](https://img.shields.io/badge/GHCR-available-blue?logo=github&logoColor=white)
-![Platforms](https://img.shields.io/badge/platforms-x86__64%20%7C%20aarch64-green)
-![License](https://img.shields.io/github/license/MekayelAnik/vllm-cpu)
-![GitHub Stars](https://img.shields.io/github/stars/MekayelAnik/vllm-cpu?style=flat&logo=github)
+<!-- markdownlint-disable MD001 MD041 -->
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/vllm-project/vllm/main/docs/assets/logos/vllm-logo-text-dark.png">
+    <img alt="vLLM" src="https://raw.githubusercontent.com/vllm-project/vllm/main/docs/assets/logos/vllm-logo-text-light.png" width=55%>
+  </picture>
+</p>
 
-# vllm-cpu
+<h3 align="center">
+CPU-Optimized vLLM: Easy, Fast LLM Inference Without a GPU
+</h3>
 
-Unified CPU wheels and Docker images for [vLLM](https://github.com/vllm-project/vllm) — the fast and easy-to-use library for LLM inference and serving.
+<p align="center">
+  <strong>Unified CPU wheel with automatic AVX2/AVX512 detection at runtime</strong>
+</p>
+
+<p align="center">
+  <a href="https://pypi.org/project/vllm-cpu/">
+    <img src="https://img.shields.io/pypi/v/vllm-cpu?style=for-the-badge&logo=pypi&logoColor=white&labelColor=2b3137&color=3775a9&label=vllm-cpu" alt="PyPI Version">
+  </a>
+  <a href="https://pypi.org/project/vllm-cpu/">
+    <img src="https://img.shields.io/pypi/dm/vllm-cpu?style=for-the-badge&logo=pypi&logoColor=white&labelColor=2b3137&color=3775a9&label=Downloads" alt="PyPI Downloads">
+  </a>
+  <a href="https://pypi.org/project/vllm-cpu/">
+    <img src="https://img.shields.io/pypi/pyversions/vllm-cpu?style=for-the-badge&logo=python&logoColor=white&labelColor=2b3137&color=3775a9" alt="Python Versions">
+  </a>
+</p>
+
+<p align="center">
+  <a href="https://hub.docker.com/r/mekayelanik/vllm-cpu">
+    <img src="https://img.shields.io/docker/pulls/mekayelanik/vllm-cpu?style=for-the-badge&logo=docker&logoColor=white&labelColor=2b3137&color=0db7ed" alt="Docker Pulls">
+  </a>
+  <a href="https://hub.docker.com/r/mekayelanik/vllm-cpu">
+    <img src="https://img.shields.io/docker/stars/mekayelanik/vllm-cpu?style=for-the-badge&logo=docker&logoColor=white&labelColor=2b3137&color=f0c14b" alt="Docker Stars">
+  </a>
+  <a href="https://github.com/MekayelAnik/vllm-cpu/pkgs/container/vllm-cpu">
+    <img src="https://img.shields.io/badge/GHCR-available-blue?style=for-the-badge&logo=github&logoColor=white&labelColor=2b3137" alt="GHCR">
+  </a>
+</p>
+
+<p align="center">
+  <a href="https://github.com/MekayelAnik/vllm-cpu/stargazers">
+    <img src="https://img.shields.io/github/stars/MekayelAnik/vllm-cpu?style=for-the-badge&logo=github&logoColor=white&labelColor=2b3137&color=f0c14b" alt="GitHub Stars">
+  </a>
+  <a href="https://github.com/MekayelAnik/vllm-cpu/network/members">
+    <img src="https://img.shields.io/github/forks/MekayelAnik/vllm-cpu?style=for-the-badge&logo=github&logoColor=white&labelColor=2b3137&color=6cc644" alt="GitHub Forks">
+  </a>
+  <a href="https://github.com/MekayelAnik/vllm-cpu/issues">
+    <img src="https://img.shields.io/github/issues/MekayelAnik/vllm-cpu?style=for-the-badge&logo=github&logoColor=white&labelColor=2b3137&color=d73a49" alt="GitHub Issues">
+  </a>
+  <a href="https://github.com/MekayelAnik/vllm-cpu/blob/main/LICENSE">
+    <img src="https://img.shields.io/github/license/MekayelAnik/vllm-cpu?style=for-the-badge&logo=gnu&logoColor=white&labelColor=2b3137&color=a32d2a" alt="License">
+  </a>
+</p>
+
+<p align="center">
+  <a href="https://github.com/MekayelAnik/vllm-cpu/commits/main">
+    <img src="https://img.shields.io/github/last-commit/MekayelAnik/vllm-cpu?style=for-the-badge&logo=git&logoColor=white&labelColor=2b3137&color=ff6f00" alt="Last Commit">
+  </a>
+  <a href="https://github.com/MekayelAnik/vllm-cpu/graphs/contributors">
+    <img src="https://img.shields.io/github/contributors/MekayelAnik/vllm-cpu?style=for-the-badge&logo=github&logoColor=white&labelColor=2b3137&color=00bcd4" alt="Contributors">
+  </a>
+  <img src="https://img.shields.io/badge/platforms-x86__64%20%7C%20aarch64-green?style=for-the-badge&labelColor=2b3137" alt="Platforms">
+</p>
 
 ---
 
