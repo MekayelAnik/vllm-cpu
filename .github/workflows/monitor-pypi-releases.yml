@@ -370,6 +370,7 @@ jobs:
         shell: bash
         env:
           IMAGE: ${{ vars.GHCR_REPO || format('ghcr.io/{0}/vllm-cpu', github.repository_owner) }}:${{ needs.fetch-releases.outputs.latest_version }}
+          SMOKE_TEST_MODEL: ${{ vars.SMOKE_TEST_MODEL || 'facebook/opt-125m' }}
         run: |
           set -euo pipefail
           echo "Running inference smoke test with image: $IMAGE"
@@ -378,14 +379,14 @@ jobs:
             -e VLLM_TARGET_DEVICE=cpu \
             -e OTEL_PROPAGATORS=none \
             -e OTEL_TRACES_EXPORTER=none \
+            -e "SMOKE_TEST_MODEL=${SMOKE_TEST_MODEL}" \
             "$IMAGE" \
             python3 -c "
           import os
           os.environ['VLLM_TARGET_DEVICE'] = 'cpu'
           os.environ['OTEL_PROPAGATORS'] = 'none'
           os.environ['OTEL_TRACES_EXPORTER'] = 'none'
-          from vllm import LLM, SamplingParams
-          model = 'facebook/opt-125m'
+          model = os.environ.get('SMOKE_TEST_MODEL', 'facebook/opt-125m')
           print(f'Loading model: {model}')
           try:
               llm = LLM(model=model, device='cpu', dtype='float32', max_model_len=256)
