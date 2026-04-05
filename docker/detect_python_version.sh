@@ -307,44 +307,77 @@ for DEP_SPEC in ${CRITICAL_DEPS}; do
     fi
 done
 
-# Try current version, then fall back: 3.13 -> 3.12 -> 3.11 -> 3.10 (minimum, vllm requires >=3.10)
+# Check if main package uses stable ABI (abi3)
+MAIN_WHEEL_LIST=$(echo "${DEP_WHEELS}" | tr '|' '\n' | grep "^${PACKAGE_NAME}:" | cut -d: -f2-)
+IS_ABI3=false
+if echo "${MAIN_WHEEL_LIST}" | tr ' ' '\n' | grep -q "abi3"; then
+    IS_ABI3=true
+fi
+
 echo "" >&2
 echo "Checking Python version compatibility..." >&2
-while [ "${PYTHON_MINOR}" -ge 10 ]; do
-    ALL_DEPS_OK=true
-    MISSING_DEPS=""
 
+if [ "${IS_ABI3}" = "true" ]; then
+    # ABI3 wheel: works on any Python >= min ABI version
+    # Use the highest detected Python — deps without wheels will be built from source
+    echo "Main package uses stable ABI (abi3) — Python version is flexible" >&2
+    PYTHON_VER="${ORIGINAL_PY}"
+
+    # Advisory check: warn about deps that may need source compilation
+    MISSING_DEPS=""
     for DEP_SPEC in ${CRITICAL_DEPS}; do
         DEP_NAME=$(echo "${DEP_SPEC}" | cut -d: -f1)
         DEP_WHEEL_LIST=$(echo "${DEP_WHEELS}" | tr '|' '\n' | grep "^${DEP_NAME}:" | cut -d: -f2-)
-
         if [ -n "${DEP_WHEEL_LIST}" ]; then
             if ! check_wheel_available "${DEP_WHEEL_LIST}" "${PYTHON_MINOR}" "${WHEEL_ARCH}"; then
-                ALL_DEPS_OK=false
                 MISSING_DEPS="${MISSING_DEPS} ${DEP_NAME}"
             fi
         fi
     done
 
-    if [ "${ALL_DEPS_OK}" = "true" ]; then
-        if [ "3.${PYTHON_MINOR}" != "${ORIGINAL_PY}" ]; then
-            echo "WARNING: Some dependencies lack wheels for Python ${ORIGINAL_PY} on ${WHEEL_ARCH}" >&2
-            echo "Falling back to Python 3.${PYTHON_MINOR} for dependency compatibility" >&2
-        else
-            echo "All critical dependencies have ${WHEEL_ARCH} wheels for Python ${PYTHON_VER}" >&2
-        fi
-        PYTHON_VER="3.${PYTHON_MINOR}"
-        break
+    if [ -n "${MISSING_DEPS}" ]; then
+        echo "NOTE: These deps may build from source on ${WHEEL_ARCH}/Python ${PYTHON_VER}:${MISSING_DEPS}" >&2
     else
-        echo "Python 3.${PYTHON_MINOR}: Missing ${WHEEL_ARCH} wheels for:${MISSING_DEPS}" >&2
+        echo "All critical dependencies have ${WHEEL_ARCH} wheels for Python ${PYTHON_VER}" >&2
     fi
+else
+    # Non-ABI3: must find a Python version where all deps have pre-built wheels
+    while [ "${PYTHON_MINOR}" -ge 10 ]; do
+        ALL_DEPS_OK=true
+        MISSING_DEPS=""
 
-    PYTHON_MINOR=$((PYTHON_MINOR - 1))
-done
+        for DEP_SPEC in ${CRITICAL_DEPS}; do
+            DEP_NAME=$(echo "${DEP_SPEC}" | cut -d: -f1)
+            DEP_WHEEL_LIST=$(echo "${DEP_WHEELS}" | tr '|' '\n' | grep "^${DEP_NAME}:" | cut -d: -f2-)
 
-if [ "${PYTHON_MINOR}" -lt 9 ]; then
-    echo "WARNING: No Python version found with all dependency wheels, using 3.10 as fallback" >&2
-    PYTHON_VER="3.10"
+            if [ -n "${DEP_WHEEL_LIST}" ]; then
+                if ! check_wheel_available "${DEP_WHEEL_LIST}" "${PYTHON_MINOR}" "${WHEEL_ARCH}"; then
+                    ALL_DEPS_OK=false
+                    MISSING_DEPS="${MISSING_DEPS} ${DEP_NAME}"
+                fi
+            fi
+        done
+
+        if [ "${ALL_DEPS_OK}" = "true" ]; then
+            if [ "3.${PYTHON_MINOR}" != "${ORIGINAL_PY}" ]; then
+                echo "WARNING: Some dependencies lack wheels for Python ${ORIGINAL_PY} on ${WHEEL_ARCH}" >&2
+                echo "Falling back to Python 3.${PYTHON_MINOR} for dependency compatibility" >&2
+            else
+                echo "All critical dependencies have ${WHEEL_ARCH} wheels for Python ${PYTHON_VER}" >&2
+            fi
+            PYTHON_VER="3.${PYTHON_MINOR}"
+            break
+        else
+            echo "Python 3.${PYTHON_MINOR}: Missing ${WHEEL_ARCH} wheels for:${MISSING_DEPS}" >&2
+        fi
+
+        PYTHON_MINOR=$((PYTHON_MINOR - 1))
+    done
+
+    if [ "${PYTHON_MINOR}" -lt 10 ]; then
+        echo "WARNING: No Python version found with all dependency wheels, using 3.10 as fallback" >&2
+        PYTHON_VER="3.10"
+    fi
 fi
 
 # =============================================================================
