@@ -249,6 +249,34 @@ RUN --mount=type=cache,id=uv-${VARIANT},target=/root/.cache/uv,sharing=locked \
     /tmp/cleanup.sh && \
     rm -f /tmp/setup_vllm.sh /tmp/cleanup.sh
 
+# Restore torch inductor headers if cleanup removed them
+# This runs in a SEPARATE layer to bypass any cached cleanup results
+RUN TORCH_INC="$(python3 -c 'import torch,os;print(os.path.join(os.path.dirname(torch.__file__),"include"))')" && \
+    CPP_PREFIX="${TORCH_INC}/torch/csrc/inductor/cpp_prefix.h" && \
+    if [ ! -f "${CPP_PREFIX}" ]; then \
+        echo "Restoring torch inductor headers..." && \
+        TORCH_VER="$(python3 -c 'import torch;print(torch.__version__.split("+")[0])')" && \
+        pip download "torch==${TORCH_VER}" --no-deps --no-cache-dir -d /tmp/thdr 2>/dev/null && \
+        python3 -c "
+import zipfile,glob,os,sys
+whl=glob.glob('/tmp/thdr/torch-*.whl')[0]
+dest=sys.argv[1]
+with zipfile.ZipFile(whl) as z:
+    members=[n for n in z.namelist() if '/include/' in n]
+    for m in members:
+        parts=m.split('/include/',1)
+        if len(parts)==2 and parts[1]:
+            t=os.path.join(dest,parts[1])
+            os.makedirs(os.path.dirname(t),exist_ok=True)
+            open(t,'wb').write(z.read(m))
+    print(f'Restored {len(members)} header files')
+" "${TORCH_INC}" && \
+        rm -rf /tmp/thdr && \
+        echo "Headers restored: $(ls ${CPP_PREFIX} 2>/dev/null && echo OK || echo FAILED)"; \
+    else \
+        echo "torch inductor headers: present"; \
+    fi
+
 # Store Python version
 RUN echo "VLLM_PYTHON_VERSION=$(cat /vllm/python_version.txt)" >> /etc/environment
 
