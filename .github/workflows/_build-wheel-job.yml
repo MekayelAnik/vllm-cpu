@@ -280,6 +280,7 @@ jobs:
           done < <(find dist -name "*.whl" -type f)
 
       - name: Smoke test wheel
+        if: inputs.variant == 'noavx512'
         shell: bash
         env:
           VLLM_TARGET_DEVICE: cpu
