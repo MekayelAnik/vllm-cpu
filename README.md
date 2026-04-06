@@ -11,7 +11,7 @@ CPU-Optimized vLLM: Easy, Fast LLM Inference Without a GPU
 </h3>
 
 <p align="center">
-  <strong>Unified CPU wheel with automatic ISA detection at runtime (AVX2, AVX-512, VNNI, BF16, AMX, NEON)</strong>
+  <strong>Unified CPU wheel with automatic ISA detection at runtime (AVX2, AVX-512, VNNI, BF16, AMX, NEON, FP16, DOTPROD)</strong>
 </p>
 
 <p align="center">
@@ -141,6 +141,8 @@ The unified wheel automatically detects and uses the best available instruction 
 | AVX512-BF16 | BFloat16 native ops | Import time |
 | AMX-BF16 | Matrix acceleration (Sapphire Rapids+) | Import time |
 | aarch64 NEON | ARM SIMD baseline | Import time |
+| aarch64 FP16 | Half-precision float | Import time |
+| aarch64 DOTPROD | INT8 dot product acceleration | Import time |
 | aarch64 BF16 | Native BFloat16 (Graviton 3+, Ampere Altra+) | Import time |
 
 No configuration needed — the correct `.so` is loaded automatically at `import vllm`.
