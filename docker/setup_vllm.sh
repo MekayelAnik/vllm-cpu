@@ -259,25 +259,74 @@ try_install_vllm() {
         fi
     fi
 
-    # Patch dataclass issues before import verification
-    # Newer transformers versions changed PretrainedConfig base class, breaking
-    # old vLLM's dataclass inheritance (non-default field follows default field)
+    # Patch transformers compatibility issues before import verification
+    # transformers 5.0+ (2026-01-26) changed PretrainedConfig to a dataclass,
+    # breaking old vLLM config classes with bare type annotations (no defaults)
     if [ "${_install_success}" = "true" ]; then
         _site_packages=$(python -c "import site; print(site.getsitepackages()[0])" 2>/dev/null || echo "")
         if [ -n "${_site_packages}" ]; then
-            _deepseek_file="${_site_packages}/vllm/transformers_utils/configs/deepseek_vl2.py"
-            if [ -f "${_deepseek_file}" ]; then
-                # Check if DeepseekVLV2Config has non-default class annotations
-                # that break when PretrainedConfig becomes a dataclass (transformers 5.x)
-                # Fields: vision_config: VisionEncoderConfig, projector_config: MlpProjectorConfig
-                if grep -q 'vision_config:' "${_deepseek_file}" 2>/dev/null && \
-                   ! grep -q 'vision_config:.*= ' "${_deepseek_file}" 2>/dev/null; then
-                    echo "Patching DeepseekVLV2Config dataclass fields (transformers compat)..."
-                    # Add default None to bare type annotations that lack defaults
-                    sed -i 's/^\(\s*\)vision_config:\s*\(.*\)$/\1vision_config: \2 = None/' "${_deepseek_file}"
-                    sed -i 's/^\(\s*\)projector_config:\s*\(.*\)$/\1projector_config: \2 = None/' "${_deepseek_file}"
-                    echo "Patched DeepseekVLV2Config"
-                fi
+            _configs_dir="${_site_packages}/vllm/transformers_utils/configs"
+            if [ -d "${_configs_dir}" ]; then
+                # Generic patch: find all PretrainedConfig subclasses with bare
+                # type annotations and add '= None' defaults. This handles:
+                # - deepseek_vl2.py: vision_config, projector_config
+                # - ultravox.py: wrapped_model_config
+                # - Any future configs with the same pattern
+                echo "Checking config files for dataclass compatibility..."
+                _CONFIGS_DIR="${_configs_dir}" python3 << 'PATCH_DATACLASS_EOF'
+import os, re
+
+configs_dir = os.environ.get("_CONFIGS_DIR", "")
+if not configs_dir or not os.path.isdir(configs_dir):
+    sys.exit(0)
+
+# Pattern: class-level bare type annotation (indented, no default)
+# Matches: "    field_name: SomeType" but not "    field_name: SomeType = value"
+bare_annotation = re.compile(r'^(\s+)([a-z_]+):\s+(\S.*)$')
+
+for fname in os.listdir(configs_dir):
+    if not fname.endswith('.py'):
+        continue
+    fpath = os.path.join(configs_dir, fname)
+    with open(fpath, 'r') as f:
+        content = f.read()
+
+    # Only patch files with PretrainedConfig subclasses
+    if 'PretrainedConfig' not in content:
+        continue
+
+    lines = content.split('\n')
+    in_config_class = False
+    patched = False
+    new_lines = []
+
+    for line in lines:
+        # Track if we're inside a PretrainedConfig subclass
+        if re.match(r'^class \w+\(.*PretrainedConfig.*\):', line):
+            in_config_class = True
+        elif re.match(r'^class ', line) or (re.match(r'^\S', line) and line.strip()):
+            if not line.strip().startswith('#') and not line.strip().startswith('@'):
+                in_config_class = False
+
+        if in_config_class:
+            m = bare_annotation.match(line)
+            if m and '=' not in line and 'def ' not in line and '#' not in line:
+                indent, field, type_hint = m.group(1), m.group(2), m.group(3)
+                # Skip function signatures and docstrings
+                if not type_hint.endswith(',') and not type_hint.endswith(':'):
+                    new_line = f"{indent}{field}: {type_hint} = None"
+                    new_lines.append(new_line)
+                    patched = True
+                    print(f"  {fname}: {field}: {type_hint} -> = None")
+                    continue
+        new_lines.append(line)
+
+    if patched:
+        with open(fpath, 'w') as f:
+            f.write('\n'.join(new_lines))
+
+PATCH_DATACLASS_EOF
+                echo "Dataclass compatibility patch complete"
             fi
 
             # Patch aimv2 config registration conflict (transformers 4.47+ already
