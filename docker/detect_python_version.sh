@@ -230,6 +230,24 @@ if [ -z "${PYTHON_VER}" ]; then
 fi
 
 # =============================================================================
+# Global Python version cap from requires-python
+# =============================================================================
+# Fetch requires-python from PyPI to cap the detected version
+# e.g., <3.13 with upper_bound-2 → max 3.11 (3.12 has dataclass breaking changes)
+GLOBAL_REQUIRES=$(curl -sfL --max-time 10 "https://pypi.org/pypi/${PACKAGE_NAME}/${VLLM_VERSION}/json" 2>/dev/null | \
+    jq -r '.info.requires_python // empty' 2>/dev/null || echo "")
+if [ -n "${GLOBAL_REQUIRES}" ] && echo "${GLOBAL_REQUIRES}" | grep -qE '<3\.[0-9]+'; then
+    GLOBAL_MAX=$(echo "${GLOBAL_REQUIRES}" | grep -oE '<3\.[0-9]+' | head -1 | tr -d '<')
+    GLOBAL_MAX_MINOR=$(echo "${GLOBAL_MAX}" | cut -d. -f2)
+    SAFE_MAX="3.$((GLOBAL_MAX_MINOR - 2))"
+    DETECTED_MINOR=$(echo "${PYTHON_VER}" | cut -d. -f2)
+    if [ "${DETECTED_MINOR}" -gt "$((GLOBAL_MAX_MINOR - 2))" ]; then
+        echo "Global cap: Python ${PYTHON_VER} → ${SAFE_MAX} (requires-python: ${GLOBAL_REQUIRES})" >&2
+        PYTHON_VER="${SAFE_MAX}"
+    fi
+fi
+
+# =============================================================================
 # Dependency Wheel Verification
 # =============================================================================
 # Verify the vllm-cpu package AND ALL its pinned dependencies have wheels
