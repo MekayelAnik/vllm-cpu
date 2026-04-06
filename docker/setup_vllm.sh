@@ -116,6 +116,17 @@ try_install_vllm() {
     echo ""
     echo "=== Attempting vLLM installation for Python ${_try_py_version} ==="
 
+    # Determine if we need to cap transformers version
+    # transformers 5.0+ (released 2026-01-26) has breaking API changes that
+    # affect all vLLM versions < 0.11.0 (removed attributes, dataclass changes)
+    _TRANSFORMERS_CAP=""
+    _vllm_major=$(echo "${VLLM_VERSION}" | cut -d. -f1)
+    _vllm_minor=$(echo "${VLLM_VERSION}" | cut -d. -f2)
+    if [ "${_vllm_major}" -eq 0 ] && [ "${_vllm_minor}" -lt 11 ]; then
+        _TRANSFORMERS_CAP="transformers<5"
+        echo "Applying transformers<5 cap for vLLM ${VLLM_VERSION}"
+    fi
+
     # Try PyPI first unless explicitly requesting GitHub release
     if [ "${USE_GITHUB_RELEASE}" != "true" ]; then
         echo "Attempting PyPI installation with CPU-only PyTorch..."
@@ -125,7 +136,7 @@ try_install_vllm() {
             INSTALL_VERSION="${VLLM_VERSION}${VERSION_SUFFIX}"
             echo "Trying ${PACKAGE_NAME}==${INSTALL_VERSION}..."
 
-            if uv pip install --no-progress "${PACKAGE_NAME}==${INSTALL_VERSION}" \
+            if uv pip install --no-progress "${PACKAGE_NAME}==${INSTALL_VERSION}" ${_TRANSFORMERS_CAP} \
                 --index-url "${PYTORCH_INDEX}" \
                 --extra-index-url "${PYPI_INDEX}" \
                 --index-strategy unsafe-best-match 2>/dev/null; then
@@ -228,7 +239,7 @@ try_install_vllm() {
                 # Use single pip install command with URL (PEP 440 style)
                 # This installs the wheel directly with all dependencies from CPU PyTorch index
                 if uv pip install --no-progress \
-                    "${PACKAGE_NAME} @ ${WHEEL_URL}" \
+                    "${PACKAGE_NAME} @ ${WHEEL_URL}" ${_TRANSFORMERS_CAP} \
                     --index-url "${PYTORCH_INDEX}" \
                     --extra-index-url "${PYPI_INDEX}" \
                     --index-strategy unsafe-best-match; then
@@ -240,7 +251,7 @@ try_install_vllm() {
                     # Fallback: download wheel and install locally
                     if wget -q "${WHEEL_URL}" -O "/tmp/${WHEEL_NAME}" 2>/dev/null; then
                         echo "Downloaded: ${WHEEL_NAME}"
-                        if uv pip install --no-progress "/tmp/${WHEEL_NAME}" \
+                        if uv pip install --no-progress "/tmp/${WHEEL_NAME}" ${_TRANSFORMERS_CAP} \
                             --index-url "${PYTORCH_INDEX}" \
                             --extra-index-url "${PYPI_INDEX}" \
                             --index-strategy unsafe-best-match; then
