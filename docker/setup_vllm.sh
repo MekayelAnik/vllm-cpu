@@ -4,7 +4,7 @@
 # =============================================================================
 # This script handles Python installation via uv and vLLM package installation
 # from PyPI with fallback to GitHub releases. If installation fails, it falls
-# back to lower Python versions (3.13 → 3.12 → 3.11 → 3.10 → 3.9).
+# back to lower Python versions (3.13 → 3.12 → 3.11 → 3.10, minimum).
 #
 # Usage:
 #   ./setup_vllm.sh <variant> <vllm_version> <use_github_release>
@@ -206,6 +206,11 @@ try_install_vllm() {
                         MATCHING_WHEELS="${MATCHING_WHEELS}${asset_url} "
                         echo "Found matching wheel: ${asset_name}"
                         ;;
+                    ${PACKAGE_NAME_UNDERSCORE}-*-cp3*-abi3-*${WHEEL_ARCH}*.whl)
+                        # ABI3 stable ABI wheel — compatible with any Python >= min version
+                        MATCHING_WHEELS="${MATCHING_WHEELS}${asset_url} "
+                        echo "Found matching abi3 wheel: ${asset_name}"
+                        ;;
                 esac
             done
 
@@ -284,10 +289,11 @@ echo "Detected Python version: ${DETECTED_PY}"
 # Extract minor version number
 DETECTED_MINOR=$(echo "${DETECTED_PY}" | cut -d. -f2)
 
-# Create fallback list: detected version, then decreasing versions down to 3.9
+# Create fallback list: detected version, then decreasing versions down to 3.10
+# (vllm requires-python >= 3.10, never go below)
 PYTHON_VERSIONS="${DETECTED_PY}"
 MINOR=${DETECTED_MINOR}
-while [ "${MINOR}" -gt 9 ]; do
+while [ "${MINOR}" -gt 10 ]; do
     MINOR=$((MINOR - 1))
     PYTHON_VERSIONS="${PYTHON_VERSIONS} 3.${MINOR}"
 done
@@ -318,7 +324,7 @@ for PY_VERSION in ${PYTHON_VERSIONS}; do
     else
         echo ""
         echo "vLLM installation failed for Python ${PY_VERSION}"
-        if [ "${PY_VERSION}" != "3.9" ]; then
+        if [ "${PY_VERSION}" != "3.10" ]; then
             echo "Falling back to lower Python version..."
         fi
     fi
