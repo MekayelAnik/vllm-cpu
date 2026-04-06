@@ -143,9 +143,12 @@ if [ -z "${PYTHON_VER}" ] && [ "${USE_GITHUB_RELEASE}" != "true" ]; then
             if echo "${REQUIRES_PYTHON}" | grep -qE '<3\.[0-9]+'; then
                 MAX_PY=$(echo "${REQUIRES_PYTHON}" | grep -oE '<3\.[0-9]+' | head -1 | tr -d '<')
                 MAX_MINOR=$(echo "${MAX_PY}" | cut -d. -f2)
-                CAPPED="3.$((MAX_MINOR - 1))"
+                # Use upper_bound - 2 as safe cap (accounts for upstream bugs
+                # where requires-python allows versions with runtime issues,
+                # e.g., <3.13 allows 3.12 but 3.12 has dataclass breaking changes)
+                CAPPED="3.$((MAX_MINOR - 2))"
                 DETECTED_MINOR=$(echo "${PYTHON_VER}" | cut -d. -f2)
-                if [ "${DETECTED_MINOR}" -ge "${MAX_MINOR}" ]; then
+                if [ "${DETECTED_MINOR}" -ge "$((MAX_MINOR - 1))" ]; then
                     echo "Capping Python ${PYTHON_VER} to ${CAPPED} (requires-python: ${REQUIRES_PYTHON})" >&2
                     PYTHON_VER="${CAPPED}"
                 fi
