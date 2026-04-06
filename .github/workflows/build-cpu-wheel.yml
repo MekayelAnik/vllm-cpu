@@ -334,8 +334,9 @@ jobs:
               # Use our README as the PyPI long description
               cp /repo-readme/README.md README.md
 
-              # --- Patch metadata: license, authors, URLs ---
-              python3 /scripts/patch-pyproject-metadata.py
+              # --- Patch metadata: DISABLED to confirm clean publish ---
+              # python3 /scripts/patch-pyproject-metadata.py
+              echo "Metadata patch DISABLED (clean publish test)"
 
               # --- Patch platform detection to recognize vllm-cpu package ---
               # vLLM detects CPU platform via version("vllm") containing "cpu".
