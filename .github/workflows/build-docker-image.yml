@@ -392,6 +392,7 @@ jobs:
             -e OMP_NUM_THREADS=2 \
             -e KMP_INIT_AT_FORK=FALSE \
             -e VLLM_WORKER_MULTIPROC_METHOD=spawn \
+            -e VLLM_CPU_OMP_THREADS_BIND=0-1 \
             -e SMOKE_TEST_MODEL="${SMOKE_TEST_MODEL}" \
             "$IMAGE" \
             python3 -c "
