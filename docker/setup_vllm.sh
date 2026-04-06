@@ -259,6 +259,42 @@ try_install_vllm() {
         fi
     fi
 
+    # Patch dataclass issues before import verification
+    # Newer transformers versions changed PretrainedConfig base class, breaking
+    # old vLLM's dataclass inheritance (non-default field follows default field)
+    if [ "${_install_success}" = "true" ]; then
+        _site_packages=$(python -c "import site; print(site.getsitepackages()[0])" 2>/dev/null || echo "")
+        if [ -n "${_site_packages}" ]; then
+            _deepseek_file="${_site_packages}/vllm/transformers_utils/configs/deepseek_vl2.py"
+            if [ -f "${_deepseek_file}" ]; then
+                # Check if DeepseekVLV2Config has non-default class annotations
+                # that break when PretrainedConfig becomes a dataclass (transformers 5.x)
+                # Fields: vision_config: VisionEncoderConfig, projector_config: MlpProjectorConfig
+                if grep -q 'vision_config:' "${_deepseek_file}" 2>/dev/null && \
+                   ! grep -q 'vision_config:.*= ' "${_deepseek_file}" 2>/dev/null; then
+                    echo "Patching DeepseekVLV2Config dataclass fields (transformers compat)..."
+                    # Add default None to bare type annotations that lack defaults
+                    sed -i 's/^\(\s*\)vision_config:\s*\(.*\)$/\1vision_config: \2 = None/' "${_deepseek_file}"
+                    sed -i 's/^\(\s*\)projector_config:\s*\(.*\)$/\1projector_config: \2 = None/' "${_deepseek_file}"
+                    echo "Patched DeepseekVLV2Config"
+                fi
+            fi
+
+            # Patch aimv2 config registration conflict (transformers 4.47+ already
+            # registers 'aimv2', so vLLM's register call fails without exist_ok)
+            _ovis_file="${_site_packages}/vllm/transformers_utils/configs/ovis.py"
+            if [ -f "${_ovis_file}" ]; then
+                if grep -q 'AutoConfig.register.*aimv2.*AIMv2Config' "${_ovis_file}" 2>/dev/null && \
+                   ! grep -q 'register.*aimv2.*exist_ok=True' "${_ovis_file}" 2>/dev/null; then
+                    echo "Patching ovis.py for aimv2 compatibility..."
+                    sed -i 's/AutoConfig\.register("aimv2", AIMv2Config)/AutoConfig.register("aimv2", AIMv2Config, exist_ok=True)/g' "${_ovis_file}"
+                    sed -i 's/AutoConfig\.register("ovis", OvisConfig)/AutoConfig.register("ovis", OvisConfig, exist_ok=True)/g' "${_ovis_file}"
+                    echo "Patched ovis.py"
+                fi
+            fi
+        fi
+    fi
+
     # Verify the package actually imports (catches runtime issues like
     # Python 3.12 dataclass breaking changes in older vLLM versions)
     if [ "${_install_success}" = "true" ]; then
