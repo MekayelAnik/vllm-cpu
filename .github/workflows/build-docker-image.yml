@@ -392,6 +392,7 @@ jobs:
             -e OMP_NUM_THREADS=2 \
             -e KMP_INIT_AT_FORK=FALSE \
             -e VLLM_WORKER_MULTIPROC_METHOD=spawn \
+            -e SMOKE_TEST_MODEL="${SMOKE_TEST_MODEL}" \
             "$IMAGE" \
             python3 -c "
           import os
@@ -400,16 +401,16 @@ jobs:
           os.environ['OTEL_TRACES_EXPORTER'] = 'none'
           os.environ['TORCHDYNAMO_DISABLE'] = '1'
           from vllm import LLM, SamplingParams
-          model = '${SMOKE_TEST_MODEL}'
+          model = os.environ.get('SMOKE_TEST_MODEL', 'facebook/opt-125m')
           print(f'Loading model: {model}')
           try:
-              llm = LLM(model=model, device='cpu', dtype='float32', max_model_len=128, enforce_eager=True)
+              llm = LLM(model=model, device='cpu', dtype='float32', max_model_len=512, enforce_eager=True)
           except TypeError:
               try:
-                  llm = LLM(model=model, dtype='float32', max_model_len=128, enforce_eager=True)
+                  llm = LLM(model=model, dtype='float32', max_model_len=512, enforce_eager=True)
               except TypeError:
-                  llm = LLM(model=model, dtype='float32', max_model_len=128)
-          params = SamplingParams(temperature=0.8, max_tokens=32)
+                  llm = LLM(model=model, dtype='float32', max_model_len=512)
+          params = SamplingParams(temperature=0.8, max_tokens=256)
           outputs = llm.generate(['Hello, world!'], params)
           text = outputs[0].outputs[0].text
           n_tokens = len(outputs[0].outputs[0].token_ids)
