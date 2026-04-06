@@ -364,6 +364,13 @@ jobs:
           IMAGE_TAG="$MATRIX_IMAGE_TAG"
 
           echo "Merging platform digests for $VERSION"
+
+          # Skip if no digests (all builds were skipped — tags already exist)
+          if [[ ! -d /tmp/digests ]] || [[ -z "$(ls -A /tmp/digests/ 2>/dev/null)" ]]; then
+            echo "No digests found — all builds were skipped (tags already exist)"
+            exit 0
+          fi
+
           ls -la /tmp/digests/
 
           # Collect all digest sources
