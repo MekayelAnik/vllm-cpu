@@ -381,6 +381,8 @@ jobs:
           # TORCHDYNAMO_DISABLE=1: prevents torch.compile JIT which needs triton/cpp_prefix.h
           #   (cleanup.sh removes triton for image size; headers may be missing in old versions)
           # VLLM_CPU_KVCACHE_SPACE=1: cap KV cache to 1GB to prevent OOM/SIGSEGV on runners
+          # OMP_NUM_THREADS=2: limit OpenMP threads to avoid CPU backend segfaults in old vLLM
+          # KMP_INIT_AT_FORK=FALSE: prevent OpenMP fork-safety crashes
           docker run --rm \
             --shm-size 4g \
             -e VLLM_TARGET_DEVICE=cpu \
@@ -388,6 +390,9 @@ jobs:
             -e OTEL_TRACES_EXPORTER=none \
             -e TORCHDYNAMO_DISABLE=1 \
             -e VLLM_CPU_KVCACHE_SPACE=1 \
+            -e OMP_NUM_THREADS=2 \
+            -e KMP_INIT_AT_FORK=FALSE \
+            -e VLLM_WORKER_MULTIPROC_METHOD=spawn \
             "$IMAGE" \
             python3 -c "
           import os
