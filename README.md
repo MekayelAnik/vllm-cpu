@@ -127,7 +127,7 @@ curl http://localhost:8000/v1/completions \
 
 - **Python**: 3.10+ (stable ABI, one wheel for all versions)
 - **OS**: Linux (glibc 2.28+) — Debian 10+, Ubuntu 18.04+, RHEL 8+, Amazon Linux 2023+
-- **CPU**: x86_64 with AVX2 (minimum) or AVX512 (optimal), or aarch64
+- **CPU**: x86_64 with AVX2 (minimum) or AVX-512 (optimal), or aarch64 with NEON (BF16 recommended)
 
 ## Supported CPU Instructions
 
@@ -140,7 +140,8 @@ The unified wheel automatically detects and uses the best available instruction 
 | AVX512-VNNI | INT8 acceleration | Import time |
 | AVX512-BF16 | BFloat16 native ops | Import time |
 | AMX-BF16 | Matrix acceleration (Sapphire Rapids+) | Import time |
-| aarch64 NEON | ARM baseline | Import time |
+| aarch64 NEON | ARM SIMD baseline | Import time |
+| aarch64 BF16 | Native BFloat16 (Graviton 3+, Ampere Altra+) | Import time |
 
 No configuration needed — the correct `.so` is loaded automatically at `import vllm`.
 

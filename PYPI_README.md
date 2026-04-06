@@ -58,13 +58,13 @@ CPU-Optimized vLLM: Easy, Fast LLM Inference Without a GPU
 - Run LLMs on any server, laptop, or edge device
 - Lower power consumption and operational costs
 - Ideal for development, testing, and moderate-scale deployments
-- ARM64 support for AWS Graviton 3+, Apple Silicon, and Ampere (BF16-capable ARM)
+- ARM64 support for AWS Graviton 3+, Ampere Altra, and other aarch64 servers (NEON + BF16/DOTPROD)
 
 **Key Features:**
 - `pip install vllm-cpu` -- no manual URLs or GitHub Release downloads
 - Built with `manylinux_2_28` for broad compatibility (Debian 10+, Ubuntu 18.04+)
 - Stable ABI (cp38-abi3) -- one wheel for Python 3.10+
-- Automatic AVX2 / AVX512 / AMX detection at runtime
+- Automatic ISA detection at runtime (AVX2/AVX-512/AMX on x86, NEON/BF16 on ARM)
 
 ---
 
@@ -125,7 +125,7 @@ curl http://localhost:8000/v1/completions \
 |-------------|---------|
 | **Python** | 3.10+ (stable ABI -- one wheel for all versions) |
 | **OS** | Linux (glibc 2.28+) -- Debian 10+, Ubuntu 18.04+, RHEL 8+, Amazon Linux 2023+ |
-| **CPU** | x86_64 with AVX2 (minimum) or AVX512 (optimal), or aarch64 |
+| **CPU** | x86_64 with AVX2 (minimum) or AVX-512 (optimal), or aarch64 with NEON (BF16 recommended) |
 | **Windows** | Use WSL2 (Windows Subsystem for Linux) |
 
 ### pip
@@ -162,14 +162,20 @@ The unified wheel automatically detects and uses the best available instruction 
 | **Faster** | AVX512-VNNI | INT8 multiply-accumulate for quantized inference |
 | **Faster** | AVX512-BF16 | Native BFloat16 -- half the memory of FP32 |
 | **Fastest** | AMX-BF16 | Tile-based matrix acceleration (Sapphire Rapids+) |
-| **ARM** | aarch64 NEON | ARM SIMD for Graviton, Apple Silicon, Ampere |
+| **ARM** | aarch64 NEON | ARM SIMD baseline for all aarch64 |
+| **ARM** | aarch64 BF16 | Native BFloat16 (Graviton 3+, Ampere Altra+) |
 
 > **How it works:** The wheel ships `_C.so` (AVX512+BF16+VNNI+AMX) and `_C_AVX2.so` (AVX2 fallback). At `import vllm`, the correct `.so` is loaded once based on CPU capabilities. Zero runtime overhead.
 
 ### Check your CPU
 
 ```bash
+# x86_64
 lscpu | grep -E "avx512|vnni|bf16|amx"
+
+# aarch64
+cat /proc/cpuinfo | grep -i "features" | head -1
+# Look for: asimd (NEON), bf16
 ```
 
 ---
