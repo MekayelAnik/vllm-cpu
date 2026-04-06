@@ -15,18 +15,10 @@ if not p.exists():
 
 t = p.read_text()
 
-# License: remove PEP 639 license-files (PyPI rejects License-File headers)
-# Keep Apache 2.0 license (same as upstream vLLM), just convert to PEP 621 table format
-t = re.sub(r"^license-files\s*=.*\n", "", t, flags=re.MULTILINE)
-t = re.sub(r"^license\s*=.*", 'license = {text = "Apache-2.0"}', t, flags=re.MULTILINE)
-
-# Disable setuptools automatic license-files inclusion
-# Without this, setuptools auto-includes LICENSE* files, generating License-File metadata
-if "[tool.setuptools]" in t:
-    if "license-files" not in t.split("[tool.setuptools]")[1].split("[")[0]:
-        t = t.replace("[tool.setuptools]", "[tool.setuptools]\nlicense-files = []")
-else:
-    t += "\n[tool.setuptools]\nlicense-files = []\n"
+# License: keep PEP 639 SPDX string format (generates valid Metadata-Version: 2.4)
+# Using {text = "..."} table format causes metadata version mismatch (2.1 + License-File = rejected)
+# Keep upstream Apache-2.0 license, just remove license-files to avoid License-File header issues
+t = re.sub(r"^license-files\s*=.*", "license-files = []", t, flags=re.MULTILINE)
 
 # Authors and maintainers
 t = re.sub(r"^authors\s*=.*\n", "", t, flags=re.MULTILINE)
