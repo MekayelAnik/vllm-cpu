@@ -151,6 +151,7 @@ env:
   DOCKERHUB_IMAGE: mekayelanik/vllm-cpu
   GHCR_IMAGE: ghcr.io/mekayelanik/vllm-cpu
   BASE_IMAGE: ${{ vars.BASE_IMAGE_DEFAULT || 'debian:stable-slim' }}
+  SMOKE_TEST_MODEL: facebook/opt-125m
 
 jobs:
   # ==========================================================================
@@ -357,8 +358,6 @@ jobs:
       - name: Docker smoke test (inference)
         if: matrix.variant == 'noavx512'
         shell: bash
-        env:
-          SMOKE_TEST_MODEL: facebook/opt-125m
         run: |
           echo "=== Docker Inference Smoke Test ==="
           VARIANT="${{ matrix.variant }}"
