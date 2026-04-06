@@ -151,7 +151,7 @@ env:
   DOCKERHUB_IMAGE: mekayelanik/vllm-cpu
   GHCR_IMAGE: ghcr.io/mekayelanik/vllm-cpu
   BASE_IMAGE: ${{ vars.BASE_IMAGE_DEFAULT || 'debian:stable-slim' }}
-  SMOKE_TEST_MODEL: facebook/opt-125m
+  SMOKE_TEST_MODEL: HuggingFaceTB/SmolLM2-135M-Instruct
 
 jobs:
   # ==========================================================================
@@ -401,7 +401,7 @@ jobs:
           os.environ['OTEL_TRACES_EXPORTER'] = 'none'
           os.environ['TORCHDYNAMO_DISABLE'] = '1'
           from vllm import LLM, SamplingParams
-          model = os.environ.get('SMOKE_TEST_MODEL', 'facebook/opt-125m')
+          model = os.environ.get('SMOKE_TEST_MODEL', 'HuggingFaceTB/SmolLM2-135M-Instruct')
           print(f'Loading model: {model}')
           try:
               llm = LLM(model=model, device='cpu', dtype='float32', max_model_len=512, enforce_eager=True)
