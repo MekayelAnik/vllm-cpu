@@ -259,6 +259,18 @@ try_install_vllm() {
         fi
     fi
 
+    # Verify the package actually imports (catches runtime issues like
+    # Python 3.12 dataclass breaking changes in older vLLM versions)
+    if [ "${_install_success}" = "true" ]; then
+        echo "Verifying vLLM import..."
+        if ! python -c "import vllm" 2>&1; then
+            echo "WARNING: Package installed but import failed (likely Python version incompatibility)"
+            echo "Uninstalling broken package before retry..."
+            uv pip uninstall "${PACKAGE_NAME}" 2>/dev/null || true
+            _install_success=false
+        fi
+    fi
+
     if [ "${_install_success}" = "true" ]; then
         return 0
     else

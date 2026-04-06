@@ -122,7 +122,23 @@ fi
 # Method 2: Check PyPI for available wheels (filtered by architecture)
 if [ -z "${PYTHON_VER}" ] && [ "${USE_GITHUB_RELEASE}" != "true" ]; then
     echo "Checking PyPI for available ${WHEEL_ARCH} wheels..." >&2
-    PYPI_JSON=$(curl -sfL --max-time 15 "https://pypi.org/pypi/${PACKAGE_NAME}/${VLLM_VERSION}/json" 2>/dev/null || echo "")
+    # Try exact version first, then base version (without postfix like .post2)
+    BASE_VER=$(echo "${VLLM_VERSION}" | sed 's/\.\(post\|dev\|rc\|a\|b\)[0-9]*$//')
+    PYPI_VERSIONS="${VLLM_VERSION}"
+    if [ "${BASE_VER}" != "${VLLM_VERSION}" ]; then
+        PYPI_VERSIONS="${VLLM_VERSION} ${BASE_VER}"
+    fi
+    PYPI_JSON=""
+    for _pypi_ver in ${PYPI_VERSIONS}; do
+        # Retry with curl --retry for transient failures (DNS cold start in Docker buildx)
+        PYPI_JSON=$(curl -sfL --retry 2 --retry-delay 1 --max-time 15 \
+            "https://pypi.org/pypi/${PACKAGE_NAME}/${_pypi_ver}/json" 2>/dev/null || echo "")
+        if [ -n "${PYPI_JSON}" ]; then
+            echo "Got PyPI metadata from ${PACKAGE_NAME}==${_pypi_ver}" >&2
+            break
+        fi
+        echo "PyPI fetch failed for ${_pypi_ver}" >&2
+    done
     if [ -n "${PYPI_JSON}" ]; then
         # Extract CPython versions from wheel filenames, filtering by architecture
         PYTHON_VER=$(echo "${PYPI_JSON}" | jq -r '.urls[].filename' 2>/dev/null | \
@@ -212,9 +228,18 @@ fi
 # Method 4: Fallback to pyproject.toml requires-python
 if [ -z "${PYTHON_VER}" ]; then
     echo "No wheels found, checking vLLM pyproject.toml..." >&2
-    PYPROJECT_URL="https://raw.githubusercontent.com/vllm-project/vllm/v${VLLM_VERSION}/pyproject.toml"
-    REQUIRES_PYTHON=$(curl -sfL --max-time 15 "${PYPROJECT_URL}" 2>/dev/null | \
-        grep -E '^requires-python' | head -1 | sed 's/.*"\(.*\)".*/\1/' || echo "")
+    # Try exact version tag first, then base version (upstream vllm won't have .postN tags)
+    _BASE_VER=$(echo "${VLLM_VERSION}" | sed 's/\.\(post\|dev\|rc\|a\|b\)[0-9]*$//')
+    REQUIRES_PYTHON=""
+    for _tag_ver in "${VLLM_VERSION}" "${_BASE_VER}"; do
+        PYPROJECT_URL="https://raw.githubusercontent.com/vllm-project/vllm/v${_tag_ver}/pyproject.toml"
+        REQUIRES_PYTHON=$(curl -sfL --max-time 15 "${PYPROJECT_URL}" 2>/dev/null | \
+            grep -E '^requires-python' | head -1 | sed 's/.*"\(.*\)".*/\1/' || echo "")
+        if [ -n "${REQUIRES_PYTHON}" ]; then
+            echo "Found requires-python from v${_tag_ver}: ${REQUIRES_PYTHON}" >&2
+            break
+        fi
+    done
     if echo "${REQUIRES_PYTHON}" | grep -qE '<[0-9]+\.[0-9]+'; then
         MAX_PY=$(echo "${REQUIRES_PYTHON}" | grep -oE '<[0-9]+\.[0-9]+' | head -1 | tr -d '<')
         MAX_MINOR=$(echo "${MAX_PY}" | cut -d. -f2)
@@ -223,9 +248,10 @@ if [ -z "${PYTHON_VER}" ]; then
     fi
 fi
 
-# Method 5: Ultimate fallback
+# Method 5: Ultimate fallback - start from the ceiling so setup_vllm.sh
+# tries every version (3.13 → 3.12 → 3.11 → 3.10 → 3.9)
 if [ -z "${PYTHON_VER}" ]; then
-    PYTHON_VER="3.12"
+    PYTHON_VER="3.13"
     echo "All detection methods failed, using fallback: ${PYTHON_VER}" >&2
 fi
 
