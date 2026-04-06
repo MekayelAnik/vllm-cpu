@@ -375,24 +375,33 @@ jobs:
           docker pull "$IMAGE"
 
           # Run inference test inside container
+          # TORCHDYNAMO_DISABLE=1: prevents torch.compile JIT which needs triton/cpp_prefix.h
+          #   (cleanup.sh removes triton for image size; headers may be missing in old versions)
+          # VLLM_CPU_KVCACHE_SPACE=1: cap KV cache to 1GB to prevent OOM/SIGSEGV on runners
           docker run --rm \
             --shm-size 4g \
             -e VLLM_TARGET_DEVICE=cpu \
             -e OTEL_PROPAGATORS=none \
             -e OTEL_TRACES_EXPORTER=none \
+            -e TORCHDYNAMO_DISABLE=1 \
+            -e VLLM_CPU_KVCACHE_SPACE=1 \
             "$IMAGE" \
             python3 -c "
           import os
           os.environ['VLLM_TARGET_DEVICE'] = 'cpu'
           os.environ['OTEL_PROPAGATORS'] = 'none'
           os.environ['OTEL_TRACES_EXPORTER'] = 'none'
+          os.environ['TORCHDYNAMO_DISABLE'] = '1'
           from vllm import LLM, SamplingParams
           model = '${SMOKE_TEST_MODEL}'
           print(f'Loading model: {model}')
           try:
-              llm = LLM(model=model, device='cpu', dtype='float32', max_model_len=256)
+              llm = LLM(model=model, device='cpu', dtype='float32', max_model_len=128, enforce_eager=True)
           except TypeError:
-              llm = LLM(model=model, dtype='float32', max_model_len=256)
+              try:
+                  llm = LLM(model=model, dtype='float32', max_model_len=128, enforce_eager=True)
+              except TypeError:
+                  llm = LLM(model=model, dtype='float32', max_model_len=128)
           params = SamplingParams(temperature=0.8, max_tokens=32)
           outputs = llm.generate(['Hello, world!'], params)
           text = outputs[0].outputs[0].text
