@@ -150,6 +150,7 @@ permissions:
 env:
   DOCKERHUB_IMAGE: mekayelanik/vllm-cpu
   GHCR_IMAGE: ghcr.io/mekayelanik/vllm-cpu
+  BASE_IMAGE: ${{ vars.BASE_IMAGE_DEFAULT || 'debian:trixie-slim' }}
 
 jobs:
   # ==========================================================================
@@ -325,6 +326,7 @@ jobs:
             com.vllm-cpu.wheel-version=${{ steps.build-vars.outputs.full_version }}
             com.vllm-cpu.variant=${{ matrix.variant }}
           build-args: |
+            BASE_IMAGE=${{ env.BASE_IMAGE }}
             VLLM_VERSION=${{ steps.build-vars.outputs.full_version }}
             VARIANT=${{ matrix.variant }}
             USE_GITHUB_RELEASE=${{ steps.build-vars.outputs.use_github_release }}
@@ -341,13 +343,14 @@ jobs:
         run: |
           echo "Verifying ${{ matrix.variant }} @ ${{ matrix.version }}..."
 
-          if [[ "${{ inputs.skip_dockerhub }}" != "true" ]]; then
-            docker pull ${{ env.DOCKERHUB_IMAGE }}:${{ matrix.version }}-${{ matrix.variant }}
-            docker run --rm ${{ env.DOCKERHUB_IMAGE }}:${{ matrix.version }}-${{ matrix.variant }} \
-              python -c "import vllm; print(f'vLLM version: {vllm.__version__}')"
-          elif [[ "${{ inputs.skip_ghcr }}" != "true" ]]; then
+          # Always verify from GHCR (no rate limits for GitHub Actions)
+          if [[ "${{ inputs.skip_ghcr }}" != "true" ]]; then
             docker pull ${{ env.GHCR_IMAGE }}:${{ matrix.version }}-${{ matrix.variant }}
             docker run --rm ${{ env.GHCR_IMAGE }}:${{ matrix.version }}-${{ matrix.variant }} \
+              python -c "import vllm; print(f'vLLM version: {vllm.__version__}')"
+          elif [[ "${{ inputs.skip_dockerhub }}" != "true" ]]; then
+            docker pull ${{ env.DOCKERHUB_IMAGE }}:${{ matrix.version }}-${{ matrix.variant }}
+            docker run --rm ${{ env.DOCKERHUB_IMAGE }}:${{ matrix.version }}-${{ matrix.variant }} \
               python -c "import vllm; print(f'vLLM version: {vllm.__version__}')"
           fi
 
@@ -361,11 +364,11 @@ jobs:
           VARIANT="${{ matrix.variant }}"
           VERSION="${{ matrix.version }}"
 
-          # Determine which registry image to test
-          if [[ "${{ inputs.skip_dockerhub }}" != "true" ]]; then
-            IMAGE="${{ env.DOCKERHUB_IMAGE }}:${VERSION}-${VARIANT}"
-          elif [[ "${{ inputs.skip_ghcr }}" != "true" ]]; then
+          # Determine which registry image to test (prefer GHCR - no rate limits)
+          if [[ "${{ inputs.skip_ghcr }}" != "true" ]]; then
             IMAGE="${{ env.GHCR_IMAGE }}:${VERSION}-${VARIANT}"
+          elif [[ "${{ inputs.skip_dockerhub }}" != "true" ]]; then
+            IMAGE="${{ env.DOCKERHUB_IMAGE }}:${VERSION}-${VARIANT}"
           else
             echo "No registry to test from, skipping"
             exit 0
