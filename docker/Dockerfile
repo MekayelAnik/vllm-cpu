@@ -15,7 +15,7 @@
 # Recommended run options:
 #   docker run --cap-add SYS_NICE --security-opt seccomp=unconfined --shm-size 4g ...
 
-ARG BASE_IMAGE=ghcr.io/mekayelanik/base-images/debian:stable-slim
+ARG BASE_IMAGE=debian:stable-slim
 
 # Stage 1: Detect Python version from available wheels
 FROM ${BASE_IMAGE} AS python-detector
