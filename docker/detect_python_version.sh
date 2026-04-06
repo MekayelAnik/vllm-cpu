@@ -134,6 +134,23 @@ if [ -z "${PYTHON_VER}" ] && [ "${USE_GITHUB_RELEASE}" != "true" ]; then
         if [ -n "${PYTHON_VER}" ]; then
             echo "Found highest CPython on PyPI for ${WHEEL_ARCH}: ${PYTHON_VER}" >&2
         fi
+
+        # Cap Python version using requires-python upper bound from PyPI metadata
+        # e.g., requires-python "<3.13,>=3.9" means max safe version is 3.12
+        # This prevents picking 3.12 for packages that break on 3.12 (dataclass changes)
+        REQUIRES_PYTHON=$(echo "${PYPI_JSON}" | jq -r '.info.requires_python // empty' 2>/dev/null || echo "")
+        if [ -n "${REQUIRES_PYTHON}" ] && [ -n "${PYTHON_VER}" ]; then
+            if echo "${REQUIRES_PYTHON}" | grep -qE '<3\.[0-9]+'; then
+                MAX_PY=$(echo "${REQUIRES_PYTHON}" | grep -oE '<3\.[0-9]+' | head -1 | tr -d '<')
+                MAX_MINOR=$(echo "${MAX_PY}" | cut -d. -f2)
+                CAPPED="3.$((MAX_MINOR - 1))"
+                DETECTED_MINOR=$(echo "${PYTHON_VER}" | cut -d. -f2)
+                if [ "${DETECTED_MINOR}" -ge "${MAX_MINOR}" ]; then
+                    echo "Capping Python ${PYTHON_VER} to ${CAPPED} (requires-python: ${REQUIRES_PYTHON})" >&2
+                    PYTHON_VER="${CAPPED}"
+                fi
+            fi
+        fi
     fi
 fi
 
