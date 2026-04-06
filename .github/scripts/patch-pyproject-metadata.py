@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Patch pyproject.toml metadata for vllm-cpu package.
 
-Updates license, authors, maintainers, and project URLs.
+Updates authors, maintainers, and project URLs.
+Does NOT touch license fields (upstream Apache-2.0 + PEP 639 format works as-is).
 Keeps Homepage pointing to upstream vllm-project/vllm.
 """
 import re
@@ -15,10 +16,9 @@ if not p.exists():
 
 t = p.read_text()
 
-# License: keep PEP 639 SPDX string format (generates valid Metadata-Version: 2.4)
-# Using {text = "..."} table format causes metadata version mismatch (2.1 + License-File = rejected)
-# Keep upstream Apache-2.0 license, just remove license-files to avoid License-File header issues
-t = re.sub(r"^license-files\s*=.*", "license-files = []", t, flags=re.MULTILINE)
+# License: DO NOT MODIFY — upstream's PEP 639 format (license = "Apache-2.0" +
+# license-files = ["LICENSE"]) generates valid Metadata-Version 2.4 that PyPI accepts.
+# Any change to license fields causes metadata version mismatch → PyPI 400 rejection.
 
 # Authors and maintainers
 t = re.sub(r"^authors\s*=.*\n", "", t, flags=re.MULTILINE)

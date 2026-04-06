@@ -334,9 +334,8 @@ jobs:
               # Use our README as the PyPI long description
               cp /repo-readme/README.md README.md
 
-              # --- Patch metadata: DISABLED to confirm clean publish ---
-              # python3 /scripts/patch-pyproject-metadata.py
-              echo "Metadata patch DISABLED (clean publish test)"
+              # --- Patch metadata: authors, URLs (license untouched) ---
+              python3 /scripts/patch-pyproject-metadata.py
 
               # --- Patch platform detection to recognize vllm-cpu package ---
               # vLLM detects CPU platform via version("vllm") containing "cpu".
@@ -748,7 +747,7 @@ jobs:
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@v1.13.0
         with:
-          attestations: false
+          attestations: true
           skip-existing: true
           verbose: true
 
