@@ -238,7 +238,7 @@ ENV UV_LINK_MODE=copy \
 # Install Python, vLLM, cleanup, and restore headers in single layer
 # setup_vllm.sh handles: install, patches, torch header restoration
 COPY docker/setup_vllm.sh docker/cleanup.sh /tmp/
-RUN --mount=type=cache,id=uv-${VARIANT},target=/root/.cache/uv,sharing=locked \
+RUN --mount=type=cache,id=uv-${VARIANT}-v2,target=/root/.cache/uv,sharing=locked \
     --mount=type=secret,id=GITHUB_TOKEN,required=false \
     chmod +x /tmp/setup_vllm.sh /tmp/cleanup.sh && \
     export GITHUB_TOKEN=$(cat /run/secrets/GITHUB_TOKEN 2>/dev/null || echo "") && \
