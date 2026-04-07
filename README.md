@@ -6,7 +6,7 @@
   </picture>
 </p>
 
-<h3 align="center">CPU-Optimized vLLM: Easy, Fast LLM Inference Without a GPU</h3>
+<p align="center"><strong>CPU-Optimized vLLM: Easy, Fast LLM Inference Without a GPU</strong></p>
 
 <p align="center">
   <strong>Unified CPU wheel with automatic ISA detection at runtime (AVX2, AVX-512, VNNI, BF16, AMX, NEON, FP16, DOTPROD)</strong>
