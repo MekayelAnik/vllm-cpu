@@ -213,6 +213,7 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     numactl \
     libtcmalloc-minimal4 \
     curl \
+    jq \
     procps \
     openssl \
     wget \
