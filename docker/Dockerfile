@@ -26,7 +26,8 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     apt-get update && apt-get install -y --no-install-recommends curl ca-certificates jq
 
 ARG VLLM_VERSION
-ARG PYTHON_VERSION=auto
+# Pin Python 3.13 — unified wheel uses stable ABI (abi3), works with any Python >= 3.8
+ARG PYTHON_VERSION=3.13
 ARG VARIANT=noavx512
 ARG USE_GITHUB_RELEASE=false
 
@@ -50,7 +51,8 @@ FROM ${BASE_IMAGE} AS runtime
 COPY --from=python-detector /python_version.txt /tmp/python_version.txt
 
 ARG VLLM_VERSION
-ARG PYTHON_VERSION=auto
+# Pin Python 3.13 — unified wheel uses stable ABI (abi3), works with any Python >= 3.8
+ARG PYTHON_VERSION=3.13
 ARG VARIANT=noavx512
 ARG USE_GITHUB_RELEASE=false
 
