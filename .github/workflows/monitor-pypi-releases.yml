@@ -370,15 +370,24 @@ jobs:
         shell: bash
         env:
           IMAGE: ${{ vars.GHCR_REPO || format('ghcr.io/{0}/vllm-cpu', github.repository_owner) }}:${{ needs.fetch-releases.outputs.latest_version }}
-          SMOKE_TEST_MODEL: ${{ vars.SMOKE_TEST_MODEL || 'facebook/opt-125m' }}
+          SMOKE_TEST_MODEL: ${{ vars.SMOKE_TEST_MODEL || 'HuggingFaceTB/SmolLM2-135M-Instruct' }}
         run: |
           set -euo pipefail
           echo "Running inference smoke test with image: $IMAGE"
+          # TORCHDYNAMO_DISABLE=1: prevents torch.compile JIT (triton/cpp_prefix.h issues)
+          # OMP_NUM_THREADS=2 + VLLM_CPU_OMP_THREADS_BIND=0-1: prevent libnuma segfaults
+          # KMP_INIT_AT_FORK=FALSE: prevent OpenMP fork-safety crashes
           docker run --rm \
             --shm-size 4g \
             -e VLLM_TARGET_DEVICE=cpu \
             -e OTEL_PROPAGATORS=none \
             -e OTEL_TRACES_EXPORTER=none \
+            -e TORCHDYNAMO_DISABLE=1 \
+            -e VLLM_CPU_KVCACHE_SPACE=1 \
+            -e OMP_NUM_THREADS=2 \
+            -e KMP_INIT_AT_FORK=FALSE \
+            -e VLLM_WORKER_MULTIPROC_METHOD=spawn \
+            -e VLLM_CPU_OMP_THREADS_BIND=0-1 \
             -e "SMOKE_TEST_MODEL=${SMOKE_TEST_MODEL}" \
             "$IMAGE" \
             python3 -c "
@@ -386,19 +395,30 @@ jobs:
           os.environ['VLLM_TARGET_DEVICE'] = 'cpu'
           os.environ['OTEL_PROPAGATORS'] = 'none'
           os.environ['OTEL_TRACES_EXPORTER'] = 'none'
-          model = os.environ.get('SMOKE_TEST_MODEL', 'facebook/opt-125m')
+          os.environ['TORCHDYNAMO_DISABLE'] = '1'
+          from vllm import LLM, SamplingParams
+          model = os.environ.get('SMOKE_TEST_MODEL', 'HuggingFaceTB/SmolLM2-135M-Instruct')
           print(f'Loading model: {model}')
           try:
-              llm = LLM(model=model, device='cpu', dtype='float32', max_model_len=256)
+              llm = LLM(model=model, device='cpu', dtype='float32', max_model_len=512, enforce_eager=True)
           except TypeError:
-              llm = LLM(model=model, dtype='float32', max_model_len=256)
-          params = SamplingParams(temperature=0.8, max_tokens=32)
+              try:
+                  llm = LLM(model=model, dtype='float32', max_model_len=512, enforce_eager=True)
+              except TypeError:
+                  llm = LLM(model=model, dtype='float32', max_model_len=512)
+          params = SamplingParams(temperature=0.8, max_tokens=256)
           outputs = llm.generate(['Hello, world!'], params)
           text = outputs[0].outputs[0].text
           n_tokens = len(outputs[0].outputs[0].token_ids)
           print(f'Generated ({n_tokens} tokens): {text}')
           assert n_tokens > 0, 'No output tokens generated'
           print('Docker inference smoke test: PASS')
+          # Clean shutdown to suppress 'EngineCore died unexpectedly' message
+          del llm
+          import gc
+          gc.collect()
+          import time
+          time.sleep(1)
           "
 
   # ===========================================================================
