@@ -156,17 +156,17 @@ pip3 install vllm-cpu==0.19.0
 ### Docker
 
 ```bash
-# GHCR (primary)
-docker pull ghcr.io/mekayelanik/vllm-cpu:latest
-
 # Docker Hub
 docker pull mekayelanik/vllm-cpu:latest
 
+# GHCR
+docker pull ghcr.io/mekayelanik/vllm-cpu:latest
+
 # Specific version
-docker pull ghcr.io/mekayelanik/vllm-cpu:0.19.0
+docker pull mekayelanik/vllm-cpu:0.19.0
 
 # ARM64 without BF16 (for Graviton 2, Pi 5, older Altra)
-docker pull ghcr.io/mekayelanik/vllm-cpu:arm64-no-bf16-latest
+docker pull mekayelanik/vllm-cpu:arm64-no-bf16-latest
 ```
 
 ## Docker Usage
@@ -178,7 +178,7 @@ docker run -d \
   --name vllm-cpu \
   -p 8000:8000 \
   -v ~/.cache/huggingface:/root/.cache/huggingface \
-  ghcr.io/mekayelanik/vllm-cpu:latest \
+  mekayelanik/vllm-cpu:latest \
   --model facebook/opt-125m \
   --dtype auto
 ```
@@ -188,7 +188,7 @@ docker run -d \
 ```yaml
 services:
   vllm:
-    image: ghcr.io/mekayelanik/vllm-cpu:latest
+    image: mekayelanik/vllm-cpu:latest
     ports:
       - "8000:8000"
     volumes:
