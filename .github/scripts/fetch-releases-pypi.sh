@@ -68,8 +68,8 @@ emit_empty() {
   echo "should_build=false" >> "$GITHUB_OUTPUT"
 }
 
-# --- Manual version mode ---
-if [[ -n "$MANUAL_VERSIONS_RAW" && "$REQUESTED_ACTION" == "build-versions" ]]; then
+# --- Manual version mode (accepts both 'build' and 'build-versions' actions) ---
+if [[ -n "$MANUAL_VERSIONS_RAW" && ("$REQUESTED_ACTION" == "build-versions" || "$REQUESTED_ACTION" == "build") ]]; then
   IFS=',' read -ra MANUAL_ARRAY <<< "$MANUAL_VERSIONS_RAW"
   VERSIONS_OLDEST=""
   for v in "${MANUAL_ARRAY[@]}"; do
