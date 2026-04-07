@@ -30,7 +30,7 @@ ARG PYTHON_VERSION=auto
 ARG VARIANT=noavx512
 ARG USE_GITHUB_RELEASE=false
 
-COPY detect_python_version.sh /detect_python_version.sh
+COPY docker/detect_python_version.sh /detect_python_version.sh
 RUN --mount=type=secret,id=GITHUB_TOKEN,required=false \
     chmod +x /detect_python_version.sh && \
     export GITHUB_TOKEN=$(cat /run/secrets/GITHUB_TOKEN 2>/dev/null || echo "") && \
@@ -233,7 +233,7 @@ ENV UV_LINK_MODE=copy \
 
 # Install Python, vLLM, cleanup, and restore headers in single layer
 # setup_vllm.sh handles: install, patches, torch header restoration
-COPY setup_vllm.sh cleanup.sh /tmp/
+COPY docker/setup_vllm.sh docker/cleanup.sh /tmp/
 RUN --mount=type=cache,id=uv-${VARIANT},target=/root/.cache/uv,sharing=locked \
     --mount=type=secret,id=GITHUB_TOKEN,required=false \
     chmod +x /tmp/setup_vllm.sh /tmp/cleanup.sh && \
@@ -243,7 +243,7 @@ RUN --mount=type=cache,id=uv-${VARIANT},target=/root/.cache/uv,sharing=locked \
     rm -f /tmp/setup_vllm.sh /tmp/cleanup.sh
 
 # Copy entrypoint scripts + store Python version (single layer)
-COPY entrypoint.sh banner.sh /vllm/
+COPY docker/entrypoint.sh docker/banner.sh /vllm/
 RUN chmod +x /vllm/entrypoint.sh /vllm/banner.sh && \
     echo "VLLM_PYTHON_VERSION=$(cat /vllm/python_version.txt)" >> /etc/environment
 
