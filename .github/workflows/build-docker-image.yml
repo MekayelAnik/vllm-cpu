@@ -520,6 +520,12 @@ jobs:
           print(f'Generated ({n_tokens} tokens): {text}')
           assert n_tokens > 0, 'No output tokens generated'
           print('Docker inference smoke test: PASS')
+          # Clean shutdown to suppress 'EngineCore died unexpectedly' message
+          del llm
+          import gc
+          gc.collect()
+          import time
+          time.sleep(1)
           "
           echo "=== Docker smoke test passed ==="
 
