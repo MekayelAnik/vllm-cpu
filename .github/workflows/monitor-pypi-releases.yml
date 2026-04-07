@@ -338,14 +338,18 @@ jobs:
       DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
 
   # ===========================================================================
-  # Job 5: Docker inference smoke test
+  # Job 5: Docker inference smoke test (both platforms)
   # ===========================================================================
   smoke-test:
-    name: Docker inference smoke test
+    name: Smoke test (${{ matrix.platform }})
     needs: [fetch-releases, build-versions]
     if: needs.build-versions.result == 'success'
-    runs-on: ${{ vars.ACTION_RUNNER_VERSION || 'ubuntu-24.04' }}
+    runs-on: ${{ matrix.platform == 'arm64' && format('{0}-arm', vars.ACTION_RUNNER_VERSION || 'ubuntu-24.04') || (vars.ACTION_RUNNER_VERSION || 'ubuntu-24.04') }}
     timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        platform: [amd64, arm64]
     permissions:
       contents: read
       packages: read
@@ -373,15 +377,15 @@ jobs:
           SMOKE_TEST_MODEL: ${{ vars.SMOKE_TEST_MODEL || 'HuggingFaceTB/SmolLM2-135M-Instruct' }}
         run: |
           set -euo pipefail
-          echo "Running inference smoke test with image: $IMAGE"
-          # VLLM_USE_V1=0: force V0 engine (V1 subprocess model fails in Docker smoke test)
+          echo "Running inference smoke test (${{ matrix.platform }}) with image: $IMAGE"
+          # --ipc=host + --shm-size 4g: V1 engine uses shared memory for IPC between processes
           # TORCHDYNAMO_DISABLE=1: prevents torch.compile JIT (triton/cpp_prefix.h issues)
           # OMP_NUM_THREADS=2 + VLLM_CPU_OMP_THREADS_BIND=0-1: prevent libnuma segfaults
           # KMP_INIT_AT_FORK=FALSE: prevent OpenMP fork-safety crashes
           docker run --rm \
+            --ipc=host \
             --shm-size 4g \
             -e VLLM_TARGET_DEVICE=cpu \
-            -e VLLM_USE_V1=0 \
             -e OTEL_PROPAGATORS=none \
             -e OTEL_TRACES_EXPORTER=none \
             -e TORCHDYNAMO_DISABLE=1 \
