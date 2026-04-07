@@ -138,7 +138,7 @@ pip3 install vllm-cpu==0.17.0        # Specific version
 ### uv (faster)
 
 ```bash
-uv pip3 install vllm-cpu
+uv pip install vllm-cpu
 ```
 
 ### Virtual environment (recommended)
