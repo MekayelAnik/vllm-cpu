@@ -306,6 +306,15 @@ try_install_vllm() {
         fi
     fi
 
+    # Install intel-openmp (libiomp5) on x86_64 — required by vLLM V1 CPU worker
+    if [ "${_install_success}" = "true" ] && [ "${WHEEL_ARCH}" = "x86_64" ]; then
+        if ! find /vllm/venv -name 'libiomp5.so' 2>/dev/null | grep -q .; then
+            echo "Installing intel-openmp (libiomp5 for x86_64)..."
+            uv pip install --no-progress intel-openmp \
+                --index-url "${PYPI_INDEX}" 2>/dev/null || true
+        fi
+    fi
+
     # Patch transformers compatibility issues before import verification
     # transformers 5.0+ (2026-01-26) changed PretrainedConfig to a dataclass,
     # breaking old vLLM config classes with bare type annotations (no defaults)
@@ -637,25 +646,6 @@ if [ -f "${OVIS_FILE}" ]; then
     fi
 else
     echo "ovis.py not found (may be older vLLM version without this file)"
-fi
-
-# =============================================================================
-# Install intel-openmp (provides libiomp5.so required by vLLM 0.18.0+)
-# =============================================================================
-# The CPU-only PyTorch from download.pytorch.org/whl/cpu does not bundle
-# libiomp5.so. vLLM 0.18.0+ checks for it in LD_PRELOAD at startup via
-# check_preloaded_libs("libiomp") in cpu_worker.py.
-echo ""
-echo "=== Installing Intel OpenMP (libiomp5) ==="
-if uv pip install --no-progress intel-openmp 2>&1; then
-    LIBIOMP_PATH=$(find /vllm/venv -name 'libiomp5.so' 2>/dev/null | head -1)
-    if [ -n "${LIBIOMP_PATH}" ]; then
-        echo "libiomp5.so installed at: ${LIBIOMP_PATH}"
-    else
-        echo "WARNING: intel-openmp installed but libiomp5.so not found"
-    fi
-else
-    echo "WARNING: Failed to install intel-openmp (libiomp5 may be missing)"
 fi
 
 # =============================================================================

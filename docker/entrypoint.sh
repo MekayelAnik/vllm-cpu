@@ -498,8 +498,10 @@ echo "=== Memory Allocator Configuration ==="
 if [ -z "${LD_PRELOAD}" ]; then
     PRELOAD_LIBS=""
 
-    # Find libiomp5.so from the torch package (required by vLLM 0.18.0+ cpu_worker)
-    LIBIOMP_PATH=$(find /vllm/venv -name 'libiomp5.so' -path '*/torch/lib/*' 2>/dev/null | head -1)
+    # Find libiomp5.so (required by vLLM 0.18.0+ cpu_worker on x86_64)
+    # Check torch/lib first, then intel-openmp package, then system paths
+    LIBIOMP_PATH=$(find /vllm/venv -name 'libiomp5.so' 2>/dev/null | head -1)
+    [ -z "${LIBIOMP_PATH}" ] && LIBIOMP_PATH=$(find /usr/local -name 'libiomp5.so' 2>/dev/null | head -1)
     if [ -n "${LIBIOMP_PATH}" ]; then
         PRELOAD_LIBS="${LIBIOMP_PATH}"
         echo "libiomp5: ${LIBIOMP_PATH}"
