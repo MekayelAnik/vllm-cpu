@@ -43,8 +43,13 @@ on:
         required: false
         type: string
         default: '4'
+      tag_prefix:
+        description: 'Prefix prepended to image tags (e.g., arm64-no-bf16-)'
+        required: false
+        type: string
+        default: ''
       tag_suffix:
-        description: 'Suffix appended to image tags (e.g., -no-bf16)'
+        description: 'Suffix appended to image tags (e.g., -no-bf16) — deprecated, use tag_prefix'
         required: false
         type: string
         default: ''
@@ -192,7 +197,7 @@ jobs:
     needs: [prepare-matrix]
     runs-on: ${{ matrix.runner }}
     concurrency:
-      group: build-${{ matrix.version }}-${{ matrix.slug }}${{ inputs.tag_suffix }}
+      group: build-${{ inputs.tag_prefix }}${{ matrix.version }}${{ inputs.tag_suffix }}-${{ matrix.slug }}
       cancel-in-progress: false
     strategy:
       fail-fast: false
@@ -251,7 +256,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          RESULT="$({ FORCE_BUILD="$INPUT_FORCE_BUILD" GHCR_REPO="$SANITIZED_GHCR_REPO" VERSION="${MATRIX_VERSION}${{ inputs.tag_suffix }}" bash .github/scripts/check-existing-tags.sh; } )"
+          RESULT="$({ FORCE_BUILD="$INPUT_FORCE_BUILD" GHCR_REPO="$SANITIZED_GHCR_REPO" VERSION="${{ inputs.tag_prefix }}${MATRIX_VERSION}${{ inputs.tag_suffix }}" bash .github/scripts/check-existing-tags.sh; } )"
           echo "$RESULT"
           SKIP_LINE="$(echo "$RESULT" | awk -F= '/^skip_build=/{print $0}' | tail -n1)"
           if [[ -z "$SKIP_LINE" ]]; then
@@ -291,8 +296,8 @@ jobs:
           file: ./Dockerfile.vllm-cpu
           platforms: ${{ matrix.platform }}
           outputs: type=image,name=${{ steps.sanitize.outputs.ghcr_repo }},push-by-digest=true,name-canonical=true,push=true,oci-mediatypes=true,${{ steps.profile.outputs.compression_params }},export-cache-concurrency=${{ inputs.export_cache_concurrency }},export-layers-concurrency=${{ inputs.export_layers_concurrency }}
-          cache-from: type=gha,scope=vllm-cpu-v4-${{ matrix.version }}-${{ matrix.slug }}${{ inputs.tag_suffix }}
-          cache-to: type=gha,scope=vllm-cpu-v4-${{ matrix.version }}-${{ matrix.slug }}${{ inputs.tag_suffix }},mode=max,compression=zstd
+          cache-from: type=gha,scope=vllm-cpu-v4-${{ inputs.tag_prefix }}${{ matrix.version }}${{ inputs.tag_suffix }}-${{ matrix.slug }}
+          cache-to: type=gha,scope=vllm-cpu-v4-${{ inputs.tag_prefix }}${{ matrix.version }}${{ inputs.tag_suffix }}-${{ matrix.slug }},mode=max,compression=zstd
           build-args: |
             BUILDKIT_INLINE_CACHE=1
             VLLM_VERSION=${{ matrix.version }}
@@ -318,7 +323,7 @@ jobs:
         if: steps.check-existing.outputs.skip_build != 'true'
         uses: actions/upload-artifact@v7
         with:
-          name: digest-${{ matrix.version }}-${{ matrix.slug }}${{ inputs.tag_suffix }}
+          name: digest-${{ inputs.tag_prefix }}${{ matrix.version }}${{ inputs.tag_suffix }}-${{ matrix.slug }}
           path: /tmp/digests/${{ matrix.slug }}
           if-no-files-found: error
           retention-days: 1
@@ -367,7 +372,7 @@ jobs:
         uses: actions/download-artifact@v8
         with:
           path: /tmp/digests
-          pattern: digest-${{ matrix.version }}-*${{ inputs.tag_suffix }}
+          pattern: digest-${{ inputs.tag_prefix }}${{ matrix.version }}${{ inputs.tag_suffix }}-*
           merge-multiple: true
 
       - name: Create multi-arch manifest and push tags
@@ -377,14 +382,15 @@ jobs:
           SANITIZED_DOCKERHUB_REPO: ${{ steps.sanitize.outputs.dockerhub_repo }}
           MATRIX_VERSION: ${{ matrix.version }}
           MATRIX_IMAGE_TAG: ${{ matrix.image_tag }}
+          TAG_PREFIX: ${{ inputs.tag_prefix }}
           TAG_SUFFIX: ${{ inputs.tag_suffix }}
         run: |
           set -euo pipefail
 
           GHCR_REPO="$SANITIZED_GHCR_REPO"
           DH_REPO="$SANITIZED_DOCKERHUB_REPO"
-          VERSION="${MATRIX_VERSION}${TAG_SUFFIX}"
-          IMAGE_TAG="${MATRIX_IMAGE_TAG}${TAG_SUFFIX}"
+          VERSION="${TAG_PREFIX}${MATRIX_VERSION}${TAG_SUFFIX}"
+          IMAGE_TAG="${TAG_PREFIX}${MATRIX_IMAGE_TAG}${TAG_SUFFIX}"
 
           echo "Merging platform digests for $VERSION"
 
@@ -429,4 +435,4 @@ jobs:
         with:
           dockerhub_repo: ${{ steps.sanitize.outputs.dockerhub_repo }}
           ghcr_repo: ${{ steps.sanitize.outputs.ghcr_repo }}
-          tags: ${{ matrix.image_tag }}${{ inputs.tag_suffix }},${{ matrix.version }}${{ inputs.tag_suffix }}
+          tags: ${{ inputs.tag_prefix }}${{ matrix.image_tag }}${{ inputs.tag_suffix }},${{ inputs.tag_prefix }}${{ matrix.version }}${{ inputs.tag_suffix }}

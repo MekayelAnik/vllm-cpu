@@ -356,7 +356,7 @@ jobs:
       ghcr_repo: ${{ vars.GHCR_REPO || format('ghcr.io/{0}/vllm-cpu', github.repository_owner) }}
       dockerhub_repo: ${{ vars.DOCKERHUB_REPO || 'mekayelanik/vllm-cpu' }}
       default_platforms: linux/arm64
-      tag_suffix: '-no-bf16'
+      tag_prefix: 'arm64-no-bf16-'
       use_github_release: 'true'
       wheel_suffix: '-no-bf16'
       export_cache_concurrency: '4'
@@ -486,7 +486,7 @@ jobs:
       - name: Pull Docker image
         shell: bash
         env:
-          IMAGE: ${{ vars.GHCR_REPO || format('ghcr.io/{0}/vllm-cpu', github.repository_owner) }}:${{ needs.fetch-releases.outputs.latest_version }}-no-bf16
+          IMAGE: ${{ vars.GHCR_REPO || format('ghcr.io/{0}/vllm-cpu', github.repository_owner) }}:arm64-no-bf16-${{ needs.fetch-releases.outputs.latest_version }}
         run: |
           set -euo pipefail
           echo "Pulling no-bf16 image: $IMAGE"
@@ -495,7 +495,7 @@ jobs:
       - name: Run inference smoke test
         shell: bash
         env:
-          IMAGE: ${{ vars.GHCR_REPO || format('ghcr.io/{0}/vllm-cpu', github.repository_owner) }}:${{ needs.fetch-releases.outputs.latest_version }}-no-bf16
+          IMAGE: ${{ vars.GHCR_REPO || format('ghcr.io/{0}/vllm-cpu', github.repository_owner) }}:arm64-no-bf16-${{ needs.fetch-releases.outputs.latest_version }}
           SMOKE_TEST_MODEL: ${{ vars.SMOKE_TEST_MODEL || 'HuggingFaceTB/SmolLM2-135M-Instruct' }}
         run: |
           set -euo pipefail
