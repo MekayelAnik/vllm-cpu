@@ -136,23 +136,24 @@ try_install_vllm() {
             INSTALL_VERSION="${VLLM_VERSION}${VERSION_SUFFIX}"
             echo "Trying ${PACKAGE_NAME}==${INSTALL_VERSION}..."
 
-            # Retry up to 3 times (uv can hit decompression errors in Docker buildx)
-            for _attempt in 1 2 3; do
-                if uv pip install --no-progress "${PACKAGE_NAME}==${INSTALL_VERSION}" ${_TRANSFORMERS_CAP} \
-                    --index-url "${PYTORCH_INDEX}" \
-                    --extra-index-url "${PYPI_INDEX}" \
-                    --index-strategy unsafe-best-match; then
-                    echo "Successfully installed ${PACKAGE_NAME}==${INSTALL_VERSION} from PyPI"
-                    _install_success=true
-                    break 2
-                fi
-                if [ "${_attempt}" -lt 3 ]; then
-                    echo "Attempt ${_attempt} failed, retrying in 2s..."
-                    sleep 2
-                    uv cache clean 2>/dev/null || true
-                fi
-            done
-            if [ "${_install_success}" = "true" ]; then
+            # Method A: uv pip install
+            if uv pip install --no-progress "${PACKAGE_NAME}==${INSTALL_VERSION}" ${_TRANSFORMERS_CAP} \
+                --index-url "${PYTORCH_INDEX}" \
+                --extra-index-url "${PYPI_INDEX}" \
+                --index-strategy unsafe-best-match 2>&1; then
+                echo "Successfully installed ${PACKAGE_NAME}==${INSTALL_VERSION} from PyPI (uv)"
+                _install_success=true
+                break
+            fi
+
+            # Method B: pip3 fallback (workaround for uv deflate bug on arm64 buildx)
+            echo "uv install failed, trying pip3..."
+            uv pip install --no-progress pip 2>/dev/null || true
+            if pip3 install --no-cache-dir "${PACKAGE_NAME}==${INSTALL_VERSION}" ${_TRANSFORMERS_CAP} \
+                --index-url "${PYTORCH_INDEX}" \
+                --extra-index-url "${PYPI_INDEX}" 2>&1; then
+                echo "Successfully installed ${PACKAGE_NAME}==${INSTALL_VERSION} from PyPI (pip3)"
+                _install_success=true
                 break
             fi
             echo "Failed: ${INSTALL_VERSION}"
