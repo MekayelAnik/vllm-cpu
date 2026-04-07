@@ -156,7 +156,7 @@ No configuration needed — the correct `.so` is loaded automatically at `import
 pip install vllm-cpu
 
 # Specific version
-pip install vllm-cpu==0.17.0
+pip install vllm-cpu==0.18.0
 ```
 
 ### Docker
@@ -169,7 +169,7 @@ docker pull ghcr.io/mekayelanik/vllm-cpu:latest
 docker pull mekayelanik/vllm-cpu:latest
 
 # Specific version
-docker pull ghcr.io/mekayelanik/vllm-cpu:0.17.0
+docker pull ghcr.io/mekayelanik/vllm-cpu:0.18.0
 ```
 
 ## Docker Usage
