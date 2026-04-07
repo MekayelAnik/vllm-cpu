@@ -199,7 +199,7 @@ ENV VLLM_EXECUTE_MODEL_TIMEOUT_SECONDS=300
 ENV VLLM_MQ_MAX_CHUNK_BYTES_MB=16
 ENV VLLM_V1_OUTPUT_PROC_CHUNK_SIZE=128
 
-# Install runtime dependencies
+# Install runtime dependencies + create directories (single layer)
 # build-essential (g++) is required for PyTorch inductor (torch.compile) JIT kernel compilation
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt,sharing=locked \
@@ -215,13 +215,11 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     ca-certificates \
     binutils \
     gosu \
-    build-essential
+    build-essential && \
+    mkdir -p /vllm /data/models /data/cache/vllm /data/config/vllm
 
 # Install uv
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
-
-# Create directories
-RUN mkdir -p /vllm /data/models /data/cache/vllm /data/config/vllm
 
 WORKDIR /vllm
 
@@ -232,7 +230,8 @@ ENV UV_LINK_MODE=copy \
     UV_COMPILE_BYTECODE=1 \
     UV_PYTHON_DOWNLOADS=never
 
-# Install Python, vLLM, and cleanup in single layer to minimize image size
+# Install Python, vLLM, cleanup, and restore headers in single layer
+# setup_vllm.sh handles: install, patches, torch header restoration
 COPY setup_vllm.sh cleanup.sh /tmp/
 RUN --mount=type=cache,id=uv-${VARIANT},target=/root/.cache/uv,sharing=locked \
     --mount=type=secret,id=GITHUB_TOKEN,required=false \
@@ -242,19 +241,10 @@ RUN --mount=type=cache,id=uv-${VARIANT},target=/root/.cache/uv,sharing=locked \
     /tmp/cleanup.sh && \
     rm -f /tmp/setup_vllm.sh /tmp/cleanup.sh
 
-# Restore torch inductor C++ headers (CPU wheel may be missing them after cleanup)
-# Must run in SEPARATE layer after cleanup — uses curl + PyPI JSON API (no pip/uv needed)
-COPY restore_torch_headers.sh /tmp/restore_torch_headers.sh
-RUN chmod +x /tmp/restore_torch_headers.sh && \
-    /tmp/restore_torch_headers.sh && \
-    rm -f /tmp/restore_torch_headers.sh
-
-# Store Python version
-RUN echo "VLLM_PYTHON_VERSION=$(cat /vllm/python_version.txt)" >> /etc/environment
-
-# Copy entrypoint scripts
+# Copy entrypoint scripts + store Python version (single layer)
 COPY entrypoint.sh banner.sh /vllm/
-RUN chmod +x /vllm/entrypoint.sh /vllm/banner.sh
+RUN chmod +x /vllm/entrypoint.sh /vllm/banner.sh && \
+    echo "VLLM_PYTHON_VERSION=$(cat /vllm/python_version.txt)" >> /etc/environment
 
 HEALTHCHECK --interval=30s --timeout=10s --start-period=120s --retries=3 \
     CMD curl -f http://localhost:${VLLM_SERVER_PORT:-8000}/health || exit 1

@@ -151,7 +151,7 @@ env:
   DOCKERHUB_IMAGE: mekayelanik/vllm-cpu
   GHCR_IMAGE: ghcr.io/mekayelanik/vllm-cpu
   BASE_IMAGE: ${{ vars.BASE_IMAGE_DEFAULT || 'debian:stable-slim' }}
-  SMOKE_TEST_MODEL: HuggingFaceTB/SmolLM2-135M-Instruct
+  SMOKE_TEST_MODEL: ${{ vars.SMOKE_TEST_MODEL || 'HuggingFaceTB/SmolLM2-135M-Instruct' }}
 
 jobs:
   # ==========================================================================
