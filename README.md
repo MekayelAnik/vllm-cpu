@@ -65,17 +65,11 @@ CPU-Optimized vLLM: Easy, Fast LLM Inference Without a GPU
 
 ---
 
-<div align="center">
-
-## Buy Me a Coffee
-
-**Your support encourages me to keep creating/supporting my open-source projects.** If you found value in this project, you can buy me a coffee to keep me up all the sleepless nights.
-
+<p align="center">
 <a href="https://07mekayel07.gumroad.com/coffee" target="_blank">
 <img src="https://cdn.buymeacoffee.com/buttons/v2/default-yellow.png" alt="Buy Me A Coffee" width="217" height="60">
 </a>
-
-</div>
+</p>
 
 ---
 
@@ -170,6 +164,9 @@ docker pull mekayelanik/vllm-cpu:latest
 
 # Specific version
 docker pull ghcr.io/mekayelanik/vllm-cpu:0.19.0
+
+# ARM64 without BF16 (for Graviton 2, Pi 5, older Altra)
+docker pull ghcr.io/mekayelanik/vllm-cpu:arm64-no-bf16-latest
 ```
 
 ## Docker Usage
@@ -211,10 +208,12 @@ volumes:
 
 | Tag | Description |
 |-----|-------------|
-| `latest` | Most recent stable release |
-| `stable` | Promoted after 5 days as `latest` |
-| `X.Y.Z` | Specific version (e.g., `0.17.0`) |
-| `X.Y.Z-DDMMYYYY` | Version with build date |
+| `latest` | Most recent stable release (multi-arch: amd64 + arm64) |
+| `X.Y.Z` | Specific version (e.g., `0.19.0`) |
+| `arm64-no-bf16-latest` | Latest ARM64 build without BF16 instructions |
+| `arm64-no-bf16-X.Y.Z` | ARM64 no-BF16 specific version (e.g., `arm64-no-bf16-0.19.0`) |
+
+> **ARM64 users**: The default `latest` / `X.Y.Z` images include BF16 instructions for Graviton 3+, Ampere Altra Max, and Apple Silicon. If your ARM64 CPU lacks BF16 support (Graviton 2, Raspberry Pi 5, older Ampere Altra), use the `arm64-no-bf16-*` tags instead.
 
 ## Supported Platforms
 
@@ -222,6 +221,7 @@ volumes:
 |----------|-------|--------|
 | x86_64 (amd64) | `manylinux_2_28_x86_64` | `linux/amd64` |
 | aarch64 (arm64) | `manylinux_2_28_aarch64` | `linux/arm64` |
+| aarch64 no-BF16 | `manylinux_2_28_aarch64` (no-bf16) | `linux/arm64` (`arm64-no-bf16-*` tags) |
 
 ## How It Works
 
@@ -272,11 +272,12 @@ These packages remain available on PyPI for older vLLM versions but will not rec
 
 ```
 Upstream vLLM release (v0.17.0+)
-  --> Build unified CPU wheels in manylinux_2_28 (x86_64 + aarch64)
+  --> Build unified CPU wheels in manylinux_2_28 (x86_64 + aarch64 + aarch64-no-bf16)
   --> Publish to PyPI + GitHub Releases
   --> Build multi-arch Docker images (linux/amd64 + linux/arm64)
+  --> Build ARM64 no-BF16 Docker images (for CPUs without BF16 ISA)
   --> Push to GHCR + Docker Hub
-  --> Promote :latest --> :stable (5-day soak)
+  --> Promote :latest and :arm64-no-bf16-latest
 ```
 
 ## Links
@@ -286,22 +287,20 @@ Upstream vLLM release (v0.17.0+)
 - [Report Issues](https://github.com/MekayelAnik/vllm-cpu/issues)
 - [Changelog](https://github.com/MekayelAnik/vllm-cpu/releases)
 
+## License
+
+This project is licensed under the [GNU General Public License v3.0](https://github.com/MekayelAnik/vllm-cpu/blob/main/LICENSE) (GPL-3.0).
+
+> **Note**: The upstream [vLLM](https://github.com/vllm-project/vllm) project is licensed under Apache 2.0. This project (build infrastructure, Docker images, and distribution tooling) uses GPL-3.0. The vLLM library itself retains its original Apache 2.0 license.
+
 ---
 
 <div align="center">
 
-## Buy Me a Coffee
-
-**Your support encourages me to keep creating/supporting my open-source projects.** If you found value in this project, you can buy me a coffee to keep me up all the sleepless nights.
+**Your support encourages me to keep creating/supporting my open-source projects.**
 
 <a href="https://07mekayel07.gumroad.com/coffee" target="_blank">
 <img src="https://cdn.buymeacoffee.com/buttons/v2/default-yellow.png" alt="Buy Me A Coffee" width="217" height="60">
 </a>
 
 </div>
-
----
-
-## License
-
-Same license as [vLLM](https://github.com/vllm-project/vllm/blob/main/LICENSE) (Apache 2.0).
