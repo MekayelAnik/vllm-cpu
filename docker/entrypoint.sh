@@ -716,6 +716,12 @@ if [ $# -eq 0 ] || [ "${1#--}" != "$1" ]; then
     echo "Command: ${CMD}"
     echo ""
 
+    # Unset Docker convenience env vars that vLLM doesn't recognize
+    # (these were read above for CLI arg generation; keeping them causes warnings)
+    unset VLLM_MODEL VLLM_TOKENIZER VLLM_SERVER_HOST VLLM_SERVER_PORT
+    unset VLLM_CPU_VARIANT VLLM_MM_INPUT_CACHE_GIB VLLM_SLEEP_WHEN_IDLE
+    unset VLLM_CPU_MOE_PREPACK
+
     # Start vLLM server in background and capture PID for signal handling
     # This allows the trap handlers to forward signals gracefully
     # shellcheck disable=SC2086
@@ -731,6 +737,10 @@ if [ $# -eq 0 ] || [ "${1#--}" != "$1" ]; then
     exit ${exit_code}
 else
     # Execute custom command (e.g., python script, bash, etc.)
+    # Unset Docker convenience env vars that vLLM doesn't recognize
+    unset VLLM_MODEL VLLM_TOKENIZER VLLM_SERVER_HOST VLLM_SERVER_PORT
+    unset VLLM_CPU_VARIANT VLLM_MM_INPUT_CACHE_GIB VLLM_SLEEP_WHEN_IDLE
+    unset VLLM_CPU_MOE_PREPACK
     # For custom commands, use exec directly (user is responsible for signal handling)
     echo "Executing custom command: $*"
     exec "$@"
