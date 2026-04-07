@@ -398,21 +398,23 @@ jobs:
             --entrypoint /vllm/entrypoint.sh \
             "$IMAGE" \
             python3 -c "
-          import os
+          import os, platform
           os.environ['VLLM_TARGET_DEVICE'] = 'cpu'
           os.environ['OTEL_PROPAGATORS'] = 'none'
           os.environ['OTEL_TRACES_EXPORTER'] = 'none'
           os.environ['TORCHDYNAMO_DISABLE'] = '1'
           from vllm import LLM, SamplingParams
           model = os.environ.get('SMOKE_TEST_MODEL', 'HuggingFaceTB/SmolLM2-135M-Instruct')
-          print(f'Loading model: {model}')
+          arch = platform.machine()
+          dtype = 'bfloat16' if arch == 'aarch64' else 'float32'
+          print(f'Loading model: {model} (dtype={dtype}, arch={arch})')
           try:
-              llm = LLM(model=model, device='cpu', dtype='float32', max_model_len=512, enforce_eager=True)
+              llm = LLM(model=model, device='cpu', dtype=dtype, max_model_len=512, enforce_eager=True)
           except TypeError:
               try:
-                  llm = LLM(model=model, dtype='float32', max_model_len=512, enforce_eager=True)
+                  llm = LLM(model=model, dtype=dtype, max_model_len=512, enforce_eager=True)
               except TypeError:
-                  llm = LLM(model=model, dtype='float32', max_model_len=512)
+                  llm = LLM(model=model, dtype=dtype, max_model_len=512)
           params = SamplingParams(temperature=0.8, max_tokens=256)
           outputs = llm.generate(['Hello, world!'], params)
           text = outputs[0].outputs[0].text
