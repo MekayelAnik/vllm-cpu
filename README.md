@@ -98,7 +98,7 @@ pip3 install vllm-cpu
 ```python
 from vllm import LLM, SamplingParams
 
-llm = LLM(model="facebook/opt-125m", device="cpu")
+llm = LLM(model="Qwen/Qwen3-0.6B", device="cpu")
 output = llm.generate("The future of AI is", SamplingParams(temperature=0.8, max_tokens=128))
 print(output[0].outputs[0].text)
 ```
@@ -106,7 +106,7 @@ print(output[0].outputs[0].text)
 ### Or use the CLI
 
 ```bash
-vllm serve facebook/opt-125m --device cpu --dtype auto
+vllm serve Qwen/Qwen3-0.6B --device cpu --dtype auto
 ```
 
 Then query it:
@@ -114,7 +114,7 @@ Then query it:
 ```bash
 curl http://localhost:8000/v1/completions \
   -H "Content-Type: application/json" \
-  -d '{"model": "facebook/opt-125m", "prompt": "The future of AI is", "max_tokens": 128}'
+  -d '{"model": "Qwen/Qwen3-0.6B", "prompt": "The future of AI is", "max_tokens": 128}'
 ```
 
 ## Requirements
@@ -179,7 +179,7 @@ docker run -d \
   -p 8000:8000 \
   -v ~/.cache/huggingface:/root/.cache/huggingface \
   mekayelanik/vllm-cpu:latest \
-  --model facebook/opt-125m \
+  --model Qwen/Qwen3-0.6B \
   --dtype auto
 ```
 
@@ -193,7 +193,7 @@ services:
       - "8000:8000"
     volumes:
       - huggingface-cache:/root/.cache/huggingface
-    command: ["--model", "facebook/opt-125m", "--dtype", "auto"]
+    command: ["--model", "Qwen/Qwen3-0.6B", "--dtype", "auto"]
     deploy:
       resources:
         limits:
