@@ -277,33 +277,31 @@ try_install_vllm() {
             if [ -n "${WHEEL_URL}" ]; then
                 echo "Installing from: ${WHEEL_URL}"
 
-                # Use single pip install command with URL (PEP 440 style)
-                # This installs the wheel directly with all dependencies from CPU PyTorch index
-                if uv pip install --no-progress \
-                    "${PACKAGE_NAME} @ ${WHEEL_URL}" ${_TRANSFORMERS_CAP} \
-                    --index-url "${PYTORCH_INDEX}" \
-                    --extra-index-url "${PYPI_INDEX}" \
-                    --index-strategy unsafe-best-match; then
-                    echo "Successfully installed ${PACKAGE_NAME} from GitHub release"
-                    _install_success=true
+                # Strip WHEEL_SUFFIX from filename for PEP 427 compliance
+                # e.g., "..._aarch64-no-bf16.whl" → "..._aarch64.whl"
+                # uv/pip require exactly 5-6 dash-separated components in wheel filenames
+                if [ -n "${WHEEL_SUFFIX}" ]; then
+                    INSTALL_WHEEL_NAME=$(echo "${WHEEL_NAME}" | sed "s/${WHEEL_SUFFIX}\.whl$/.whl/")
                 else
-                    echo "Failed to install from GitHub release URL, trying download method..."
+                    INSTALL_WHEEL_NAME="${WHEEL_NAME}"
+                fi
 
-                    # Fallback: download wheel and install locally
-                    if wget -q "${WHEEL_URL}" -O "/tmp/${WHEEL_NAME}" 2>/dev/null; then
-                        echo "Downloaded: ${WHEEL_NAME}"
-                        if uv pip install --no-progress "/tmp/${WHEEL_NAME}" ${_TRANSFORMERS_CAP} \
-                            --index-url "${PYTORCH_INDEX}" \
-                            --extra-index-url "${PYPI_INDEX}" \
-                            --index-strategy unsafe-best-match; then
-                            rm -f "/tmp/${WHEEL_NAME}"
-                            echo "Successfully installed from downloaded wheel"
-                            _install_success=true
-                        else
-                            rm -f "/tmp/${WHEEL_NAME}"
-                            echo "Failed to install downloaded wheel"
-                        fi
+                # Download wheel and rename to valid PEP 427 filename
+                if wget -q "${WHEEL_URL}" -O "/tmp/${INSTALL_WHEEL_NAME}" 2>/dev/null; then
+                    echo "Downloaded: ${WHEEL_NAME} → ${INSTALL_WHEEL_NAME}"
+                    if uv pip install --no-progress "/tmp/${INSTALL_WHEEL_NAME}" ${_TRANSFORMERS_CAP} \
+                        --index-url "${PYTORCH_INDEX}" \
+                        --extra-index-url "${PYPI_INDEX}" \
+                        --index-strategy unsafe-best-match; then
+                        rm -f "/tmp/${INSTALL_WHEEL_NAME}"
+                        echo "Successfully installed ${PACKAGE_NAME} from GitHub release"
+                        _install_success=true
+                    else
+                        rm -f "/tmp/${INSTALL_WHEEL_NAME}"
+                        echo "Failed to install downloaded wheel"
                     fi
+                else
+                    echo "Failed to download wheel from GitHub release"
                 fi
             else
                 echo "No matching wheel found for ${PACKAGE_NAME_UNDERSCORE} Python ${PYTHON_TAG} ${WHEEL_ARCH}"
