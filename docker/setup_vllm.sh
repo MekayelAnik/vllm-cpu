@@ -158,7 +158,7 @@ try_install_vllm() {
                 jq -r --arg arch "${WHEEL_ARCH}" \
                 '.urls[] | select(.filename | test($arch)) | .url' 2>/dev/null | head -1)
             if [ -n "${_WHEEL_URL}" ]; then
-                _WHEEL_FILE="/tmp/${PACKAGE_NAME_UNDERSCORE}-${INSTALL_VERSION}.whl"
+                _WHEEL_FILE="/tmp/$(basename "${_WHEEL_URL}")"
                 echo "Downloading: $(basename "${_WHEEL_URL}")"
                 if wget -q --retry-connrefused --tries=3 -O "${_WHEEL_FILE}" "${_WHEEL_URL}"; then
                     echo "Downloaded $(du -h "${_WHEEL_FILE}" | cut -f1), installing with deps..."
@@ -234,7 +234,9 @@ try_install_vllm() {
             echo "Found release assets, searching for matching wheel..."
 
             # Find wheel matching: package name, Python version, and architecture
-            # Pattern: vllm_cpu-VERSION-cpXXX-cpXXX-*ARCH*.whl
+            # Patterns checked:
+            #   1. cpXXX-cpXXX (version-specific, e.g., cp312-cp312)
+            #   2. cp3*-abi3   (stable ABI, e.g., cp38-abi3 — compatible with any Python >= 3.8)
             # If multiple manylinux versions exist, pick the highest (e.g., manylinux_2_28 > manylinux_2_17)
             WHEEL_URL=""
             MATCHING_WHEELS=""
@@ -245,6 +247,10 @@ try_install_vllm() {
                     ${PACKAGE_NAME_UNDERSCORE}-*-${PYTHON_TAG}-${PYTHON_TAG}-*${WHEEL_ARCH}*.whl)
                         MATCHING_WHEELS="${MATCHING_WHEELS}${asset_url} "
                         echo "Found matching wheel: ${asset_name}"
+                        ;;
+                    ${PACKAGE_NAME_UNDERSCORE}-*-cp3*-abi3-*${WHEEL_ARCH}*.whl)
+                        MATCHING_WHEELS="${MATCHING_WHEELS}${asset_url} "
+                        echo "Found matching ABI3 wheel: ${asset_name}"
                         ;;
                 esac
             done
