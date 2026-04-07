@@ -289,7 +289,9 @@ try_install_vllm() {
                 # Download wheel and rename to valid PEP 427 filename
                 if wget -q "${WHEEL_URL}" -O "/tmp/${INSTALL_WHEEL_NAME}" 2>/dev/null; then
                     echo "Downloaded: ${WHEEL_NAME} → ${INSTALL_WHEEL_NAME}"
-                    if uv pip install --no-progress "/tmp/${INSTALL_WHEEL_NAME}" ${_TRANSFORMERS_CAP} \
+                    # UV_SKIP_WHEEL_FILENAME_CHECK=1: the wheel's internal version may include
+                    # a local segment (e.g., 0.17.0+cpu) that doesn't match the filename (0.17.0)
+                    if UV_SKIP_WHEEL_FILENAME_CHECK=1 uv pip install --no-progress "/tmp/${INSTALL_WHEEL_NAME}" ${_TRANSFORMERS_CAP} \
                         --index-url "${PYTORCH_INDEX}" \
                         --extra-index-url "${PYPI_INDEX}" \
                         --index-strategy unsafe-best-match; then
