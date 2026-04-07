@@ -61,7 +61,7 @@ CPU-Optimized vLLM: Easy, Fast LLM Inference Without a GPU
 - ARM64 support for AWS Graviton 3+, Ampere Altra, and other aarch64 servers (NEON + BF16/DOTPROD)
 
 **Key Features:**
-- `pip install vllm-cpu` -- no manual URLs or GitHub Release downloads
+- `pip3 install vllm-cpu` -- no manual URLs or GitHub Release downloads
 - Built with `manylinux_2_28` for broad compatibility (Debian 10+, Ubuntu 18.04+)
 - Stable ABI (cp38-abi3) -- one wheel for Python 3.10+
 - Automatic ISA detection at runtime (AVX2/AVX-512/AMX on x86, NEON/BF16 on ARM)
@@ -90,7 +90,7 @@ CPU-Optimized vLLM: Easy, Fast LLM Inference Without a GPU
 **1. Install**
 
 ```bash
-pip install vllm-cpu
+pip3 install vllm-cpu
 ```
 
 **2. Run your first model**
@@ -131,21 +131,21 @@ curl http://localhost:8000/v1/completions \
 ### pip
 
 ```bash
-pip install vllm-cpu                # Latest
-pip install vllm-cpu==0.17.0        # Specific version
+pip3 install vllm-cpu                # Latest
+pip3 install vllm-cpu==0.17.0        # Specific version
 ```
 
 ### uv (faster)
 
 ```bash
-uv pip install vllm-cpu
+uv pip3 install vllm-cpu
 ```
 
 ### Virtual environment (recommended)
 
 ```bash
 python -m venv vllm-env && source vllm-env/bin/activate
-pip install vllm-cpu
+pip3 install vllm-cpu
 ```
 
 ---
@@ -450,8 +450,8 @@ export VLLM_CPU_KVCACHE_SPACE=2               # Reduce KV cache
 ### Multiple vLLM Packages Conflict
 
 ```bash
-pip uninstall vllm vllm-cpu vllm-cpu-avx512 vllm-cpu-avx512vnni vllm-cpu-avx512bf16 vllm-cpu-amxbf16 -y
-pip install vllm-cpu
+pip3 uninstall vllm vllm-cpu vllm-cpu-avx512 vllm-cpu-avx512vnni vllm-cpu-avx512bf16 vllm-cpu-amxbf16 -y
+pip3 install vllm-cpu
 ```
 
 ### RuntimeError: Failed to infer device type
@@ -459,7 +459,7 @@ pip install vllm-cpu
 For legacy versions (v0.8.5--v0.15.x), use `.post2` releases:
 
 ```bash
-pip install vllm-cpu==0.12.0.post2
+pip3 install vllm-cpu==0.12.0.post2
 ```
 
 ---
@@ -484,4 +484,10 @@ pip install vllm-cpu==0.12.0.post2
 
 <p align="center">
   <sub>Built from <a href="https://github.com/vllm-project/vllm">vLLM</a>, originally developed at <a href="https://sky.cs.berkeley.edu">Sky Computing Lab</a>, UC Berkeley</sub>
+</p>
+
+<p align="center">
+<a href="https://07mekayel07.gumroad.com/coffee" target="_blank">
+<img src="https://cdn.buymeacoffee.com/buttons/v2/default-yellow.png" alt="Buy Me A Coffee" width="217" height="60">
+</a>
 </p>

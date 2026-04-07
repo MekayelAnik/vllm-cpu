@@ -79,7 +79,7 @@ The upstream vLLM project publishes CPU wheels only on GitHub Releases with a `+
 
 | Feature | Upstream (`vllm`) | This package (`vllm-cpu`) |
 |---------|-------------------|---------------------------|
-| Install | Manual URL from GitHub Releases | `pip install vllm-cpu` |
+| Install | Manual URL from GitHub Releases | `pip3 install vllm-cpu` |
 | PyPI | Not available (PEP 440 blocks `+cpu`) | Available |
 | glibc | `manylinux_2_35` (Ubuntu 22.04+) | `manylinux_2_28` (Debian 10+, Ubuntu 18.04+) |
 | Docker images | CUDA-only (`vllm/vllm-openai`) | CPU-optimized, multi-arch |
@@ -90,7 +90,7 @@ The upstream vLLM project publishes CPU wheels only on GitHub Releases with a `+
 ### Install from PyPI
 
 ```bash
-pip install vllm-cpu
+pip3 install vllm-cpu
 ```
 
 ### Start an OpenAI-compatible API server
@@ -147,10 +147,10 @@ No configuration needed — the correct `.so` is loaded automatically at `import
 
 ```bash
 # Latest
-pip install vllm-cpu
+pip3 install vllm-cpu
 
 # Specific version
-pip install vllm-cpu==0.19.0
+pip3 install vllm-cpu==0.19.0
 ```
 
 ### Docker
@@ -261,10 +261,10 @@ The following variant packages have been **deprecated** as of v0.16.0 (last rele
 
 | Package | Status | Migration |
 |---------|--------|-----------|
-| [`vllm-cpu-avx512`](https://pypi.org/project/vllm-cpu-avx512/) | Deprecated (last: v0.16.0) | `pip install vllm-cpu` |
-| [`vllm-cpu-avx512vnni`](https://pypi.org/project/vllm-cpu-avx512vnni/) | Deprecated (last: v0.16.0) | `pip install vllm-cpu` |
-| [`vllm-cpu-avx512bf16`](https://pypi.org/project/vllm-cpu-avx512bf16/) | Deprecated (last: v0.16.0) | `pip install vllm-cpu` |
-| [`vllm-cpu-amxbf16`](https://pypi.org/project/vllm-cpu-amxbf16/) | Deprecated (last: v0.16.0) | `pip install vllm-cpu` |
+| [`vllm-cpu-avx512`](https://pypi.org/project/vllm-cpu-avx512/) | Deprecated (last: v0.16.0) | `pip3 install vllm-cpu` |
+| [`vllm-cpu-avx512vnni`](https://pypi.org/project/vllm-cpu-avx512vnni/) | Deprecated (last: v0.16.0) | `pip3 install vllm-cpu` |
+| [`vllm-cpu-avx512bf16`](https://pypi.org/project/vllm-cpu-avx512bf16/) | Deprecated (last: v0.16.0) | `pip3 install vllm-cpu` |
+| [`vllm-cpu-amxbf16`](https://pypi.org/project/vllm-cpu-amxbf16/) | Deprecated (last: v0.16.0) | `pip3 install vllm-cpu` |
 
 These packages remain available on PyPI for older vLLM versions but will not receive further updates.
 
