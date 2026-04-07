@@ -63,6 +63,11 @@ on:
         required: false
         type: string
         default: ''
+      force_build:
+        description: 'Force build even if wheels already exist on PyPI'
+        required: false
+        type: boolean
+        default: false
       skip_pypi:
         description: 'Whether PyPI publishing is skipped'
         required: false
@@ -320,10 +325,18 @@ jobs:
           }
 
           # Auto-detect: Find versions in GitHub but not in PyPI (base or postfix)
+          FORCE_BUILD="${{ inputs.force_build }}"
           NEW_VERSIONS=""
           while IFS= read -r version; do
             if [[ -n "$version" ]]; then
-              if ! version_exists_on_pypi "$version"; then
+              if [[ "$FORCE_BUILD" == "true" ]]; then
+                echo "Force build: $version (skipping PyPI check)"
+                if [[ -n "$NEW_VERSIONS" ]]; then
+                  NEW_VERSIONS="$NEW_VERSIONS,$version"
+                else
+                  NEW_VERSIONS="$version"
+                fi
+              elif ! version_exists_on_pypi "$version"; then
                 echo "New version found: $version (no base or .postN on PyPI)"
                 if [[ -n "$NEW_VERSIONS" ]]; then
                   NEW_VERSIONS="$NEW_VERSIONS,$version"
@@ -498,8 +511,10 @@ jobs:
 
           # Filter matrix: remove entries where platform-specific wheel already exists on PyPI
           # Now checks for BOTH base version AND any .postN versions
+          # Skipped entirely when force_build is true
           echo ""
           echo "=== Checking for existing platform-specific wheels on PyPI ==="
+          FORCE_BUILD="${{ inputs.force_build }}"
           FILTERED_MATRIX="[]"
 
           # Get version postfix (e.g., .post2) if manually specified
@@ -513,34 +528,39 @@ jobs:
             echo "No version postfix specified - will check base AND any .postN versions on PyPI"
           fi
 
-          for entry in $(echo "$MATRIX" | jq -c '.[]'); do
-            variant=$(echo "$entry" | jq -r '.variant')
-            platform=$(echo "$entry" | jq -r '.platform')
-            base_version=$(echo "$entry" | jq -r '.version')
+          if [[ "$FORCE_BUILD" == "true" ]]; then
+            echo "Force build enabled — skipping per-wheel PyPI check"
+            FILTERED_MATRIX="$MATRIX"
+          else
+            for entry in $(echo "$MATRIX" | jq -c '.[]'); do
+              variant=$(echo "$entry" | jq -r '.variant')
+              platform=$(echo "$entry" | jq -r '.platform')
+              base_version=$(echo "$entry" | jq -r '.version')
 
-            package=$(variant_to_package "$variant")
-            plat_tag=$(platform_to_tag "$platform")
+              package=$(variant_to_package "$variant")
+              plat_tag=$(platform_to_tag "$platform")
 
-            if [[ -n "$VERSION_POSTFIX" ]]; then
-              # Specific postfix requested - check only that exact version
-              pypi_version="${base_version}${VERSION_POSTFIX}"
-              if check_wheel_exists "$package" "$pypi_version" "$plat_tag"; then
-                echo "SKIP: $package v$pypi_version ($plat_tag) - wheel exists on PyPI"
+              if [[ -n "$VERSION_POSTFIX" ]]; then
+                # Specific postfix requested - check only that exact version
+                pypi_version="${base_version}${VERSION_POSTFIX}"
+                if check_wheel_exists "$package" "$pypi_version" "$plat_tag"; then
+                  echo "SKIP: $package v$pypi_version ($plat_tag) - wheel exists on PyPI"
+                else
+                  echo "BUILD: $package v$pypi_version ($plat_tag) - wheel not found on PyPI"
+                  FILTERED_MATRIX=$(echo "$FILTERED_MATRIX" | jq -c --argjson entry "$entry" '. + [$entry]')
+                fi
               else
-                echo "BUILD: $package v$pypi_version ($plat_tag) - wheel not found on PyPI"
-                FILTERED_MATRIX=$(echo "$FILTERED_MATRIX" | jq -c --argjson entry "$entry" '. + [$entry]')
+                # No postfix - check base version AND any .postN versions
+                # check_wheel_exists already handles this (checks base + all .postN)
+                if check_wheel_exists "$package" "$base_version" "$plat_tag"; then
+                  echo "SKIP: $package v$base_version ($plat_tag) - wheel exists on PyPI (base or .postN)"
+                else
+                  echo "BUILD: $package v$base_version ($plat_tag) - no wheel found on PyPI"
+                  FILTERED_MATRIX=$(echo "$FILTERED_MATRIX" | jq -c --argjson entry "$entry" '. + [$entry]')
+                fi
               fi
-            else
-              # No postfix - check base version AND any .postN versions
-              # check_wheel_exists already handles this (checks base + all .postN)
-              if check_wheel_exists "$package" "$base_version" "$plat_tag"; then
-                echo "SKIP: $package v$base_version ($plat_tag) - wheel exists on PyPI (base or .postN)"
-              else
-                echo "BUILD: $package v$base_version ($plat_tag) - no wheel found on PyPI"
-                FILTERED_MATRIX=$(echo "$FILTERED_MATRIX" | jq -c --argjson entry "$entry" '. + [$entry]')
-              fi
-            fi
-          done
+            done
+          fi
 
           echo ""
           echo "Filtered matrix (after platform wheel check):"

@@ -72,6 +72,11 @@ on:
           - 'linux/amd64'
           - 'linux/arm64'
         default: 'all'
+      force_build:
+        description: 'Force build even if wheels already exist on PyPI'
+        required: false
+        type: boolean
+        default: false
       skip_pypi:
         description: 'Skip PyPI publishing'
         required: false
@@ -124,6 +129,7 @@ jobs:
       build_amxbf16: ${{ github.event_name == 'schedule' || inputs.build_amxbf16 != false }}
       platforms: ${{ inputs.platforms || 'all' }}
       version_postfix: ${{ inputs.version_postfix || '' }}
+      force_build: ${{ inputs.force_build == true }}
       skip_pypi: ${{ inputs.skip_pypi == true }}
       skip_github_release: ${{ inputs.skip_github_release == true }}
     secrets: inherit
