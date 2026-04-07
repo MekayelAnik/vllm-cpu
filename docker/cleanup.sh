@@ -1,6 +1,6 @@
 #!/bin/sh
 # =============================================================================
-# cleanup.sh - Minimize Docker image size (v2 - preserves torch/include + Python.h)
+# cleanup.sh - Minimize Docker image size
 # =============================================================================
 # This script removes unnecessary files and packages to reduce the final
 # Docker image size. It's designed to be run after vLLM installation.

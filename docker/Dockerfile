@@ -15,8 +15,7 @@
 # Recommended run options:
 #   docker run --cap-add SYS_NICE --security-opt seccomp=unconfined --shm-size 4g ...
 
-ARG BASE_IMAGE=debian:trixie-slim
-ARG TARGETPLATFORM
+ARG BASE_IMAGE=debian:stable-slim
 
 # Stage 1: Detect Python version from available wheels
 FROM ${BASE_IMAGE} AS python-detector
@@ -30,7 +29,7 @@ ARG PYTHON_VERSION=auto
 ARG VARIANT=noavx512
 ARG USE_GITHUB_RELEASE=false
 
-COPY docker/detect_python_version.sh /detect_python_version.sh
+COPY detect_python_version.sh /detect_python_version.sh
 RUN --mount=type=secret,id=GITHUB_TOKEN,required=false \
     chmod +x /detect_python_version.sh && \
     export GITHUB_TOKEN=$(cat /run/secrets/GITHUB_TOKEN 2>/dev/null || echo "") && \
@@ -64,7 +63,7 @@ LABEL org.opencontainers.image.title="vLLM CPU (${VARIANT})" \
       org.opencontainers.image.source="https://github.com/MekayelAnik/vllm-cpu" \
       org.opencontainers.image.documentation="https://github.com/MekayelAnik/vllm-cpu#readme" \
       org.opencontainers.image.licenses="GPL-3.0-only" \
-      org.opencontainers.image.base.name="docker.io/library/debian:trixie-slim" \
+      org.opencontainers.image.base.name="docker.io/library/debian:stable-slim" \
       org.opencontainers.image.ref.name="${VARIANT}-${VLLM_VERSION}" \
       vllm.variant="${VARIANT}" \
       vllm.version="${VLLM_VERSION}" \
@@ -91,13 +90,6 @@ ENV VLLM_ASSETS_CACHE=/data/cache/vllm/assets
 
 # Memory optimization
 ENV MALLOC_TRIM_THRESHOLD_=100000
-
-# Disable OpenTelemetry propagator auto-discovery (broken on Python 3.13 entry_points)
-ENV OTEL_PROPAGATORS=none
-ENV OTEL_TRACES_EXPORTER=none
-
-# torch.compile headers are downloaded from CUDA wheel at build time by setup_vllm.sh
-# If headers are still missing at runtime, set TORCHDYNAMO_DISABLE=1 as fallback
 
 # Logging
 ENV VLLM_CONFIGURE_LOGGING=1
@@ -159,6 +151,10 @@ ENV VLLM_ENGINE_ITERATION_TIMEOUT_S=60
 ENV VLLM_RINGBUFFER_WARNING_INTERVAL=60
 ENV VLLM_SLEEP_WHEN_IDLE=0
 
+# OpenTelemetry (disable broken propagators on Python 3.13)
+ENV OTEL_PROPAGATORS=none
+ENV OTEL_TRACES_EXPORTER=none
+
 # Plugins
 ENV VLLM_PLUGINS=""
 
@@ -203,7 +199,7 @@ ENV VLLM_EXECUTE_MODEL_TIMEOUT_SECONDS=300
 ENV VLLM_MQ_MAX_CHUNK_BYTES_MB=16
 ENV VLLM_V1_OUTPUT_PROC_CHUNK_SIZE=128
 
-# Install runtime dependencies
+# Install runtime dependencies + create directories (single layer)
 # build-essential (g++) is required for PyTorch inductor (torch.compile) JIT kernel compilation
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt,sharing=locked \
@@ -219,13 +215,11 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     ca-certificates \
     binutils \
     gosu \
-    build-essential
+    build-essential && \
+    mkdir -p /vllm /data/models /data/cache/vllm /data/config/vllm
 
 # Install uv
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
-
-# Create directories
-RUN mkdir -p /vllm /data/models /data/cache/vllm /data/config/vllm
 
 WORKDIR /vllm
 
@@ -236,30 +230,21 @@ ENV UV_LINK_MODE=copy \
     UV_COMPILE_BYTECODE=1 \
     UV_PYTHON_DOWNLOADS=never
 
-# Install Python, vLLM, and cleanup in single layer to minimize image size
-# CACHEBUST forces rebuild when cleanup.sh changes (GHA cache may retain old layers)
-ARG CACHEBUST=1
-COPY docker/setup_vllm.sh docker/cleanup.sh /tmp/
+# Install Python, vLLM, cleanup, and restore headers in single layer
+# setup_vllm.sh handles: install, patches, torch header restoration
+COPY setup_vllm.sh cleanup.sh /tmp/
 RUN --mount=type=cache,id=uv-${VARIANT},target=/root/.cache/uv,sharing=locked \
     --mount=type=secret,id=GITHUB_TOKEN,required=false \
-    echo "Build: ${CACHEBUST}" && \
     chmod +x /tmp/setup_vllm.sh /tmp/cleanup.sh && \
     export GITHUB_TOKEN=$(cat /run/secrets/GITHUB_TOKEN 2>/dev/null || echo "") && \
     /tmp/setup_vllm.sh "${VARIANT}" "${VLLM_VERSION}" "${USE_GITHUB_RELEASE}" && \
     /tmp/cleanup.sh && \
     rm -f /tmp/setup_vllm.sh /tmp/cleanup.sh
 
-# Restore torch inductor headers if cleanup removed them
-# This runs in a SEPARATE layer to bypass any cached cleanup results
-COPY docker/restore_torch_headers.sh /tmp/restore_torch_headers.sh
-RUN chmod +x /tmp/restore_torch_headers.sh && /tmp/restore_torch_headers.sh && rm -f /tmp/restore_torch_headers.sh
-
-# Store Python version
-RUN echo "VLLM_PYTHON_VERSION=$(cat /vllm/python_version.txt)" >> /etc/environment
-
-# Copy entrypoint scripts
-COPY docker/entrypoint.sh docker/banner.sh /vllm/
-RUN chmod +x /vllm/entrypoint.sh /vllm/banner.sh
+# Copy entrypoint scripts + store Python version (single layer)
+COPY entrypoint.sh banner.sh /vllm/
+RUN chmod +x /vllm/entrypoint.sh /vllm/banner.sh && \
+    echo "VLLM_PYTHON_VERSION=$(cat /vllm/python_version.txt)" >> /etc/environment
 
 HEALTHCHECK --interval=30s --timeout=10s --start-period=120s --retries=3 \
     CMD curl -f http://localhost:${VLLM_SERVER_PORT:-8000}/health || exit 1

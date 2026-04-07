@@ -1,0 +1,675 @@
+# ==============================================================================
+# Auto-Build vLLM CPU Docker Images (Unified)
+# ==============================================================================
+# Builds Docker images for the unified vllm-cpu package.
+# - Multi-arch: AMD64 + ARM64 (native runners, no QEMU)
+# - Pushes to Docker Hub and GHCR
+# - Tags: version-specific and 'latest'
+#
+# Simplified from the multi-variant workflow: only one package (vllm-cpu),
+# mapped internally as the 'noavx512' variant.
+#
+# Security: Actions use major version tags for automatic security updates
+# Performance: GitHub Actions cache, concurrency control, parallel builds
+# ==============================================================================
+
+name: Auto-Build vLLM CPU Docker Images
+
+on:
+  # Run every hour to check for new vLLM releases
+  schedule:
+    - cron: '35 * * * *'
+
+  # Allow manual trigger
+  workflow_dispatch:
+    inputs:
+      vllm_versions:
+        description: 'vLLM versions (e.g., 0.12.0 or 0.11.2,0.12.0) - leave empty for auto-detect'
+        required: false
+        type: string
+        default: ''
+      force_rebuild:
+        description: 'Force rebuild even if image exists'
+        required: false
+        type: boolean
+        default: false
+      skip_dockerhub:
+        description: 'Skip Docker Hub push'
+        required: false
+        type: boolean
+        default: false
+      skip_ghcr:
+        description: 'Skip GHCR push'
+        required: false
+        type: boolean
+        default: false
+      no_cache:
+        description: 'Build without cache'
+        required: false
+        type: boolean
+        default: false
+      dry_run:
+        description: 'Dry run (check versions only)'
+        required: false
+        type: boolean
+        default: false
+
+# Concurrency control:
+# - Scheduled runs: Only one at a time, queue others (don't cancel running)
+# - Manual runs: No concurrency limits - multiple can run in parallel
+concurrency:
+  group: ${{ github.event_name == 'schedule' && 'docker-scheduled' || format('docker-manual-{0}', github.run_id) }}
+  cancel-in-progress: false
+
+# Minimal permissions by default
+permissions:
+  contents: read
+
+env:
+  DOCKERHUB_IMAGE: mekayelanik/vllm-cpu
+  GHCR_IMAGE: ghcr.io/mekayelanik/vllm-cpu
+  BASE_IMAGE: ${{ vars.BASE_IMAGE_DEFAULT || 'debian:stable-slim' }}
+  SMOKE_TEST_MODEL: ${{ vars.SMOKE_TEST_MODEL || 'HuggingFaceTB/SmolLM2-135M-Instruct' }}
+
+jobs:
+  # ==========================================================================
+  # Check for new vLLM versions that need Docker images
+  # ==========================================================================
+  check-versions:
+    name: Check Versions
+    runs-on: ${{ vars.ACTION_RUNNER_VERSION || 'ubuntu-24.04' }}
+    timeout-minutes: 10
+
+    outputs:
+      has_builds: ${{ steps.detect.outputs.has_builds }}
+      build_matrix: ${{ steps.detect.outputs.build_matrix }}
+      merge_matrix: ${{ steps.detect.outputs.merge_matrix }}
+      latest_version: ${{ steps.detect.outputs.latest_version }}
+      needs_latest_update: ${{ steps.detect.outputs.needs_latest_update }}
+
+    steps:
+      - name: Detect versions and generate matrix
+        id: detect
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          INPUT_VERSIONS="${{ inputs.vllm_versions }}"
+          FORCE_REBUILD="${{ inputs.force_rebuild }}"
+
+          # ================================================================
+          # Fetch all vllm-cpu versions from PyPI
+          # ================================================================
+          echo "Fetching vllm-cpu versions from PyPI..."
+          PYPI_JSON=$(curl -sS --retry 3 --max-time 30 \
+            "https://pypi.org/pypi/vllm-cpu/json" 2>/dev/null || echo "{}")
+
+          # All base versions (no postfix)
+          ALL_BASE_VERSIONS=$(echo "$PYPI_JSON" | jq -r '.releases | keys[]' | \
+            grep -E '^[0-9]+\.[0-9]+\.[0-9]+(\.[0-9]+)?$' | sort -V)
+
+          # All versions including postfix
+          ALL_VERSIONS=$(echo "$PYPI_JSON" | jq -r '.releases | keys[]' | \
+            grep -E '^[0-9]+\.[0-9]+\.[0-9]+' | sort -V)
+
+          if [[ -z "$ALL_BASE_VERSIONS" ]]; then
+            echo "::warning::Could not fetch versions from PyPI"
+            echo "has_builds=false" >> "$GITHUB_OUTPUT"
+            echo 'build_matrix={"include":[]}' >> "$GITHUB_OUTPUT"
+            echo 'merge_matrix={"include":[]}' >> "$GITHUB_OUTPUT"
+            echo "latest_version=" >> "$GITHUB_OUTPUT"
+            echo "needs_latest_update=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          LATEST_BASE=$(echo "$ALL_BASE_VERSIONS" | tail -1)
+          echo "Latest base version on PyPI: $LATEST_BASE"
+
+          # ================================================================
+          # Determine which versions to build
+          # ================================================================
+          if [[ -n "$INPUT_VERSIONS" ]]; then
+            # Manual mode: parse comma-separated input
+            VERSIONS_TO_BUILD=$(echo "$INPUT_VERSIONS" | tr ',' '\n' | sed 's/^ *//;s/ *$//' | grep -v '^$' | sort -V)
+            echo "Manual mode: building versions: $VERSIONS_TO_BUILD"
+          else
+            # Auto mode: find versions not yet on Docker Hub
+            echo "Auto mode: checking Docker Hub for existing tags..."
+            DOCKER_TAGS=$(curl -sS --max-time 15 \
+              "https://hub.docker.com/v2/repositories/mekayelanik/vllm-cpu/tags?page_size=100" 2>/dev/null | \
+              jq -r '.results[].name // empty' 2>/dev/null | sort -u || echo "")
+
+            VERSIONS_TO_BUILD=""
+            while IFS= read -r ver; do
+              [[ -z "$ver" ]] && continue
+              # Check if version tag exists (unified uses just VERSION as tag)
+              if [[ "$FORCE_REBUILD" == "true" ]] || ! echo "$DOCKER_TAGS" | grep -qx "$ver"; then
+                VERSIONS_TO_BUILD="$VERSIONS_TO_BUILD $ver"
+              fi
+            done <<< "$ALL_BASE_VERSIONS"
+            VERSIONS_TO_BUILD=$(echo "$VERSIONS_TO_BUILD" | xargs)
+
+            if [[ -z "$VERSIONS_TO_BUILD" ]]; then
+              echo "All versions already have Docker images"
+              echo "has_builds=false" >> "$GITHUB_OUTPUT"
+              echo 'build_matrix={"include":[]}' >> "$GITHUB_OUTPUT"
+              echo 'merge_matrix={"include":[]}' >> "$GITHUB_OUTPUT"
+              echo "latest_version=$LATEST_BASE" >> "$GITHUB_OUTPUT"
+              echo "needs_latest_update=false" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            echo "New versions to build: $VERSIONS_TO_BUILD"
+          fi
+
+          # ================================================================
+          # For each version, find the highest .postN wheel version
+          # ================================================================
+          declare -A WHEEL_VERSIONS
+          declare -A USE_GH_RELEASE
+          for BASE_VER in $VERSIONS_TO_BUILD; do
+            # Find highest version matching this base (including .postN)
+            HIGHEST=$(echo "$ALL_VERSIONS" | grep -E "^${BASE_VER}(\.post[0-9]+)?$" | sort -V | tail -1)
+            if [[ -n "$HIGHEST" ]]; then
+              WHEEL_VERSIONS["$BASE_VER"]="$HIGHEST"
+              USE_GH_RELEASE["$BASE_VER"]="false"
+              echo "Version $BASE_VER -> wheel $HIGHEST (PyPI)"
+            else
+              # Not on PyPI at all, try GitHub release
+              WHEEL_VERSIONS["$BASE_VER"]="$BASE_VER"
+              USE_GH_RELEASE["$BASE_VER"]="true"
+              echo "Version $BASE_VER -> wheel $BASE_VER (GitHub release)"
+            fi
+          done
+
+          # ================================================================
+          # Generate build matrix (per-platform)
+          # Platforms: amd64, arm64
+          # ================================================================
+          BUILD_INCLUDES=""
+          MERGE_INCLUDES=""
+
+          for BASE_VER in $VERSIONS_TO_BUILD; do
+            WHEEL_VER="${WHEEL_VERSIONS[$BASE_VER]}"
+            GH_RELEASE="${USE_GH_RELEASE[$BASE_VER]}"
+
+            for PLATFORM in amd64 arm64; do
+              BUILD_INCLUDES="$BUILD_INCLUDES{\"version\":\"$BASE_VER\",\"wheel_version\":\"$WHEEL_VER\",\"platform\":\"$PLATFORM\",\"variant\":\"noavx512\",\"use_github_release\":\"$GH_RELEASE\"},"
+            done
+
+            # Merge matrix entry (one per version, lists platforms)
+            MERGE_INCLUDES="$MERGE_INCLUDES{\"version\":\"$BASE_VER\",\"platforms\":[\"amd64\",\"arm64\"]},"
+          done
+
+          # Remove trailing commas
+          BUILD_INCLUDES="${BUILD_INCLUDES%,}"
+          MERGE_INCLUDES="${MERGE_INCLUDES%,}"
+
+          BUILD_MATRIX="{\"include\":[$BUILD_INCLUDES]}"
+          MERGE_MATRIX="{\"include\":[$MERGE_INCLUDES]}"
+
+          echo "Build matrix: $BUILD_MATRIX"
+          echo "Merge matrix: $MERGE_MATRIX"
+
+          # Check if latest version is being built (needs latest tag update)
+          NEEDS_LATEST="false"
+          if echo "$VERSIONS_TO_BUILD" | grep -qw "$LATEST_BASE"; then
+            NEEDS_LATEST="true"
+          fi
+
+          echo "has_builds=true" >> "$GITHUB_OUTPUT"
+          echo "build_matrix=$BUILD_MATRIX" >> "$GITHUB_OUTPUT"
+          echo "merge_matrix=$MERGE_MATRIX" >> "$GITHUB_OUTPUT"
+          echo "latest_version=$LATEST_BASE" >> "$GITHUB_OUTPUT"
+          echo "needs_latest_update=$NEEDS_LATEST" >> "$GITHUB_OUTPUT"
+
+  # ==========================================================================
+  # Build Docker images per platform (native runners)
+  # ==========================================================================
+  build-images:
+    name: Build ${{ matrix.platform }} (${{ matrix.version }})
+    needs: check-versions
+    if: |
+      needs.check-versions.outputs.has_builds == 'true' &&
+      inputs.dry_run != true
+    runs-on: ${{ matrix.platform == 'arm64' && format('{0}-arm', vars.ACTION_RUNNER_VERSION || 'ubuntu-24.04') || (vars.ACTION_RUNNER_VERSION || 'ubuntu-24.04') }}
+    timeout-minutes: 90
+
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJson(needs.check-versions.outputs.build_matrix) }}
+
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Free disk space
+        run: |
+          echo "Disk space before cleanup:"
+          df -h /
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL 2>/dev/null || true
+          sudo docker image prune -af 2>/dev/null || true
+          echo "Disk space after cleanup:"
+          df -h /
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Docker Hub
+        if: inputs.skip_dockerhub != true
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Log in to GHCR
+        if: inputs.skip_ghcr != true
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Prepare build variables
+        id: build-vars
+        shell: bash
+        run: |
+          BASE_VERSION="${{ matrix.version }}"
+          WHEEL_VERSION="${{ matrix.wheel_version }}"
+          USE_GH_RELEASE="${{ matrix.use_github_release }}"
+
+          # Use wheel_version from matrix (includes highest .postN if available)
+          FULL_VERSION="${WHEEL_VERSION:-$BASE_VERSION}"
+
+          echo "base_version=$BASE_VERSION" >> "$GITHUB_OUTPUT"
+          echo "full_version=$FULL_VERSION" >> "$GITHUB_OUTPUT"
+          echo "use_github_release=$USE_GH_RELEASE" >> "$GITHUB_OUTPUT"
+
+          echo "Docker tag: $BASE_VERSION"
+          echo "Wheel version to install: $FULL_VERSION"
+          echo "Use GitHub release: $USE_GH_RELEASE"
+
+      - name: Build platform tags
+        id: tags
+        shell: bash
+        run: |
+          BASE_VERSION="${{ steps.build-vars.outputs.base_version }}"
+          PLATFORM="${{ matrix.platform }}"
+          TAGS=""
+
+          # Platform-specific intermediate tag: VERSION-PLATFORM
+          if [[ "${{ inputs.skip_dockerhub }}" != "true" ]]; then
+            TAGS="$TAGS${{ env.DOCKERHUB_IMAGE }}:${BASE_VERSION}-${PLATFORM},"
+          fi
+          if [[ "${{ inputs.skip_ghcr }}" != "true" ]]; then
+            TAGS="$TAGS${{ env.GHCR_IMAGE }}:${BASE_VERSION}-${PLATFORM},"
+          fi
+
+          # Remove trailing comma
+          TAGS="${TAGS%,}"
+          echo "tags=$TAGS" >> "$GITHUB_OUTPUT"
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: ./docker
+          file: ./docker/Dockerfile
+          platforms: linux/${{ matrix.platform }}
+          push: true
+          tags: ${{ steps.tags.outputs.tags }}
+          labels: |
+            org.opencontainers.image.version=${{ steps.build-vars.outputs.full_version }}
+            org.opencontainers.image.base-version=${{ steps.build-vars.outputs.base_version }}
+            com.vllm-cpu.wheel-version=${{ steps.build-vars.outputs.full_version }}
+          build-args: |
+            BASE_IMAGE=${{ env.BASE_IMAGE }}
+            VLLM_VERSION=${{ steps.build-vars.outputs.full_version }}
+            VARIANT=noavx512
+            USE_GITHUB_RELEASE=${{ steps.build-vars.outputs.use_github_release }}
+          secrets: |
+            GITHUB_TOKEN=${{ secrets.GITHUB_TOKEN }}
+          no-cache: ${{ inputs.no_cache == true }}
+          cache-from: ${{ inputs.no_cache != true && format('type=gha,scope=noavx512-{0}', matrix.platform) || '' }}
+          cache-to: ${{ inputs.no_cache != true && format('type=gha,mode=max,scope=noavx512-{0}', matrix.platform) || '' }}
+          provenance: false
+
+      - name: Generate build summary
+        if: always()
+        shell: bash
+        run: |
+          {
+            BASE_VERSION="${{ steps.build-vars.outputs.base_version }}"
+            WHEEL_VERSION="${{ steps.build-vars.outputs.full_version }}"
+            echo "### Build @ ${BASE_VERSION} (${{ matrix.platform }})"
+            echo ""
+            echo "| Property | Value |"
+            echo "|----------|-------|"
+            echo "| Docker Tag | ${BASE_VERSION}-${{ matrix.platform }} |"
+            echo "| Wheel Version | ${WHEEL_VERSION} |"
+            if [[ "$WHEEL_VERSION" != "$BASE_VERSION" ]]; then
+              echo "| Wheel Postfix | .post$(echo "$WHEEL_VERSION" | grep -oE 'post[0-9]+' | sed 's/post//') |"
+            fi
+            echo "| Platform | ${{ matrix.platform }} |"
+            echo "| GitHub Release | ${{ steps.build-vars.outputs.use_github_release }} |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # ==========================================================================
+  # Merge per-platform images into multi-arch manifests
+  # ==========================================================================
+  merge-manifests:
+    name: Merge manifests (${{ matrix.version }})
+    needs: [check-versions, build-images]
+    if: |
+      always() &&
+      needs.build-images.result == 'success' &&
+      inputs.dry_run != true
+    runs-on: ${{ vars.ACTION_RUNNER_VERSION || 'ubuntu-24.04' }}
+    timeout-minutes: 15
+
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJson(needs.check-versions.outputs.merge_matrix) }}
+
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Docker Hub
+        if: inputs.skip_dockerhub != true
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Log in to GHCR
+        if: inputs.skip_ghcr != true
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create multi-arch manifest
+        shell: bash
+        run: |
+          VERSION="${{ matrix.version }}"
+          PLATFORMS='${{ toJson(matrix.platforms) }}'
+
+          # Build source tags list from per-platform images
+          DH_SOURCES=""
+          GHCR_SOURCES=""
+          for PLAT in $(echo "$PLATFORMS" | jq -r '.[]'); do
+            DH_SOURCES="$DH_SOURCES ${{ env.DOCKERHUB_IMAGE }}:${VERSION}-${PLAT}"
+            GHCR_SOURCES="$GHCR_SOURCES ${{ env.GHCR_IMAGE }}:${VERSION}-${PLAT}"
+          done
+
+          echo "Merging platforms: $(echo "$PLATFORMS" | jq -r 'join(", ")')"
+          echo "Source tags:$DH_SOURCES"
+
+          # Docker Hub: create VERSION tag (e.g., 0.12.0)
+          if [[ "${{ inputs.skip_dockerhub }}" != "true" ]]; then
+            echo "Creating Docker Hub manifest: ${VERSION}"
+            docker buildx imagetools create \
+              --tag ${{ env.DOCKERHUB_IMAGE }}:${VERSION} \
+              $DH_SOURCES || echo "::warning::Docker Hub manifest merge failed"
+          fi
+
+          # GHCR: create VERSION tag
+          if [[ "${{ inputs.skip_ghcr }}" != "true" ]]; then
+            echo "Creating GHCR manifest: ${VERSION}"
+            docker buildx imagetools create \
+              --tag ${{ env.GHCR_IMAGE }}:${VERSION} \
+              $GHCR_SOURCES || echo "::warning::GHCR manifest merge failed"
+          fi
+
+          echo "Manifest merge complete for ${VERSION}"
+
+  # ==========================================================================
+  # Verify and smoke test images on native runners
+  # ==========================================================================
+  verify-images:
+    name: Verify ${{ matrix.platform }} (${{ matrix.version }})
+    needs: [check-versions, build-images, merge-manifests]
+    if: |
+      always() &&
+      needs.merge-manifests.result == 'success' &&
+      inputs.dry_run != true
+    runs-on: ${{ matrix.platform == 'arm64' && format('{0}-arm', vars.ACTION_RUNNER_VERSION || 'ubuntu-24.04') || (vars.ACTION_RUNNER_VERSION || 'ubuntu-24.04') }}
+    timeout-minutes: 30
+
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJson(needs.check-versions.outputs.build_matrix) }}
+
+    permissions:
+      contents: read
+      packages: read
+
+    steps:
+      - name: Log in to GHCR
+        if: inputs.skip_ghcr != true
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Verify image
+        shell: bash
+        run: |
+          echo "Verifying ${{ matrix.platform }} @ ${{ matrix.version }}..."
+          IMAGE="${{ env.GHCR_IMAGE }}:${{ matrix.version }}"
+          docker pull "$IMAGE"
+          docker run --rm "$IMAGE" \
+            python -c "import vllm; print(f'vLLM version: {vllm.__version__}')"
+
+      - name: Docker smoke test (inference)
+        shell: bash
+        run: |
+          echo "=== Docker Inference Smoke Test (${{ matrix.platform }}) ==="
+          IMAGE="${{ env.GHCR_IMAGE }}:${{ matrix.version }}"
+
+          docker run --rm \
+            --shm-size 4g \
+            -e VLLM_TARGET_DEVICE=cpu \
+            -e OTEL_PROPAGATORS=none \
+            -e OTEL_TRACES_EXPORTER=none \
+            -e TORCHDYNAMO_DISABLE=1 \
+            -e VLLM_CPU_KVCACHE_SPACE=1 \
+            -e OMP_NUM_THREADS=2 \
+            -e KMP_INIT_AT_FORK=FALSE \
+            -e VLLM_WORKER_MULTIPROC_METHOD=spawn \
+            -e VLLM_CPU_OMP_THREADS_BIND=0-1 \
+            -e SMOKE_TEST_MODEL="${{ env.SMOKE_TEST_MODEL }}" \
+            "$IMAGE" \
+            python3 -c "
+          import os
+          os.environ['VLLM_TARGET_DEVICE'] = 'cpu'
+          os.environ['OTEL_PROPAGATORS'] = 'none'
+          os.environ['OTEL_TRACES_EXPORTER'] = 'none'
+          os.environ['TORCHDYNAMO_DISABLE'] = '1'
+          from vllm import LLM, SamplingParams
+          model = os.environ.get('SMOKE_TEST_MODEL', 'HuggingFaceTB/SmolLM2-135M-Instruct')
+          print(f'Loading model: {model}')
+          try:
+              llm = LLM(model=model, device='cpu', dtype='float32', max_model_len=512, enforce_eager=True)
+          except TypeError:
+              try:
+                  llm = LLM(model=model, dtype='float32', max_model_len=512, enforce_eager=True)
+              except TypeError:
+                  llm = LLM(model=model, dtype='float32', max_model_len=512)
+          params = SamplingParams(temperature=0.8, max_tokens=256)
+          outputs = llm.generate(['Hello, world!'], params)
+          text = outputs[0].outputs[0].text
+          n_tokens = len(outputs[0].outputs[0].token_ids)
+          print(f'Generated ({n_tokens} tokens): {text}')
+          assert n_tokens > 0, 'No output tokens generated'
+          print('Docker inference smoke test: PASS')
+          # Clean shutdown to suppress 'EngineCore died unexpectedly' message
+          del llm
+          import gc
+          gc.collect()
+          import time
+          time.sleep(1)
+          "
+          echo "=== Docker smoke test passed ==="
+
+  # ==========================================================================
+  # Update 'latest' tag (multi-arch aware)
+  # ==========================================================================
+  update-latest-tags:
+    name: Update latest tag
+    needs: [check-versions, build-images, merge-manifests, verify-images]
+    if: |
+      always() &&
+      inputs.dry_run != true &&
+      needs.check-versions.outputs.needs_latest_update == 'true' &&
+      (needs.verify-images.result == 'success' || needs.verify-images.result == 'skipped')
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Docker Hub
+        if: inputs.skip_dockerhub != true
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Log in to GHCR
+        if: inputs.skip_ghcr != true
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Re-tag image as latest (multi-arch)
+        shell: bash
+        run: |
+          LATEST_VERSION="${{ needs.check-versions.outputs.latest_version }}"
+          SOURCE_TAG="${LATEST_VERSION}"
+          LATEST_TAG="latest"
+
+          echo "Re-tagging ${SOURCE_TAG} as ${LATEST_TAG} (preserving multi-arch manifest)..."
+          SUCCESS=false
+
+          # Docker Hub
+          if [[ "${{ inputs.skip_dockerhub }}" != "true" ]]; then
+            if docker buildx imagetools inspect ${{ env.DOCKERHUB_IMAGE }}:${SOURCE_TAG} > /dev/null 2>&1; then
+              docker buildx imagetools create \
+                --tag ${{ env.DOCKERHUB_IMAGE }}:${LATEST_TAG} \
+                ${{ env.DOCKERHUB_IMAGE }}:${SOURCE_TAG}
+              echo "Updated Docker Hub ${LATEST_TAG}"
+              SUCCESS=true
+            else
+              echo "::warning::Image ${SOURCE_TAG} not found on Docker Hub"
+            fi
+          fi
+
+          # GHCR
+          if [[ "${{ inputs.skip_ghcr }}" != "true" ]]; then
+            if docker buildx imagetools inspect ${{ env.GHCR_IMAGE }}:${SOURCE_TAG} > /dev/null 2>&1; then
+              docker buildx imagetools create \
+                --tag ${{ env.GHCR_IMAGE }}:${LATEST_TAG} \
+                ${{ env.GHCR_IMAGE }}:${SOURCE_TAG}
+              echo "Updated GHCR ${LATEST_TAG}"
+              SUCCESS=true
+            elif [[ "$SUCCESS" == "true" ]]; then
+              # Copy from Docker Hub to GHCR
+              docker buildx imagetools create \
+                --tag ${{ env.GHCR_IMAGE }}:${LATEST_TAG} \
+                ${{ env.DOCKERHUB_IMAGE }}:${SOURCE_TAG}
+              echo "Copied from Docker Hub to GHCR"
+            fi
+          fi
+
+          if [[ "$SUCCESS" != "true" ]]; then
+            echo "::warning::Could not update latest tag"
+          fi
+
+      - name: Verify latest image
+        continue-on-error: true
+        shell: bash
+        run: |
+          # Show manifest info (all platforms)
+          echo "=== Manifest for latest ==="
+          if [[ "${{ inputs.skip_dockerhub }}" != "true" ]]; then
+            docker buildx imagetools inspect ${{ env.DOCKERHUB_IMAGE }}:latest 2>/dev/null || true
+          fi
+
+          # Quick smoke test on amd64
+          echo ""
+          echo "=== Smoke test (amd64) ==="
+          if [[ "${{ inputs.skip_dockerhub }}" != "true" ]]; then
+            if docker pull --platform linux/amd64 ${{ env.DOCKERHUB_IMAGE }}:latest 2>/dev/null; then
+              docker run --rm --platform linux/amd64 ${{ env.DOCKERHUB_IMAGE }}:latest \
+                python -c "import vllm; print(f'vLLM version: {vllm.__version__}')" || echo "::warning::vLLM import test failed"
+            fi
+          fi
+
+  # ==========================================================================
+  # Summary
+  # ==========================================================================
+  summary:
+    name: Build Summary
+    needs: [check-versions, build-images, merge-manifests, verify-images, update-latest-tags]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Generate final summary
+        shell: bash
+        run: |
+          {
+            echo "# Docker Build Summary"
+            echo ""
+            echo "## Version Information"
+            echo "| Property | Value |"
+            echo "|----------|-------|"
+            echo "| Has Builds | ${{ needs.check-versions.outputs.has_builds }} |"
+            echo "| Latest Version | ${{ needs.check-versions.outputs.latest_version }} |"
+            echo "| Needs Latest Update | ${{ needs.check-versions.outputs.needs_latest_update }} |"
+            echo "| Skip Docker Hub | ${{ inputs.skip_dockerhub == true }} |"
+            echo "| Skip GHCR | ${{ inputs.skip_ghcr == true }} |"
+            echo ""
+            echo "## Build Results"
+            echo "| Job | Status |"
+            echo "|-----|--------|"
+            echo "| Build Images | ${{ needs.build-images.result }} |"
+            echo "| Merge Manifests | ${{ needs.merge-manifests.result }} |"
+            echo "| Verify Images | ${{ needs.verify-images.result }} |"
+            echo "| Update Latest Tags | ${{ needs.update-latest-tags.result }} |"
+            echo ""
+
+            if [[ "${{ needs.check-versions.outputs.has_builds }}" != "true" ]]; then
+              echo "No updates needed - all Docker images are up to date!"
+            elif [[ "${{ needs.build-images.result }}" == "success" ]]; then
+              echo "Successfully built Docker images!"
+              echo ""
+              echo "## Pull Commands"
+              echo ""
+              echo "\`\`\`bash"
+              echo "# Docker Hub"
+              echo "docker pull ${{ env.DOCKERHUB_IMAGE }}:latest"
+              echo ""
+              echo "# GHCR"
+              echo "docker pull ${{ env.GHCR_IMAGE }}:latest"
+              echo "\`\`\`"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"

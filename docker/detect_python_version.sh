@@ -122,7 +122,23 @@ fi
 # Method 2: Check PyPI for available wheels (filtered by architecture)
 if [ -z "${PYTHON_VER}" ] && [ "${USE_GITHUB_RELEASE}" != "true" ]; then
     echo "Checking PyPI for available ${WHEEL_ARCH} wheels..." >&2
-    PYPI_JSON=$(curl -sfL --max-time 15 "https://pypi.org/pypi/${PACKAGE_NAME}/${VLLM_VERSION}/json" 2>/dev/null || echo "")
+    # Try exact version first, then base version (without postfix like .post2)
+    BASE_VER=$(echo "${VLLM_VERSION}" | sed 's/\.\(post\|dev\|rc\|a\|b\)[0-9]*$//')
+    PYPI_VERSIONS="${VLLM_VERSION}"
+    if [ "${BASE_VER}" != "${VLLM_VERSION}" ]; then
+        PYPI_VERSIONS="${VLLM_VERSION} ${BASE_VER}"
+    fi
+    PYPI_JSON=""
+    for _pypi_ver in ${PYPI_VERSIONS}; do
+        # Retry with curl --retry for transient failures (DNS cold start in Docker buildx)
+        PYPI_JSON=$(curl -sfL --retry 2 --retry-delay 1 --max-time 15 \
+            "https://pypi.org/pypi/${PACKAGE_NAME}/${_pypi_ver}/json" 2>/dev/null || echo "")
+        if [ -n "${PYPI_JSON}" ]; then
+            echo "Got PyPI metadata from ${PACKAGE_NAME}==${_pypi_ver}" >&2
+            break
+        fi
+        echo "PyPI fetch failed for ${_pypi_ver}" >&2
+    done
     if [ -n "${PYPI_JSON}" ]; then
         # Extract CPython versions from wheel filenames, filtering by architecture
         PYTHON_VER=$(echo "${PYPI_JSON}" | jq -r '.urls[].filename' 2>/dev/null | \
@@ -133,6 +149,26 @@ if [ -z "${PYTHON_VER}" ] && [ "${USE_GITHUB_RELEASE}" != "true" ]; then
             head -1 || echo "")
         if [ -n "${PYTHON_VER}" ]; then
             echo "Found highest CPython on PyPI for ${WHEEL_ARCH}: ${PYTHON_VER}" >&2
+        fi
+
+        # Cap Python version using requires-python upper bound from PyPI metadata
+        # e.g., requires-python "<3.13,>=3.9" means max safe version is 3.12
+        # This prevents picking 3.12 for packages that break on 3.12 (dataclass changes)
+        REQUIRES_PYTHON=$(echo "${PYPI_JSON}" | jq -r '.info.requires_python // empty' 2>/dev/null || echo "")
+        if [ -n "${REQUIRES_PYTHON}" ] && [ -n "${PYTHON_VER}" ]; then
+            if echo "${REQUIRES_PYTHON}" | grep -qE '<3\.[0-9]+'; then
+                MAX_PY=$(echo "${REQUIRES_PYTHON}" | grep -oE '<3\.[0-9]+' | head -1 | tr -d '<')
+                MAX_MINOR=$(echo "${MAX_PY}" | cut -d. -f2)
+                # Use upper_bound - 2 as safe cap (accounts for upstream bugs
+                # where requires-python allows versions with runtime issues,
+                # e.g., <3.13 allows 3.12 but 3.12 has dataclass breaking changes)
+                CAPPED="3.$((MAX_MINOR - 2))"
+                DETECTED_MINOR=$(echo "${PYTHON_VER}" | cut -d. -f2)
+                if [ "${DETECTED_MINOR}" -ge "$((MAX_MINOR - 1))" ]; then
+                    echo "Capping Python ${PYTHON_VER} to ${CAPPED} (requires-python: ${REQUIRES_PYTHON})" >&2
+                    PYTHON_VER="${CAPPED}"
+                fi
+            fi
         fi
     fi
 fi
@@ -192,9 +228,18 @@ fi
 # Method 4: Fallback to pyproject.toml requires-python
 if [ -z "${PYTHON_VER}" ]; then
     echo "No wheels found, checking vLLM pyproject.toml..." >&2
-    PYPROJECT_URL="https://raw.githubusercontent.com/vllm-project/vllm/v${VLLM_VERSION}/pyproject.toml"
-    REQUIRES_PYTHON=$(curl -sfL --max-time 15 "${PYPROJECT_URL}" 2>/dev/null | \
-        grep -E '^requires-python' | head -1 | sed 's/.*"\(.*\)".*/\1/' || echo "")
+    # Try exact version tag first, then base version (upstream vllm won't have .postN tags)
+    _BASE_VER=$(echo "${VLLM_VERSION}" | sed 's/\.\(post\|dev\|rc\|a\|b\)[0-9]*$//')
+    REQUIRES_PYTHON=""
+    for _tag_ver in "${VLLM_VERSION}" "${_BASE_VER}"; do
+        PYPROJECT_URL="https://raw.githubusercontent.com/vllm-project/vllm/v${_tag_ver}/pyproject.toml"
+        REQUIRES_PYTHON=$(curl -sfL --max-time 15 "${PYPROJECT_URL}" 2>/dev/null | \
+            grep -E '^requires-python' | head -1 | sed 's/.*"\(.*\)".*/\1/' || echo "")
+        if [ -n "${REQUIRES_PYTHON}" ]; then
+            echo "Found requires-python from v${_tag_ver}: ${REQUIRES_PYTHON}" >&2
+            break
+        fi
+    done
     if echo "${REQUIRES_PYTHON}" | grep -qE '<[0-9]+\.[0-9]+'; then
         MAX_PY=$(echo "${REQUIRES_PYTHON}" | grep -oE '<[0-9]+\.[0-9]+' | head -1 | tr -d '<')
         MAX_MINOR=$(echo "${MAX_PY}" | cut -d. -f2)
@@ -203,10 +248,29 @@ if [ -z "${PYTHON_VER}" ]; then
     fi
 fi
 
-# Method 5: Ultimate fallback
+# Method 5: Ultimate fallback - start from the ceiling so setup_vllm.sh
+# tries every version (3.13 → 3.12 → 3.11 → 3.10 → 3.9)
 if [ -z "${PYTHON_VER}" ]; then
-    PYTHON_VER="3.12"
+    PYTHON_VER="3.13"
     echo "All detection methods failed, using fallback: ${PYTHON_VER}" >&2
+fi
+
+# =============================================================================
+# Global Python version cap from requires-python
+# =============================================================================
+# Fetch requires-python from PyPI to cap the detected version
+# e.g., <3.13 with upper_bound-2 → max 3.11 (3.12 has dataclass breaking changes)
+GLOBAL_REQUIRES=$(curl -sfL --max-time 10 "https://pypi.org/pypi/${PACKAGE_NAME}/${VLLM_VERSION}/json" 2>/dev/null | \
+    jq -r '.info.requires_python // empty' 2>/dev/null || echo "")
+if [ -n "${GLOBAL_REQUIRES}" ] && echo "${GLOBAL_REQUIRES}" | grep -qE '<3\.[0-9]+'; then
+    GLOBAL_MAX=$(echo "${GLOBAL_REQUIRES}" | grep -oE '<3\.[0-9]+' | head -1 | tr -d '<')
+    GLOBAL_MAX_MINOR=$(echo "${GLOBAL_MAX}" | cut -d. -f2)
+    SAFE_MAX="3.$((GLOBAL_MAX_MINOR - 2))"
+    DETECTED_MINOR=$(echo "${PYTHON_VER}" | cut -d. -f2)
+    if [ "${DETECTED_MINOR}" -gt "$((GLOBAL_MAX_MINOR - 2))" ]; then
+        echo "Global cap: Python ${PYTHON_VER} → ${SAFE_MAX} (requires-python: ${GLOBAL_REQUIRES})" >&2
+        PYTHON_VER="${SAFE_MAX}"
+    fi
 fi
 
 # =============================================================================
@@ -307,77 +371,44 @@ for DEP_SPEC in ${CRITICAL_DEPS}; do
     fi
 done
 
-# Check if main package uses stable ABI (abi3)
-MAIN_WHEEL_LIST=$(echo "${DEP_WHEELS}" | tr '|' '\n' | grep "^${PACKAGE_NAME}:" | cut -d: -f2-)
-IS_ABI3=false
-if echo "${MAIN_WHEEL_LIST}" | tr ' ' '\n' | grep -q "abi3"; then
-    IS_ABI3=true
-fi
-
+# Try current version, then fall back: 3.13 -> 3.12 -> 3.11 -> 3.10 -> 3.9
 echo "" >&2
 echo "Checking Python version compatibility..." >&2
-
-if [ "${IS_ABI3}" = "true" ]; then
-    # ABI3 wheel: works on any Python >= min ABI version
-    # Use the highest detected Python — deps without wheels will be built from source
-    echo "Main package uses stable ABI (abi3) — Python version is flexible" >&2
-    PYTHON_VER="${ORIGINAL_PY}"
-
-    # Advisory check: warn about deps that may need source compilation
+while [ "${PYTHON_MINOR}" -ge 9 ]; do
+    ALL_DEPS_OK=true
     MISSING_DEPS=""
+
     for DEP_SPEC in ${CRITICAL_DEPS}; do
         DEP_NAME=$(echo "${DEP_SPEC}" | cut -d: -f1)
         DEP_WHEEL_LIST=$(echo "${DEP_WHEELS}" | tr '|' '\n' | grep "^${DEP_NAME}:" | cut -d: -f2-)
+
         if [ -n "${DEP_WHEEL_LIST}" ]; then
             if ! check_wheel_available "${DEP_WHEEL_LIST}" "${PYTHON_MINOR}" "${WHEEL_ARCH}"; then
+                ALL_DEPS_OK=false
                 MISSING_DEPS="${MISSING_DEPS} ${DEP_NAME}"
             fi
         fi
     done
 
-    if [ -n "${MISSING_DEPS}" ]; then
-        echo "NOTE: These deps may build from source on ${WHEEL_ARCH}/Python ${PYTHON_VER}:${MISSING_DEPS}" >&2
-    else
-        echo "All critical dependencies have ${WHEEL_ARCH} wheels for Python ${PYTHON_VER}" >&2
-    fi
-else
-    # Non-ABI3: must find a Python version where all deps have pre-built wheels
-    while [ "${PYTHON_MINOR}" -ge 10 ]; do
-        ALL_DEPS_OK=true
-        MISSING_DEPS=""
-
-        for DEP_SPEC in ${CRITICAL_DEPS}; do
-            DEP_NAME=$(echo "${DEP_SPEC}" | cut -d: -f1)
-            DEP_WHEEL_LIST=$(echo "${DEP_WHEELS}" | tr '|' '\n' | grep "^${DEP_NAME}:" | cut -d: -f2-)
-
-            if [ -n "${DEP_WHEEL_LIST}" ]; then
-                if ! check_wheel_available "${DEP_WHEEL_LIST}" "${PYTHON_MINOR}" "${WHEEL_ARCH}"; then
-                    ALL_DEPS_OK=false
-                    MISSING_DEPS="${MISSING_DEPS} ${DEP_NAME}"
-                fi
-            fi
-        done
-
-        if [ "${ALL_DEPS_OK}" = "true" ]; then
-            if [ "3.${PYTHON_MINOR}" != "${ORIGINAL_PY}" ]; then
-                echo "WARNING: Some dependencies lack wheels for Python ${ORIGINAL_PY} on ${WHEEL_ARCH}" >&2
-                echo "Falling back to Python 3.${PYTHON_MINOR} for dependency compatibility" >&2
-            else
-                echo "All critical dependencies have ${WHEEL_ARCH} wheels for Python ${PYTHON_VER}" >&2
-            fi
-            PYTHON_VER="3.${PYTHON_MINOR}"
-            break
+    if [ "${ALL_DEPS_OK}" = "true" ]; then
+        if [ "3.${PYTHON_MINOR}" != "${ORIGINAL_PY}" ]; then
+            echo "WARNING: Some dependencies lack wheels for Python ${ORIGINAL_PY} on ${WHEEL_ARCH}" >&2
+            echo "Falling back to Python 3.${PYTHON_MINOR} for dependency compatibility" >&2
         else
-            echo "Python 3.${PYTHON_MINOR}: Missing ${WHEEL_ARCH} wheels for:${MISSING_DEPS}" >&2
+            echo "All critical dependencies have ${WHEEL_ARCH} wheels for Python ${PYTHON_VER}" >&2
         fi
-
-        PYTHON_MINOR=$((PYTHON_MINOR - 1))
-    done
-
-    if [ "${PYTHON_MINOR}" -lt 10 ]; then
-        echo "WARNING: No Python version found with all dependency wheels, using 3.10 as fallback" >&2
-        PYTHON_VER="3.10"
+        PYTHON_VER="3.${PYTHON_MINOR}"
+        break
+    else
+        echo "Python 3.${PYTHON_MINOR}: Missing ${WHEEL_ARCH} wheels for:${MISSING_DEPS}" >&2
     fi
+
+    PYTHON_MINOR=$((PYTHON_MINOR - 1))
+done
+
+if [ "${PYTHON_MINOR}" -lt 9 ]; then
+    echo "WARNING: No Python version found with all dependency wheels, using 3.9 as fallback" >&2
+    PYTHON_VER="3.9"
 fi
 
 # =============================================================================

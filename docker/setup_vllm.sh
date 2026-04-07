@@ -4,7 +4,7 @@
 # =============================================================================
 # This script handles Python installation via uv and vLLM package installation
 # from PyPI with fallback to GitHub releases. If installation fails, it falls
-# back to lower Python versions (3.13 → 3.12 → 3.11 → 3.10, minimum).
+# back to lower Python versions (3.13 → 3.12 → 3.11 → 3.10 → 3.9).
 #
 # Usage:
 #   ./setup_vllm.sh <variant> <vllm_version> <use_github_release>
@@ -116,6 +116,17 @@ try_install_vllm() {
     echo ""
     echo "=== Attempting vLLM installation for Python ${_try_py_version} ==="
 
+    # Determine if we need to cap transformers version
+    # transformers 5.0+ (released 2026-01-26) has breaking API changes that
+    # affect all vLLM versions < 0.11.0 (removed attributes, dataclass changes)
+    _TRANSFORMERS_CAP=""
+    _vllm_major=$(echo "${VLLM_VERSION}" | cut -d. -f1)
+    _vllm_minor=$(echo "${VLLM_VERSION}" | cut -d. -f2)
+    if [ "${_vllm_major}" -eq 0 ] && [ "${_vllm_minor}" -lt 11 ]; then
+        _TRANSFORMERS_CAP="transformers<5"
+        echo "Applying transformers<5 cap for vLLM ${VLLM_VERSION}"
+    fi
+
     # Try PyPI first unless explicitly requesting GitHub release
     if [ "${USE_GITHUB_RELEASE}" != "true" ]; then
         echo "Attempting PyPI installation with CPU-only PyTorch..."
@@ -125,7 +136,7 @@ try_install_vllm() {
             INSTALL_VERSION="${VLLM_VERSION}${VERSION_SUFFIX}"
             echo "Trying ${PACKAGE_NAME}==${INSTALL_VERSION}..."
 
-            if uv pip install --no-progress "${PACKAGE_NAME}==${INSTALL_VERSION}" \
+            if uv pip install --no-progress "${PACKAGE_NAME}==${INSTALL_VERSION}" ${_TRANSFORMERS_CAP} \
                 --index-url "${PYTORCH_INDEX}" \
                 --extra-index-url "${PYPI_INDEX}" \
                 --index-strategy unsafe-best-match 2>/dev/null; then
@@ -206,11 +217,6 @@ try_install_vllm() {
                         MATCHING_WHEELS="${MATCHING_WHEELS}${asset_url} "
                         echo "Found matching wheel: ${asset_name}"
                         ;;
-                    ${PACKAGE_NAME_UNDERSCORE}-*-cp3*-abi3-*${WHEEL_ARCH}*.whl)
-                        # ABI3 stable ABI wheel — compatible with any Python >= min version
-                        MATCHING_WHEELS="${MATCHING_WHEELS}${asset_url} "
-                        echo "Found matching abi3 wheel: ${asset_name}"
-                        ;;
                 esac
             done
 
@@ -233,7 +239,7 @@ try_install_vllm() {
                 # Use single pip install command with URL (PEP 440 style)
                 # This installs the wheel directly with all dependencies from CPU PyTorch index
                 if uv pip install --no-progress \
-                    "${PACKAGE_NAME} @ ${WHEEL_URL}" \
+                    "${PACKAGE_NAME} @ ${WHEEL_URL}" ${_TRANSFORMERS_CAP} \
                     --index-url "${PYTORCH_INDEX}" \
                     --extra-index-url "${PYPI_INDEX}" \
                     --index-strategy unsafe-best-match; then
@@ -245,7 +251,7 @@ try_install_vllm() {
                     # Fallback: download wheel and install locally
                     if wget -q "${WHEEL_URL}" -O "/tmp/${WHEEL_NAME}" 2>/dev/null; then
                         echo "Downloaded: ${WHEEL_NAME}"
-                        if uv pip install --no-progress "/tmp/${WHEEL_NAME}" \
+                        if uv pip install --no-progress "/tmp/${WHEEL_NAME}" ${_TRANSFORMERS_CAP} \
                             --index-url "${PYTORCH_INDEX}" \
                             --extra-index-url "${PYPI_INDEX}" \
                             --index-strategy unsafe-best-match; then
@@ -261,6 +267,103 @@ try_install_vllm() {
             else
                 echo "No matching wheel found for ${PACKAGE_NAME_UNDERSCORE} Python ${PYTHON_TAG} ${WHEEL_ARCH}"
             fi
+        fi
+    fi
+
+    # Patch transformers compatibility issues before import verification
+    # transformers 5.0+ (2026-01-26) changed PretrainedConfig to a dataclass,
+    # breaking old vLLM config classes with bare type annotations (no defaults)
+    if [ "${_install_success}" = "true" ]; then
+        _site_packages=$(python -c "import site; print(site.getsitepackages()[0])" 2>/dev/null || echo "")
+        if [ -n "${_site_packages}" ]; then
+            _configs_dir="${_site_packages}/vllm/transformers_utils/configs"
+            if [ -d "${_configs_dir}" ]; then
+                # Generic patch: find all PretrainedConfig subclasses with bare
+                # type annotations and add '= None' defaults. This handles:
+                # - deepseek_vl2.py: vision_config, projector_config
+                # - ultravox.py: wrapped_model_config
+                # - Any future configs with the same pattern
+                echo "Checking config files for dataclass compatibility..."
+                _CONFIGS_DIR="${_configs_dir}" python3 << 'PATCH_DATACLASS_EOF'
+import os, re
+
+configs_dir = os.environ.get("_CONFIGS_DIR", "")
+if not configs_dir or not os.path.isdir(configs_dir):
+    sys.exit(0)
+
+# Pattern: class-level bare type annotation (indented, no default)
+# Matches: "    field_name: SomeType" but not "    field_name: SomeType = value"
+bare_annotation = re.compile(r'^(\s+)([a-z_]+):\s+(\S.*)$')
+
+for fname in os.listdir(configs_dir):
+    if not fname.endswith('.py'):
+        continue
+    fpath = os.path.join(configs_dir, fname)
+    with open(fpath, 'r') as f:
+        content = f.read()
+
+    # Only patch files with PretrainedConfig subclasses
+    if 'PretrainedConfig' not in content:
+        continue
+
+    lines = content.split('\n')
+    in_config_class = False
+    patched = False
+    new_lines = []
+
+    for line in lines:
+        # Track if we're inside a PretrainedConfig subclass
+        if re.match(r'^class \w+\(.*PretrainedConfig.*\):', line):
+            in_config_class = True
+        elif re.match(r'^class ', line) or (re.match(r'^\S', line) and line.strip()):
+            if not line.strip().startswith('#') and not line.strip().startswith('@'):
+                in_config_class = False
+
+        if in_config_class:
+            m = bare_annotation.match(line)
+            if m and '=' not in line and 'def ' not in line and '#' not in line:
+                indent, field, type_hint = m.group(1), m.group(2), m.group(3)
+                # Skip function signatures and docstrings
+                if not type_hint.endswith(',') and not type_hint.endswith(':'):
+                    new_line = f"{indent}{field}: {type_hint} = None"
+                    new_lines.append(new_line)
+                    patched = True
+                    print(f"  {fname}: {field}: {type_hint} -> = None")
+                    continue
+        new_lines.append(line)
+
+    if patched:
+        with open(fpath, 'w') as f:
+            f.write('\n'.join(new_lines))
+
+PATCH_DATACLASS_EOF
+                echo "Dataclass compatibility patch complete"
+            fi
+
+            # Patch aimv2 config registration conflict (transformers 4.47+ already
+            # registers 'aimv2', so vLLM's register call fails without exist_ok)
+            _ovis_file="${_site_packages}/vllm/transformers_utils/configs/ovis.py"
+            if [ -f "${_ovis_file}" ]; then
+                if grep -q 'AutoConfig.register.*aimv2.*AIMv2Config' "${_ovis_file}" 2>/dev/null && \
+                   ! grep -q 'register.*aimv2.*exist_ok=True' "${_ovis_file}" 2>/dev/null; then
+                    echo "Patching ovis.py for aimv2 compatibility..."
+                    sed -i 's/AutoConfig\.register("aimv2", AIMv2Config)/AutoConfig.register("aimv2", AIMv2Config, exist_ok=True)/g' "${_ovis_file}"
+                    sed -i 's/AutoConfig\.register("ovis", OvisConfig)/AutoConfig.register("ovis", OvisConfig, exist_ok=True)/g' "${_ovis_file}"
+                    echo "Patched ovis.py"
+                fi
+            fi
+        fi
+    fi
+
+    # Verify the package actually imports (catches runtime issues like
+    # Python 3.12 dataclass breaking changes in older vLLM versions)
+    if [ "${_install_success}" = "true" ]; then
+        echo "Verifying vLLM import..."
+        if ! python -c "import vllm" 2>&1; then
+            echo "WARNING: Package installed but import failed (likely Python version incompatibility)"
+            echo "Uninstalling broken package before retry..."
+            uv pip uninstall "${PACKAGE_NAME}" 2>/dev/null || true
+            _install_success=false
         fi
     fi
 
@@ -289,11 +392,10 @@ echo "Detected Python version: ${DETECTED_PY}"
 # Extract minor version number
 DETECTED_MINOR=$(echo "${DETECTED_PY}" | cut -d. -f2)
 
-# Create fallback list: detected version, then decreasing versions down to 3.10
-# (vllm requires-python >= 3.10, never go below)
+# Create fallback list: detected version, then decreasing versions down to 3.9
 PYTHON_VERSIONS="${DETECTED_PY}"
 MINOR=${DETECTED_MINOR}
-while [ "${MINOR}" -gt 10 ]; do
+while [ "${MINOR}" -gt 9 ]; do
     MINOR=$((MINOR - 1))
     PYTHON_VERSIONS="${PYTHON_VERSIONS} 3.${MINOR}"
 done
@@ -324,7 +426,7 @@ for PY_VERSION in ${PYTHON_VERSIONS}; do
     else
         echo ""
         echo "vLLM installation failed for Python ${PY_VERSION}"
-        if [ "${PY_VERSION}" != "3.10" ]; then
+        if [ "${PY_VERSION}" != "3.9" ]; then
             echo "Falling back to lower Python version..."
         fi
     fi
@@ -402,9 +504,6 @@ fi
 # Fix: Directly patch opentelemetry/context/__init__.py to not rely on entry_points
 echo ""
 echo "=== Fixing opentelemetry compatibility ==="
-# Install opentelemetry-sdk which provides tracecontext propagator
-# (required by vLLM tracing module, missing on Python 3.13)
-uv pip install opentelemetry-sdk opentelemetry-api 2>/dev/null || pip install opentelemetry-sdk opentelemetry-api 2>/dev/null || true
 SITE_PACKAGES=$(python -c "import site; print(site.getsitepackages()[0])")
 OTEL_CONTEXT_FILE="${SITE_PACKAGES}/opentelemetry/context/__init__.py"
 
@@ -471,11 +570,6 @@ else
     echo "opentelemetry not installed, skipping fix"
 fi
 
-# Fix opentelemetry propagators (Python 3.13 entry_points discovery broken)
-# Instead of patching Python files (fragile), disable propagator auto-discovery
-# via environment variable. vLLM CPU doesn't need distributed tracing.
-echo "Setting OTEL_PROPAGATORS=none to avoid Python 3.13 entry_points issue"
-
 # =============================================================================
 # Fix aimv2 config registration conflict (vLLM <0.11 with transformers 4.47+)
 # =============================================================================
@@ -507,76 +601,6 @@ if [ -f "${OVIS_FILE}" ]; then
     fi
 else
     echo "ovis.py not found (may be older vLLM version without this file)"
-fi
-
-# =============================================================================
-# Fix missing torch inductor headers (CPU wheel doesn't ship torch/include/)
-# =============================================================================
-# PyTorch CPU wheels from download.pytorch.org/whl/cpu only include ATen/ headers.
-# torch.compile (inductor) needs torch/csrc/inductor/cpp_prefix.h and c10/ headers.
-# Fix: Download headers from the matching CUDA wheel if missing locally.
-echo ""
-echo "=== Checking torch inductor headers ==="
-TORCH_INCLUDE="${SITE_PACKAGES}/torch/include"
-CPP_PREFIX="${TORCH_INCLUDE}/torch/csrc/inductor/cpp_prefix.h"
-
-if [ ! -f "${CPP_PREFIX}" ]; then
-    echo "torch inductor headers missing — downloading from CUDA wheel..."
-    TORCH_VER="$(python3 -c 'import torch; print(torch.__version__.split("+")[0])')"
-    PY_TAG="cp$(python3 -c 'import sys; print(f"{sys.version_info.major}{sys.version_info.minor}")')"
-    ARCH="$(uname -m)"
-    # Map arch to wheel platform tag
-    case "$ARCH" in
-        x86_64)  PLAT="manylinux_2_28_x86_64" ;;
-        aarch64) PLAT="manylinux_2_28_aarch64" ;;
-        *)       PLAT="manylinux_2_28_${ARCH}" ;;
-    esac
-
-    # Try downloading CUDA wheel and extracting only include/
-    CUDA_WHL_URL="https://files.pythonhosted.org/packages/torch-${TORCH_VER}-${PY_TAG}-${PY_TAG}-${PLAT}.whl"
-    # Fallback: use pip download to find the correct URL
-    TMPWHL="/tmp/torch-headers-whl"
-    mkdir -p "$TMPWHL"
-
-    echo "Downloading torch==${TORCH_VER} headers (CUDA wheel, include/ only)..."
-    if pip download "torch==${TORCH_VER}" --no-deps --no-cache-dir -d "$TMPWHL" 2>/dev/null || \
-       uv pip download "torch==${TORCH_VER}" --no-deps -d "$TMPWHL" 2>/dev/null; then
-        WHL_FILE="$(find "$TMPWHL" -name 'torch-*.whl' | head -1)"
-        if [ -n "$WHL_FILE" ]; then
-            echo "Extracting include/ from $(basename "$WHL_FILE")..."
-            python3 -c "
-import zipfile, sys, os
-whl = sys.argv[1]
-dest = sys.argv[2]
-with zipfile.ZipFile(whl) as z:
-    members = [n for n in z.namelist() if '/include/' in n]
-    for m in members:
-        # Strip leading torch/ to get relative path under include/
-        parts = m.split('/include/', 1)
-        if len(parts) == 2 and parts[1]:
-            target = os.path.join(dest, parts[1])
-            os.makedirs(os.path.dirname(target), exist_ok=True)
-            with z.open(m) as src, open(target, 'wb') as dst:
-                dst.write(src.read())
-    print(f'Extracted {len(members)} header files')
-" "$WHL_FILE" "$TORCH_INCLUDE"
-        fi
-    else
-        echo "WARNING: Could not download CUDA wheel for headers"
-    fi
-
-    # Cleanup
-    rm -rf "$TMPWHL"
-
-    # Verify
-    if [ -f "${CPP_PREFIX}" ]; then
-        echo "torch inductor headers: OK"
-    else
-        echo "WARNING: torch inductor headers still missing — torch.compile may not work"
-        echo "Set TORCHDYNAMO_DISABLE=1 to use eager mode instead"
-    fi
-else
-    echo "torch inductor headers: already present"
 fi
 
 # =============================================================================
