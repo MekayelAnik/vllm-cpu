@@ -136,7 +136,7 @@ try_install_vllm() {
             INSTALL_VERSION="${VLLM_VERSION}${VERSION_SUFFIX}"
             echo "Trying ${PACKAGE_NAME}==${INSTALL_VERSION}..."
 
-            # Method A: uv pip install
+            # Method A: uv pip install (fast, but can hit zlib bugs in Docker buildx)
             if uv pip install --no-progress "${PACKAGE_NAME}==${INSTALL_VERSION}" ${_TRANSFORMERS_CAP} \
                 --index-url "${PYTORCH_INDEX}" \
                 --extra-index-url "${PYPI_INDEX}" \
@@ -146,15 +146,30 @@ try_install_vllm() {
                 break
             fi
 
-            # Method B: pip3 fallback (workaround for uv deflate bug on arm64 buildx)
-            echo "uv install failed, trying pip3..."
-            uv pip install --no-progress pip 2>/dev/null || true
-            if pip3 install --no-cache-dir "${PACKAGE_NAME}==${INSTALL_VERSION}" ${_TRANSFORMERS_CAP} \
-                --index-url "${PYTORCH_INDEX}" \
-                --extra-index-url "${PYPI_INDEX}" 2>&1; then
-                echo "Successfully installed ${PACKAGE_NAME}==${INSTALL_VERSION} from PyPI (pip3)"
-                _install_success=true
-                break
+            # Method B: wget + local install (workaround for zlib decompression errors
+            # in Docker buildx on arm64 — both uv and pip3 use Python's zlib which can
+            # corrupt large wheel downloads; wget uses system libz which works correctly)
+            echo "uv install failed, trying wget + local install..."
+            PACKAGE_NAME_UNDERSCORE=$(echo "${PACKAGE_NAME}" | tr '-' '_')
+            _WHEEL_URL=$(curl -sfL --retry 2 "https://pypi.org/pypi/${PACKAGE_NAME}/${INSTALL_VERSION}/json" 2>/dev/null | \
+                jq -r --arg arch "${WHEEL_ARCH}" \
+                '.urls[] | select(.filename | test($arch)) | .url' 2>/dev/null | head -1)
+            if [ -n "${_WHEEL_URL}" ]; then
+                _WHEEL_FILE="/tmp/${PACKAGE_NAME_UNDERSCORE}-${INSTALL_VERSION}.whl"
+                echo "Downloading: $(basename "${_WHEEL_URL}")"
+                if wget -q --retry-connrefused --tries=3 -O "${_WHEEL_FILE}" "${_WHEEL_URL}"; then
+                    echo "Downloaded $(du -h "${_WHEEL_FILE}" | cut -f1), installing with deps..."
+                    if uv pip install --no-progress "${_WHEEL_FILE}" ${_TRANSFORMERS_CAP} \
+                        --index-url "${PYTORCH_INDEX}" \
+                        --extra-index-url "${PYPI_INDEX}" \
+                        --index-strategy unsafe-best-match 2>&1; then
+                        rm -f "${_WHEEL_FILE}"
+                        echo "Successfully installed ${PACKAGE_NAME}==${INSTALL_VERSION} (wget + uv)"
+                        _install_success=true
+                        break
+                    fi
+                    rm -f "${_WHEEL_FILE}"
+                fi
             fi
             echo "Failed: ${INSTALL_VERSION}"
         done
