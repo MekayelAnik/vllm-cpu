@@ -139,7 +139,7 @@ try_install_vllm() {
             if uv pip install --no-progress "${PACKAGE_NAME}==${INSTALL_VERSION}" ${_TRANSFORMERS_CAP} \
                 --index-url "${PYTORCH_INDEX}" \
                 --extra-index-url "${PYPI_INDEX}" \
-                --index-strategy unsafe-best-match 2>/dev/null; then
+                --index-strategy unsafe-best-match; then
                 echo "Successfully installed ${PACKAGE_NAME}==${INSTALL_VERSION} from PyPI"
                 _install_success=true
                 break
