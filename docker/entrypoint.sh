@@ -492,10 +492,22 @@ fi
 echo ""
 echo "=== Memory Allocator Configuration ==="
 
-# --- LD_PRELOAD (TCMalloc) ---
-# Auto-detect and load TCMalloc for better memory performance
-# TCMalloc provides better multi-threaded allocation than glibc malloc
+# --- LD_PRELOAD (libiomp5 + TCMalloc) ---
+# vLLM 0.18.0+ requires libiomp5 (Intel OpenMP) to be preloaded.
+# Also auto-detect TCMalloc for better memory performance.
 if [ -z "${LD_PRELOAD}" ]; then
+    PRELOAD_LIBS=""
+
+    # Find libiomp5.so from the torch package (required by vLLM 0.18.0+ cpu_worker)
+    LIBIOMP_PATH=$(find /vllm/venv -name 'libiomp5.so' -path '*/torch/lib/*' 2>/dev/null | head -1)
+    if [ -n "${LIBIOMP_PATH}" ]; then
+        PRELOAD_LIBS="${LIBIOMP_PATH}"
+        echo "libiomp5: ${LIBIOMP_PATH}"
+    else
+        echo "libiomp5: not found (vLLM >=0.18.0 may fail)"
+    fi
+
+    # Find TCMalloc for better multi-threaded allocation than glibc malloc
     TCMALLOC_PATH=""
     if [ "${ARCH}" = "x86_64" ] && [ -f /usr/lib/x86_64-linux-gnu/libtcmalloc_minimal.so.4 ]; then
         TCMALLOC_PATH="/usr/lib/x86_64-linux-gnu/libtcmalloc_minimal.so.4"
@@ -504,10 +516,19 @@ if [ -z "${LD_PRELOAD}" ]; then
     fi
 
     if [ -n "${TCMALLOC_PATH}" ]; then
-        export LD_PRELOAD="${TCMALLOC_PATH}"
-        echo "LD_PRELOAD=${TCMALLOC_PATH} (TCMalloc enabled)"
+        if [ -n "${PRELOAD_LIBS}" ]; then
+            PRELOAD_LIBS="${PRELOAD_LIBS}:${TCMALLOC_PATH}"
+        else
+            PRELOAD_LIBS="${TCMALLOC_PATH}"
+        fi
+        echo "TCMalloc: ${TCMALLOC_PATH}"
+    fi
+
+    if [ -n "${PRELOAD_LIBS}" ]; then
+        export LD_PRELOAD="${PRELOAD_LIBS}"
+        echo "LD_PRELOAD=${PRELOAD_LIBS}"
     else
-        echo "LD_PRELOAD not set (TCMalloc not found)"
+        echo "LD_PRELOAD not set (no libraries found)"
     fi
 else
     echo "LD_PRELOAD=${LD_PRELOAD} (user-configured)"
