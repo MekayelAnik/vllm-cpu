@@ -136,16 +136,26 @@ try_install_vllm() {
             INSTALL_VERSION="${VLLM_VERSION}${VERSION_SUFFIX}"
             echo "Trying ${PACKAGE_NAME}==${INSTALL_VERSION}..."
 
-            if uv pip install --no-progress "${PACKAGE_NAME}==${INSTALL_VERSION}" ${_TRANSFORMERS_CAP} \
-                --index-url "${PYTORCH_INDEX}" \
-                --extra-index-url "${PYPI_INDEX}" \
-                --index-strategy unsafe-best-match; then
-                echo "Successfully installed ${PACKAGE_NAME}==${INSTALL_VERSION} from PyPI"
-                _install_success=true
+            # Retry up to 3 times (uv can hit decompression errors in Docker buildx)
+            for _attempt in 1 2 3; do
+                if uv pip install --no-progress "${PACKAGE_NAME}==${INSTALL_VERSION}" ${_TRANSFORMERS_CAP} \
+                    --index-url "${PYTORCH_INDEX}" \
+                    --extra-index-url "${PYPI_INDEX}" \
+                    --index-strategy unsafe-best-match; then
+                    echo "Successfully installed ${PACKAGE_NAME}==${INSTALL_VERSION} from PyPI"
+                    _install_success=true
+                    break 2
+                fi
+                if [ "${_attempt}" -lt 3 ]; then
+                    echo "Attempt ${_attempt} failed, retrying in 2s..."
+                    sleep 2
+                    uv cache clean 2>/dev/null || true
+                fi
+            done
+            if [ "${_install_success}" = "true" ]; then
                 break
-            else
-                echo "Failed: ${INSTALL_VERSION}"
             fi
+            echo "Failed: ${INSTALL_VERSION}"
         done
     else
         echo "GitHub release mode enabled - skipping PyPI"
