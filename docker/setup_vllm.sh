@@ -153,13 +153,14 @@ try_install_vllm() {
             # in Docker buildx on arm64 — both uv and pip3 use Python's zlib which can
             # corrupt large wheel downloads; wget uses system libz which works correctly)
             echo "uv install failed, trying wget + local install..."
-            PACKAGE_NAME_UNDERSCORE=$(echo "${PACKAGE_NAME}" | tr '-' '_')
-            _WHEEL_URL=$(curl -sfL --retry 2 "https://pypi.org/pypi/${PACKAGE_NAME}/${INSTALL_VERSION}/json" 2>/dev/null | \
-                jq -r --arg arch "${WHEEL_ARCH}" \
+            _PYPI_JSON=$(curl -sfL --retry 2 "https://pypi.org/pypi/${PACKAGE_NAME}/${INSTALL_VERSION}/json" 2>/dev/null || echo "")
+            _WHEEL_URL=$(echo "${_PYPI_JSON}" | jq -r --arg arch "${WHEEL_ARCH}" \
                 '.urls[] | select(.filename | test($arch)) | .url' 2>/dev/null | head -1)
-            if [ -n "${_WHEEL_URL}" ]; then
-                _WHEEL_FILE="/tmp/$(basename "${_WHEEL_URL}")"
-                echo "Downloading: $(basename "${_WHEEL_URL}")"
+            _WHEEL_NAME=$(echo "${_PYPI_JSON}" | jq -r --arg arch "${WHEEL_ARCH}" \
+                '.urls[] | select(.filename | test($arch)) | .filename' 2>/dev/null | head -1)
+            if [ -n "${_WHEEL_URL}" ] && [ -n "${_WHEEL_NAME}" ]; then
+                _WHEEL_FILE="/tmp/${_WHEEL_NAME}"
+                echo "Downloading: ${_WHEEL_NAME}"
                 if wget -q --retry-connrefused --tries=3 -O "${_WHEEL_FILE}" "${_WHEEL_URL}"; then
                     echo "Downloaded $(du -h "${_WHEEL_FILE}" | cut -f1), installing with deps..."
                     if uv pip install --no-progress "${_WHEEL_FILE}" ${_TRANSFORMERS_CAP} \
