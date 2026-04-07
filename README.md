@@ -143,7 +143,7 @@ No configuration needed — the correct `.so` is loaded automatically at `import
 
 ## Install
 
-### PyPI (recommended)
+### PyPI
 
 ```bash
 # Latest
@@ -295,12 +295,11 @@ This project is licensed under the [GNU General Public License v3.0](https://git
 
 ---
 
-<div align="center">
-
-**Your support encourages me to keep creating/supporting my open-source projects.**
-
+<p align="center">
+<strong>Your support encourages me to keep creating/supporting my open-source projects.</strong>
+</p>
+<p align="center">
 <a href="https://07mekayel07.gumroad.com/coffee" target="_blank">
 <img src="https://cdn.buymeacoffee.com/buttons/v2/default-yellow.png" alt="Buy Me A Coffee" width="217" height="60">
 </a>
-
-</div>
+</p>
