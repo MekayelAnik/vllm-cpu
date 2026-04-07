@@ -395,6 +395,7 @@ jobs:
             -e VLLM_WORKER_MULTIPROC_METHOD=spawn \
             -e VLLM_CPU_OMP_THREADS_BIND=0-1 \
             -e "SMOKE_TEST_MODEL=${SMOKE_TEST_MODEL}" \
+            --entrypoint /vllm/entrypoint.sh \
             "$IMAGE" \
             python3 -c "
           import os
