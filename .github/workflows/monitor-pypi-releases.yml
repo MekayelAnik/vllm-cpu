@@ -338,7 +338,40 @@ jobs:
       DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
 
   # ===========================================================================
-  # Job 5: Docker inference smoke test (both platforms)
+  # Job 5a: Build no-bf16 ARM64 variant (from GitHub Release wheels)
+  # ===========================================================================
+  build-versions-no-bf16:
+    name: Build no-bf16 ARM64
+    needs: [preflight, fetch-releases, resolve-base-image]
+    if: >-
+      needs.fetch-releases.outputs.should_build == 'true' &&
+      !startsWith(needs.fetch-releases.outputs.normalized_action, 'promote') &&
+      !startsWith(needs.fetch-releases.outputs.normalized_action, 'force-promote')
+    uses: ./.github/workflows/reusable-build-versions.yml
+    with:
+      versions_json: ${{ needs.fetch-releases.outputs.versions_json }}
+      build_profile: ${{ github.event.inputs.build_profile || 'production' }}
+      force_build: ${{ needs.fetch-releases.outputs.normalized_force_build }}
+      base_image_default: ${{ needs.resolve-base-image.outputs.base_image }}
+      ghcr_repo: ${{ vars.GHCR_REPO || format('ghcr.io/{0}/vllm-cpu', github.repository_owner) }}
+      dockerhub_repo: ${{ vars.DOCKERHUB_REPO || 'mekayelanik/vllm-cpu' }}
+      default_platforms: linux/arm64
+      tag_suffix: '-no-bf16'
+      use_github_release: 'true'
+      wheel_suffix: '-no-bf16'
+      export_cache_concurrency: '4'
+      export_layers_concurrency: '4'
+      buildkit_step_log_max_size: '50000000'
+      buildkit_step_log_max_speed: '100000000'
+      buildkit_progress: 'plain'
+      docker_buildkit_inline_cache: '1'
+      runner_version: ${{ vars.ACTION_RUNNER_VERSION || 'ubuntu-24.04' }}
+    secrets:
+      DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+      DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+
+  # ===========================================================================
+  # Job 6: Docker inference smoke test (both platforms)
   # ===========================================================================
   smoke-test:
     name: Smoke test (${{ matrix.platform }})
@@ -431,7 +464,89 @@ jobs:
           "
 
   # ===========================================================================
-  # Job 6: Promote latest/stable tags
+  # Job 6a: Smoke test for no-bf16 ARM64 variant
+  # ===========================================================================
+  smoke-test-no-bf16:
+    name: Smoke test (arm64-no-bf16)
+    needs: [fetch-releases, build-versions-no-bf16]
+    if: needs.build-versions-no-bf16.result == 'success'
+    runs-on: ${{ format('{0}-arm', vars.ACTION_RUNNER_VERSION || 'ubuntu-24.04') }}
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Pull Docker image
+        shell: bash
+        env:
+          IMAGE: ${{ vars.GHCR_REPO || format('ghcr.io/{0}/vllm-cpu', github.repository_owner) }}:${{ needs.fetch-releases.outputs.latest_version }}-no-bf16
+        run: |
+          set -euo pipefail
+          echo "Pulling no-bf16 image: $IMAGE"
+          docker pull "$IMAGE"
+
+      - name: Run inference smoke test
+        shell: bash
+        env:
+          IMAGE: ${{ vars.GHCR_REPO || format('ghcr.io/{0}/vllm-cpu', github.repository_owner) }}:${{ needs.fetch-releases.outputs.latest_version }}-no-bf16
+          SMOKE_TEST_MODEL: ${{ vars.SMOKE_TEST_MODEL || 'HuggingFaceTB/SmolLM2-135M-Instruct' }}
+        run: |
+          set -euo pipefail
+          echo "Running no-bf16 ARM64 inference smoke test with image: $IMAGE"
+          docker run --rm \
+            --ipc=host \
+            --shm-size 4g \
+            -e VLLM_TARGET_DEVICE=cpu \
+            -e OTEL_PROPAGATORS=none \
+            -e OTEL_TRACES_EXPORTER=none \
+            -e TORCHDYNAMO_DISABLE=1 \
+            -e VLLM_CPU_KVCACHE_SPACE=1 \
+            -e OMP_NUM_THREADS=2 \
+            -e KMP_INIT_AT_FORK=FALSE \
+            -e VLLM_WORKER_MULTIPROC_METHOD=spawn \
+            -e VLLM_CPU_OMP_THREADS_BIND=0-1 \
+            -e "SMOKE_TEST_MODEL=${SMOKE_TEST_MODEL}" \
+            --entrypoint /vllm/entrypoint.sh \
+            "$IMAGE" \
+            python3 -c "
+          import os
+          os.environ['VLLM_TARGET_DEVICE'] = 'cpu'
+          os.environ['OTEL_PROPAGATORS'] = 'none'
+          os.environ['OTEL_TRACES_EXPORTER'] = 'none'
+          os.environ['TORCHDYNAMO_DISABLE'] = '1'
+          from vllm import LLM, SamplingParams
+          model = os.environ.get('SMOKE_TEST_MODEL', 'HuggingFaceTB/SmolLM2-135M-Instruct')
+          print(f'Loading model: {model} (dtype=float32, variant=no-bf16)')
+          try:
+              llm = LLM(model=model, device='cpu', dtype='float32', max_model_len=512, enforce_eager=True)
+          except TypeError:
+              try:
+                  llm = LLM(model=model, dtype='float32', max_model_len=512, enforce_eager=True)
+              except TypeError:
+                  llm = LLM(model=model, dtype='float32', max_model_len=512)
+          params = SamplingParams(temperature=0.8, max_tokens=256)
+          outputs = llm.generate(['Hello, world!'], params)
+          text = outputs[0].outputs[0].text
+          n_tokens = len(outputs[0].outputs[0].token_ids)
+          print(f'Generated ({n_tokens} tokens): {text}')
+          assert n_tokens > 0, 'No output tokens generated'
+          print('Docker inference smoke test (no-bf16): PASS')
+          del llm
+          import gc
+          gc.collect()
+          import time
+          time.sleep(1)
+          "
+
+  # ===========================================================================
+  # Job 7: Promote latest/stable tags
   # ===========================================================================
   promote-latest:
     name: Promote latest tag

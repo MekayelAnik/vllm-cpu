@@ -7,12 +7,13 @@
 # back to lower Python versions (3.13 → 3.12 → 3.11 → 3.10 → 3.9).
 #
 # Usage:
-#   ./setup_vllm.sh <variant> <vllm_version> <use_github_release>
+#   ./setup_vllm.sh <variant> <vllm_version> <use_github_release> [wheel_suffix]
 #
 # Arguments:
 #   variant             - CPU variant (noavx512, avx512, avx512vnni, avx512bf16, amxbf16)
 #   vllm_version        - Version of vLLM (e.g., 0.11.2)
 #   use_github_release  - "true" to prefer GitHub releases over PyPI
+#   wheel_suffix        - Optional wheel filename suffix (e.g., "-no-bf16") for disambiguation
 #
 # Environment:
 #   Expects /tmp/python_version.txt to contain the detected Python version
@@ -36,6 +37,7 @@ set -e
 VARIANT="${1:-noavx512}"
 VLLM_VERSION="${2:-}"
 USE_GITHUB_RELEASE="${3:-false}"
+WHEEL_SUFFIX="${4:-}"
 
 # Validate required arguments
 if [ -z "${VLLM_VERSION}" ]; then
@@ -238,6 +240,9 @@ try_install_vllm() {
             # Patterns checked:
             #   1. cpXXX-cpXXX (version-specific, e.g., cp312-cp312)
             #   2. cp3*-abi3   (stable ABI, e.g., cp38-abi3 — compatible with any Python >= 3.8)
+            # WHEEL_SUFFIX disambiguates bf16 vs no-bf16 aarch64 wheels:
+            #   "" → matches *aarch64.whl (exact end)
+            #   "-no-bf16" → matches *aarch64-no-bf16.whl
             # If multiple manylinux versions exist, pick the highest (e.g., manylinux_2_28 > manylinux_2_17)
             WHEEL_URL=""
             MATCHING_WHEELS=""
@@ -245,11 +250,11 @@ try_install_vllm() {
                 asset_name=$(basename "${asset_url}")
                 # Check if this wheel matches our criteria
                 case "${asset_name}" in
-                    ${PACKAGE_NAME_UNDERSCORE}-*-${PYTHON_TAG}-${PYTHON_TAG}-*${WHEEL_ARCH}*.whl)
+                    ${PACKAGE_NAME_UNDERSCORE}-*-${PYTHON_TAG}-${PYTHON_TAG}-*${WHEEL_ARCH}${WHEEL_SUFFIX}.whl)
                         MATCHING_WHEELS="${MATCHING_WHEELS}${asset_url} "
                         echo "Found matching wheel: ${asset_name}"
                         ;;
-                    ${PACKAGE_NAME_UNDERSCORE}-*-cp3*-abi3-*${WHEEL_ARCH}*.whl)
+                    ${PACKAGE_NAME_UNDERSCORE}-*-cp3*-abi3-*${WHEEL_ARCH}${WHEEL_SUFFIX}.whl)
                         MATCHING_WHEELS="${MATCHING_WHEELS}${asset_url} "
                         echo "Found matching ABI3 wheel: ${asset_name}"
                         ;;

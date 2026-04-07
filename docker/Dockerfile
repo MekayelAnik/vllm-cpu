@@ -30,6 +30,7 @@ ARG VLLM_VERSION
 ARG PYTHON_VERSION=3.13
 ARG VARIANT=noavx512
 ARG USE_GITHUB_RELEASE=false
+ARG WHEEL_SUFFIX=""
 
 COPY docker/detect_python_version.sh /detect_python_version.sh
 RUN --mount=type=secret,id=GITHUB_TOKEN,required=false \
@@ -55,6 +56,7 @@ ARG VLLM_VERSION
 ARG PYTHON_VERSION=3.13
 ARG VARIANT=noavx512
 ARG USE_GITHUB_RELEASE=false
+ARG WHEEL_SUFFIX=""
 
 # OCI Image Labels
 LABEL org.opencontainers.image.title="vLLM CPU (${VARIANT})" \
@@ -146,7 +148,7 @@ RUN --mount=type=cache,id=uv-${VARIANT}-v2,target=/root/.cache/uv,sharing=locked
     --mount=type=secret,id=GITHUB_TOKEN,required=false \
     chmod +x /tmp/setup_vllm.sh /tmp/cleanup.sh && \
     export GITHUB_TOKEN=$(cat /run/secrets/GITHUB_TOKEN 2>/dev/null || echo "") && \
-    /tmp/setup_vllm.sh "${VARIANT}" "${VLLM_VERSION}" "${USE_GITHUB_RELEASE}" && \
+    /tmp/setup_vllm.sh "${VARIANT}" "${VLLM_VERSION}" "${USE_GITHUB_RELEASE}" "${WHEEL_SUFFIX}" && \
     /tmp/cleanup.sh && \
     rm -f /tmp/setup_vllm.sh /tmp/cleanup.sh
 
