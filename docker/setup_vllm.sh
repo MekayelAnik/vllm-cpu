@@ -87,8 +87,11 @@ install_python() {
     # Clean up any existing venv
     rm -rf /vllm/venv
 
-    # Install Python via uv (temporarily allow downloads)
-    if ! UV_PYTHON_DOWNLOADS=automatic uv python install "${_py_version}"; then
+    # Install Python via uv
+    # UV_PYTHON_PREFERENCE=system: prefer system Python to avoid zlib linkage
+    #   issues with standalone Python binaries on ARM64
+    # UV_PYTHON_DOWNLOADS=automatic: allow download if system Python not available
+    if ! UV_PYTHON_PREFERENCE=system UV_PYTHON_DOWNLOADS=automatic uv python install "${_py_version}"; then
         echo "Failed to install Python ${_py_version}"
         return 1
     fi
@@ -136,8 +139,8 @@ try_install_vllm() {
             INSTALL_VERSION="${VLLM_VERSION}${VERSION_SUFFIX}"
             echo "Trying ${PACKAGE_NAME}==${INSTALL_VERSION}..."
 
-            # Method A: uv pip install (fast, but can hit zlib bugs in Docker buildx)
-            if uv pip install --no-progress "${PACKAGE_NAME}==${INSTALL_VERSION}" ${_TRANSFORMERS_CAP} \
+            # Method A: uv pip install (--no-cache to avoid poisoned cache from prior failures)
+            if uv pip install --no-progress --no-cache "${PACKAGE_NAME}==${INSTALL_VERSION}" ${_TRANSFORMERS_CAP} \
                 --index-url "${PYTORCH_INDEX}" \
                 --extra-index-url "${PYPI_INDEX}" \
                 --index-strategy unsafe-best-match 2>&1; then

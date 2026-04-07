@@ -204,6 +204,7 @@ ENV VLLM_V1_OUTPUT_PROC_CHUNK_SIZE=128
 
 # Install runtime dependencies + create directories (single layer)
 # build-essential (g++) is required for PyTorch inductor (torch.compile) JIT kernel compilation
+# zlib1g-dev: required for proper zlib linkage on ARM64 (prevents decompression errors)
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt,sharing=locked \
     apt-get update && apt-get install -y --no-install-recommends \
@@ -218,7 +219,8 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     ca-certificates \
     binutils \
     gosu \
-    build-essential && \
+    build-essential \
+    zlib1g-dev && \
     mkdir -p /vllm /data/models /data/cache/vllm /data/config/vllm
 
 # Install uv
