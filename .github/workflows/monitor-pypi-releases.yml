@@ -374,12 +374,14 @@ jobs:
         run: |
           set -euo pipefail
           echo "Running inference smoke test with image: $IMAGE"
+          # VLLM_USE_V1=0: force V0 engine (V1 subprocess model fails in Docker smoke test)
           # TORCHDYNAMO_DISABLE=1: prevents torch.compile JIT (triton/cpp_prefix.h issues)
           # OMP_NUM_THREADS=2 + VLLM_CPU_OMP_THREADS_BIND=0-1: prevent libnuma segfaults
           # KMP_INIT_AT_FORK=FALSE: prevent OpenMP fork-safety crashes
           docker run --rm \
             --shm-size 4g \
             -e VLLM_TARGET_DEVICE=cpu \
+            -e VLLM_USE_V1=0 \
             -e OTEL_PROPAGATORS=none \
             -e OTEL_TRACES_EXPORTER=none \
             -e TORCHDYNAMO_DISABLE=1 \
