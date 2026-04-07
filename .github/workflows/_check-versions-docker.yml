@@ -136,6 +136,9 @@ on:
       variants_matrix:
         description: 'JSON array of variants to build'
         value: ${{ jobs.docker-check.outputs.variants_matrix }}
+      merge_matrix:
+        description: 'JSON matrix for manifest merging (deduplicated version+variant with platform list)'
+        value: ${{ jobs.docker-check.outputs.merge_matrix }}
 
 jobs:
   # ==========================================================================
@@ -172,6 +175,7 @@ jobs:
       version_postfix: ${{ steps.postfix.outputs.postfix }}
       use_github_release: ${{ steps.postfix.outputs.use_github_release }}
       variants_matrix: ${{ steps.variants.outputs.matrix }}
+      merge_matrix: ${{ steps.matrix.outputs.merge_matrix }}
       new_versions: ${{ steps.auto-detect.outputs.new_versions || needs.base-check.outputs.new_versions }}
 
     steps:
@@ -696,6 +700,7 @@ jobs:
           if [[ -z "$NEW_VERSIONS" || "$NEW_VERSIONS" == "[]" || "$NEW_VERSIONS" == "null" ]]; then
             echo "No versions to build"
             echo "build_matrix={\"include\":[]}" >> "$GITHUB_OUTPUT"
+            echo "merge_matrix={\"include\":[]}" >> "$GITHUB_OUTPUT"
             echo "has_builds=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
@@ -717,6 +722,7 @@ jobs:
           if [[ "$FILTERED_VERSIONS" == "[]" ]]; then
             echo "All versions already have Docker images"
             echo "build_matrix={\"include\":[]}" >> "$GITHUB_OUTPUT"
+            echo "merge_matrix={\"include\":[]}" >> "$GITHUB_OUTPUT"
             echo "has_builds=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
@@ -784,6 +790,8 @@ jobs:
           BUILD_AMD64="${{ needs.base-check.outputs.build_amd64 }}"
           BUILD_ARM64="${{ needs.base-check.outputs.build_arm64 }}"
 
+          # Generate per-platform matrix entries (one entry per version × variant × platform)
+          # This allows each platform to build on its native runner
           MATRIX=$(jq -n -c \
             --argjson versions "$FILTERED_VERSIONS" \
             --argjson variants "$VARIANTS" \
@@ -795,24 +803,37 @@ jobs:
               include: [
                 $versions[] as $ver |
                 $variants[] as $var |
+                (
+                  if $var == "noavx512" then
+                    (if $build_amd64 == "true" then ["amd64"] else [] end) +
+                    (if $build_arm64 == "true" then ["arm64"] else [] end)
+                  else
+                    if $build_amd64 == "true" then ["amd64"] else [] end
+                  end
+                )[] as $plat |
                 {
                   version: $ver,
                   variant: $var,
+                  platform: $plat,
                   wheel_version: ($wheel_map[$ver] // $ver),
-                  use_github_release: (if $gh_release_map[$ver] then "true" else "false" end),
-                  platforms: (
-                    if $var == "noavx512" then
-                      if $build_amd64 == "true" and $build_arm64 == "true" then "linux/amd64,linux/arm64"
-                      elif $build_amd64 == "true" then "linux/amd64"
-                      elif $build_arm64 == "true" then "linux/arm64"
-                      else ""
-                      end
-                    else
-                      if $build_amd64 == "true" then "linux/amd64" else "" end
-                    end
-                  )
+                  use_github_release: (if $gh_release_map[$ver] then "true" else "false" end)
                 }
-              ] | map(select(.platforms != ""))
+              ]
+            }
+          ')
+
+          # Generate merge matrix (deduplicated version+variant with platform list)
+          MERGE_MATRIX=$(echo "$MATRIX" | jq -c '
+            {
+              include: [
+                .include | group_by(.version + "-" + .variant)[] |
+                {
+                  version: .[0].version,
+                  variant: .[0].variant,
+                  wheel_version: .[0].wheel_version,
+                  platforms: [.[].platform]
+                }
+              ]
             }
           ')
 
@@ -821,11 +842,13 @@ jobs:
           if [[ "$MATRIX_COUNT" -eq 0 ]]; then
             echo "No builds after filtering"
             echo "build_matrix={\"include\":[]}" >> "$GITHUB_OUTPUT"
+            echo "merge_matrix={\"include\":[]}" >> "$GITHUB_OUTPUT"
             echo "has_builds=false" >> "$GITHUB_OUTPUT"
           else
             echo "Generated $MATRIX_COUNT builds"
             echo "$MATRIX" | jq '.'
             echo "build_matrix=$MATRIX" >> "$GITHUB_OUTPUT"
+            echo "merge_matrix=$MERGE_MATRIX" >> "$GITHUB_OUTPUT"
             echo "has_builds=true" >> "$GITHUB_OUTPUT"
           fi
 

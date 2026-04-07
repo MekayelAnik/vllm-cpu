@@ -183,12 +183,12 @@ jobs:
   # Build Docker images for each variant and platform
   # ==========================================================================
   build-images:
-    name: Build ${{ matrix.variant }} (${{ matrix.version }})
+    name: Build ${{ matrix.variant }} ${{ matrix.platform }} (${{ matrix.version }})
     needs: check-versions
     if: |
       needs.check-versions.outputs.has_builds == 'true' &&
       inputs.dry_run != true
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.platform == 'arm64' && format('{0}-arm', vars.ACTION_RUNNER_VERSION || 'ubuntu-24.04') || (vars.ACTION_RUNNER_VERSION || 'ubuntu-24.04') }}
     timeout-minutes: 90
 
     strategy:
@@ -211,9 +211,6 @@ jobs:
           sudo docker image prune -af 2>/dev/null || true
           echo "Disk space after cleanup:"
           df -h /
-
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -241,8 +238,7 @@ jobs:
             ${{ inputs.skip_dockerhub != true && env.DOCKERHUB_IMAGE || '' }}
             ${{ inputs.skip_ghcr != true && env.GHCR_IMAGE || '' }}
           tags: |
-            type=raw,value=${{ matrix.version }}-${{ matrix.variant }}
-            type=raw,value=${{ matrix.variant }}-${{ matrix.version }}
+            type=raw,value=${{ matrix.version }}-${{ matrix.variant }}-${{ matrix.platform }}
 
       - name: Determine compression settings
         id: compression
@@ -317,7 +313,7 @@ jobs:
         with:
           context: ./docker
           file: ./docker/Dockerfile
-          platforms: ${{ matrix.platforms }}
+          platforms: linux/${{ matrix.platform }}
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: |
@@ -334,54 +330,160 @@ jobs:
           secrets: |
             GITHUB_TOKEN=${{ secrets.GITHUB_TOKEN }}
           no-cache: ${{ inputs.no_cache == true }}
-          cache-from: ${{ inputs.no_cache != true && 'type=gha' || '' }}
-          cache-to: ${{ inputs.no_cache != true && 'type=gha,mode=max' || '' }}
+          cache-from: ${{ inputs.no_cache != true && format('type=gha,scope={0}-{1}', matrix.variant, matrix.platform) || '' }}
+          cache-to: ${{ inputs.no_cache != true && format('type=gha,mode=max,scope={0}-{1}', matrix.variant, matrix.platform) || '' }}
           outputs: ${{ steps.compression.outputs.output_opts }}
           provenance: false
+
+      - name: Generate build summary
+        if: always()
+        shell: bash
+        run: |
+          {
+            BASE_VERSION="${{ steps.build-vars.outputs.base_version }}"
+            WHEEL_VERSION="${{ steps.build-vars.outputs.full_version }}"
+            echo "### ${{ matrix.variant }} @ ${BASE_VERSION}"
+            echo ""
+            echo "| Property | Value |"
+            echo "|----------|-------|"
+            echo "| Docker Tag | ${BASE_VERSION} |"
+            echo "| Wheel Version | ${WHEEL_VERSION} |"
+            if [[ "$WHEEL_VERSION" != "$BASE_VERSION" ]]; then
+              echo "| Wheel Postfix | .post$(echo "$WHEEL_VERSION" | grep -oE 'post[0-9]+' | sed 's/post//') |"
+            fi
+            echo "| Platform | ${{ matrix.platform }} |"
+            echo "| GitHub Release | ${{ steps.build-vars.outputs.use_github_release }} |"
+            echo "| Docker Hub | ${{ inputs.skip_dockerhub != true && 'Yes' || 'Skipped' }} |"
+            echo "| GHCR | ${{ inputs.skip_ghcr != true && 'Yes' || 'Skipped' }} |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # ==========================================================================
+  # Merge per-platform images into multi-arch manifests
+  # ==========================================================================
+  merge-manifests:
+    name: Merge ${{ matrix.variant }} (${{ matrix.version }})
+    needs: [check-versions, build-images]
+    if: |
+      always() &&
+      needs.build-images.result == 'success' &&
+      inputs.dry_run != true
+    runs-on: ${{ vars.ACTION_RUNNER_VERSION || 'ubuntu-24.04' }}
+    timeout-minutes: 15
+
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJson(needs.check-versions.outputs.merge_matrix) }}
+
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Docker Hub
+        if: inputs.skip_dockerhub != true
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Log in to GHCR
+        if: inputs.skip_ghcr != true
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create multi-arch manifest
+        shell: bash
+        run: |
+          VERSION="${{ matrix.version }}"
+          VARIANT="${{ matrix.variant }}"
+          PLATFORMS='${{ toJson(matrix.platforms) }}'
+
+          FINAL_TAG="${VERSION}-${VARIANT}"
+          ALT_TAG="${VARIANT}-${VERSION}"
+
+          # Build source tags list from per-platform images
+          DH_SOURCES=""
+          GHCR_SOURCES=""
+          for PLAT in $(echo "$PLATFORMS" | jq -r '.[]'); do
+            DH_SOURCES="$DH_SOURCES ${{ env.DOCKERHUB_IMAGE }}:${FINAL_TAG}-${PLAT}"
+            GHCR_SOURCES="$GHCR_SOURCES ${{ env.GHCR_IMAGE }}:${FINAL_TAG}-${PLAT}"
+          done
+
+          echo "Merging platforms: $(echo "$PLATFORMS" | jq -r 'join(", ")')"
+          echo "Source tags:$DH_SOURCES"
+
+          # Docker Hub
+          if [[ "${{ inputs.skip_dockerhub }}" != "true" ]]; then
+            echo "Creating Docker Hub manifest: ${FINAL_TAG}"
+            docker buildx imagetools create \
+              --tag ${{ env.DOCKERHUB_IMAGE }}:${FINAL_TAG} \
+              --tag ${{ env.DOCKERHUB_IMAGE }}:${ALT_TAG} \
+              $DH_SOURCES || echo "::warning::Docker Hub manifest merge failed"
+          fi
+
+          # GHCR
+          if [[ "${{ inputs.skip_ghcr }}" != "true" ]]; then
+            echo "Creating GHCR manifest: ${FINAL_TAG}"
+            docker buildx imagetools create \
+              --tag ${{ env.GHCR_IMAGE }}:${FINAL_TAG} \
+              --tag ${{ env.GHCR_IMAGE }}:${ALT_TAG} \
+              $GHCR_SOURCES || echo "::warning::GHCR manifest merge failed"
+          fi
+
+          echo "Manifest merge complete for ${VARIANT} ${VERSION}"
+
+  # ==========================================================================
+  # Verify and smoke test images on native runners
+  # ==========================================================================
+  verify-images:
+    name: Verify ${{ matrix.variant }} ${{ matrix.platform }} (${{ matrix.version }})
+    needs: [check-versions, build-images, merge-manifests]
+    if: |
+      always() &&
+      needs.merge-manifests.result == 'success' &&
+      inputs.dry_run != true
+    runs-on: ${{ matrix.platform == 'arm64' && format('{0}-arm', vars.ACTION_RUNNER_VERSION || 'ubuntu-24.04') || (vars.ACTION_RUNNER_VERSION || 'ubuntu-24.04') }}
+    timeout-minutes: 30
+
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJson(needs.check-versions.outputs.build_matrix) }}
+
+    permissions:
+      contents: read
+      packages: read
+
+    steps:
+      - name: Log in to GHCR
+        if: inputs.skip_ghcr != true
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Verify image
         shell: bash
         run: |
-          echo "Verifying ${{ matrix.variant }} @ ${{ matrix.version }}..."
-
-          # Always verify from GHCR (no rate limits for GitHub Actions)
-          if [[ "${{ inputs.skip_ghcr }}" != "true" ]]; then
-            docker pull ${{ env.GHCR_IMAGE }}:${{ matrix.version }}-${{ matrix.variant }}
-            docker run --rm ${{ env.GHCR_IMAGE }}:${{ matrix.version }}-${{ matrix.variant }} \
-              python -c "import vllm; print(f'vLLM version: {vllm.__version__}')"
-          elif [[ "${{ inputs.skip_dockerhub }}" != "true" ]]; then
-            docker pull ${{ env.DOCKERHUB_IMAGE }}:${{ matrix.version }}-${{ matrix.variant }}
-            docker run --rm ${{ env.DOCKERHUB_IMAGE }}:${{ matrix.version }}-${{ matrix.variant }} \
-              python -c "import vllm; print(f'vLLM version: {vllm.__version__}')"
-          fi
+          echo "Verifying ${{ matrix.variant }} ${{ matrix.platform }} @ ${{ matrix.version }}..."
+          IMAGE="${{ env.GHCR_IMAGE }}:${{ matrix.version }}-${{ matrix.variant }}"
+          docker pull "$IMAGE"
+          docker run --rm "$IMAGE" \
+            python -c "import vllm; print(f'vLLM version: {vllm.__version__}')"
 
       - name: Docker smoke test (inference)
         if: matrix.variant == 'noavx512'
         shell: bash
         run: |
-          echo "=== Docker Inference Smoke Test ==="
-          VARIANT="${{ matrix.variant }}"
-          VERSION="${{ matrix.version }}"
+          echo "=== Docker Inference Smoke Test (${{ matrix.platform }}) ==="
+          IMAGE="${{ env.GHCR_IMAGE }}:${{ matrix.version }}-${{ matrix.variant }}"
 
-          # Determine which registry image to test (prefer GHCR - no rate limits)
-          if [[ "${{ inputs.skip_ghcr }}" != "true" ]]; then
-            IMAGE="${{ env.GHCR_IMAGE }}:${VERSION}-${VARIANT}"
-          elif [[ "${{ inputs.skip_dockerhub }}" != "true" ]]; then
-            IMAGE="${{ env.DOCKERHUB_IMAGE }}:${VERSION}-${VARIANT}"
-          else
-            echo "No registry to test from, skipping"
-            exit 0
-          fi
-
-          echo "Testing image: $IMAGE"
-          docker pull "$IMAGE"
-
-          # Run inference test inside container
-          # TORCHDYNAMO_DISABLE=1: prevents torch.compile JIT which needs triton/cpp_prefix.h
-          #   (cleanup.sh removes triton for image size; headers may be missing in old versions)
-          # VLLM_CPU_KVCACHE_SPACE=1: cap KV cache to 1GB to prevent OOM/SIGSEGV on runners
-          # OMP_NUM_THREADS=2: limit OpenMP threads to avoid CPU backend segfaults in old vLLM
-          # KMP_INIT_AT_FORK=FALSE: prevent OpenMP fork-safety crashes
           docker run --rm \
             --shm-size 4g \
             -e VLLM_TARGET_DEVICE=cpu \
@@ -393,7 +495,7 @@ jobs:
             -e KMP_INIT_AT_FORK=FALSE \
             -e VLLM_WORKER_MULTIPROC_METHOD=spawn \
             -e VLLM_CPU_OMP_THREADS_BIND=0-1 \
-            -e SMOKE_TEST_MODEL="${SMOKE_TEST_MODEL}" \
+            -e SMOKE_TEST_MODEL="${{ env.SMOKE_TEST_MODEL }}" \
             "$IMAGE" \
             python3 -c "
           import os
@@ -421,40 +523,18 @@ jobs:
           "
           echo "=== Docker smoke test passed ==="
 
-      - name: Generate build summary
-        if: always()
-        shell: bash
-        run: |
-          {
-            BASE_VERSION="${{ steps.build-vars.outputs.base_version }}"
-            WHEEL_VERSION="${{ steps.build-vars.outputs.full_version }}"
-            echo "### ${{ matrix.variant }} @ ${BASE_VERSION}"
-            echo ""
-            echo "| Property | Value |"
-            echo "|----------|-------|"
-            echo "| Docker Tag | ${BASE_VERSION} |"
-            echo "| Wheel Version | ${WHEEL_VERSION} |"
-            if [[ "$WHEEL_VERSION" != "$BASE_VERSION" ]]; then
-              echo "| Wheel Postfix | .post$(echo "$WHEEL_VERSION" | grep -oE 'post[0-9]+' | sed 's/post//') |"
-            fi
-            echo "| Platforms | ${{ matrix.platforms }} |"
-            echo "| GitHub Release | ${{ steps.build-vars.outputs.use_github_release }} |"
-            echo "| Docker Hub | ${{ inputs.skip_dockerhub != true && 'Yes' || 'Skipped' }} |"
-            echo "| GHCR | ${{ inputs.skip_ghcr != true && 'Yes' || 'Skipped' }} |"
-          } >> "$GITHUB_STEP_SUMMARY"
-
   # ==========================================================================
   # Update <variant>-latest tags (multi-arch aware)
   # ==========================================================================
   update-latest-tags:
     name: Update ${{ matrix.variant }}-latest tag
-    needs: [check-versions, build-images]
+    needs: [check-versions, build-images, merge-manifests, verify-images]
     if: |
       always() &&
       inputs.dry_run != true &&
       inputs.skip_latest_tag != true &&
       needs.check-versions.outputs.needs_latest_update == 'true' &&
-      (needs.build-images.result == 'success' || needs.build-images.result == 'skipped')
+      (needs.verify-images.result == 'success' || needs.verify-images.result == 'skipped')
     runs-on: ubuntu-latest
     timeout-minutes: 15
 
@@ -581,7 +661,7 @@ jobs:
   # ==========================================================================
   summary:
     name: Build Summary
-    needs: [check-versions, build-images, update-latest-tags]
+    needs: [check-versions, build-images, merge-manifests, verify-images, update-latest-tags]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -609,6 +689,8 @@ jobs:
             echo "| Job | Status |"
             echo "|-----|--------|"
             echo "| Build Images | ${{ needs.build-images.result }} |"
+            echo "| Merge Manifests | ${{ needs.merge-manifests.result }} |"
+            echo "| Verify Images | ${{ needs.verify-images.result }} |"
             echo "| Update Latest Tags | ${{ needs.update-latest-tags.result }} |"
             echo ""
 
