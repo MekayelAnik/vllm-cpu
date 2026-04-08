@@ -581,11 +581,12 @@ jobs:
   # ===========================================================================
   update-state:
     name: Update pipeline state
-    needs: [fetch-releases, promote-latest]
+    needs: [fetch-releases, build-versions, promote-latest]
     if: |
       always() &&
       needs.fetch-releases.outputs.latest_version != '' &&
-      (needs.promote-latest.result == 'success' || needs.promote-latest.result == 'skipped')
+      needs.promote-latest.result == 'success' &&
+      (needs.build-versions.result == 'success' || needs.build-versions.result == 'skipped')
     runs-on: ${{ vars.ACTION_RUNNER_VERSION || 'ubuntu-24.04' }}
     timeout-minutes: 10
     steps:

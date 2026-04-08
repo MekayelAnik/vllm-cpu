@@ -1011,10 +1011,11 @@ jobs:
   # ===========================================================================
   update-state:
     name: Update wheel pipeline state
-    needs: [fetch-releases, publish-pypi, github-release]
+    needs: [fetch-releases, build, publish-pypi, github-release]
     if: |
       always() &&
       needs.fetch-releases.outputs.latest_version != '' &&
+      needs.build.result == 'success' &&
       (needs.publish-pypi.result == 'success' || needs.publish-pypi.result == 'skipped') &&
       (needs.github-release.result == 'success' || needs.github-release.result == 'skipped')
     runs-on: ${{ vars.ACTION_RUNNER_VERSION || 'ubuntu-24.04' }}
