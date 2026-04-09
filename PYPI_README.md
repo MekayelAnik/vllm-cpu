@@ -24,6 +24,10 @@ CPU-Optimized vLLM: Easy, Fast LLM Inference Without a GPU
 </p>
 
 <p align="center">
+  <em>This is an independent, community-maintained package — not affiliated with or funded by the vLLM project, its sister concerns, or any hardware vendors. The first successful unification of different CPU ISAs (AVX2, AVX-512, VNNI, BF16, AMX) into a single wheel was done by <a href="https://github.com/MekayelAnik">Mekayel Anik</a>, for the benefit of the community.</em>
+</p>
+
+<p align="center">
   <a href="https://github.com/MekayelAnik/vllm-cpu/stargazers">
     <img src="https://img.shields.io/github/stars/MekayelAnik/vllm-cpu?style=for-the-badge&logo=github&logoColor=white&labelColor=2b3137&color=f0c14b" alt="GitHub Stars">
   </a>

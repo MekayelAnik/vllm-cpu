@@ -25,6 +25,10 @@
 </p>
 
 <p align="center">
+  <em>This is an independent, community-maintained package — not affiliated with or funded by the vLLM project, its sister concerns, or any hardware vendors. The first successful unification of different CPU ISAs (AVX2, AVX-512, VNNI, BF16, AMX) into a single wheel was done by <a href="https://github.com/MekayelAnik">Mekayel Anik</a>, for the benefit of the community.</em>
+</p>
+
+<p align="center">
   <a href="https://hub.docker.com/r/mekayelanik/vllm-cpu">
     <img src="https://img.shields.io/docker/pulls/mekayelanik/vllm-cpu?style=for-the-badge&logo=docker&logoColor=white&labelColor=2b3137&color=0db7ed" alt="Docker Pulls">
   </a>
