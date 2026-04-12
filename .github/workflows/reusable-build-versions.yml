@@ -290,7 +290,7 @@ jobs:
           BUILDKIT_STEP_LOG_MAX_SPEED: ${{ inputs.buildkit_step_log_max_speed }}
           BUILDKIT_PROGRESS: ${{ inputs.buildkit_progress }}
           DOCKER_BUILDKIT_INLINE_CACHE: ${{ inputs.docker_buildkit_inline_cache }}
-        uses: docker/build-push-action@v7
+        uses: ./.github/actions/build-push-retry
         with:
           context: .
           file: ./Dockerfile.vllm-cpu
