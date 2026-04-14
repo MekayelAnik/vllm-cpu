@@ -104,12 +104,16 @@ jobs:
   # ── Prepare cross-product matrix: versions × platforms ──
   prepare-matrix:
     name: Prepare build matrix
-    timeout-minutes: 10
     runs-on: ${{ inputs.runner_version || 'ubuntu-latest' }}
     outputs:
       matrix: ${{ steps.generate.outputs.matrix }}
       versions: ${{ steps.generate.outputs.versions }}
+      has_builds: ${{ steps.generate.outputs.has_builds }}
     steps:
+      - name: Setup crane
+        if: inputs.force_build != 'true'
+        uses: imjasonh/setup-crane@v0.5
+
       - name: Generate version × platform matrix
         id: generate
         shell: bash
@@ -117,10 +121,48 @@ jobs:
           INPUT_VERSIONS_JSON: ${{ inputs.versions_json }}
           INPUT_RUNNER_VERSION: ${{ inputs.runner_version || 'ubuntu-24.04' }}
           INPUT_DEFAULT_PLATFORMS: ${{ inputs.default_platforms }}
+          INPUT_GHCR_REPO: ${{ inputs.ghcr_repo }}
+          INPUT_FORCE_BUILD: ${{ inputs.force_build }}
         run: |
           set -euo pipefail
 
           VERSIONS_JSON="$INPUT_VERSIONS_JSON"
+          GHCR_REPO="$INPUT_GHCR_REPO"
+          FORCE_BUILD="$INPUT_FORCE_BUILD"
+
+          # Pre-filter: skip versions already in GHCR (unless force_build)
+          # Parallel crane digest checks (~1-2s for 40+ versions vs ~9s serial)
+          if [[ "$FORCE_BUILD" != "true" ]]; then
+            TOTAL=$(echo "$VERSIONS_JSON" | jq length)
+            EXISTING_FILE=$(mktemp)
+
+            # Check all versions in parallel (up to 10 concurrent)
+            echo "$VERSIONS_JSON" | jq -r '.[].version' | \
+              xargs -P10 -I{} sh -c \
+                'DOCKER_CONFIG=/dev/null crane digest "'"${GHCR_REPO}"':{}" >/dev/null 2>&1 && echo "{}"' \
+              > "$EXISTING_FILE" || true
+
+            # Filter out versions that exist
+            if [[ -s "$EXISTING_FILE" ]]; then
+              SKIP_PATTERN=$(paste -sd'|' "$EXISTING_FILE")
+              while IFS= read -r v; do echo "Skipping ${v} — already in GHCR"; done < "$EXISTING_FILE"
+              VERSIONS_JSON=$(echo "$VERSIONS_JSON" | jq -c --arg pat "$SKIP_PATTERN" '[.[] | select(.version | test("^(" + $pat + ")$") | not)]')
+            fi
+            rm -f "$EXISTING_FILE"
+
+            REMAINING=$(echo "$VERSIONS_JSON" | jq length)
+            echo "Pre-filter: ${REMAINING}/${TOTAL} versions need building"
+          fi
+
+          # Early exit if no versions to build
+          if [[ "$(echo "$VERSIONS_JSON" | jq length)" -eq 0 ]]; then
+            echo "No versions need building — all already exist in GHCR"
+            echo 'matrix={"include":[]}' >> "$GITHUB_OUTPUT"
+            echo 'versions={"include":[]}' >> "$GITHUB_OUTPUT"
+            echo 'has_builds=false' >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
           RUNNER_BASE="$INPUT_RUNNER_VERSION"
           REQUESTED_PLATFORMS="$INPUT_DEFAULT_PLATFORMS"
 
@@ -189,12 +231,14 @@ jobs:
 
           COUNT=$(echo "$MATRIX" | jq length)
           echo "Generated $COUNT build jobs (versions × platforms)"
+          echo "has_builds=true" >> "$GITHUB_OUTPUT"
 
   # ── Per-platform build (native or QEMU-emulated) ──
   build-platform:
     name: Build ${{ matrix.version }} (${{ matrix.slug }})
     timeout-minutes: 180
     needs: [prepare-matrix]
+    if: needs.prepare-matrix.outputs.has_builds == 'true'
     runs-on: ${{ matrix.runner }}
     concurrency:
       group: build-${{ inputs.tag_prefix }}${{ matrix.version }}${{ inputs.tag_suffix }}-${{ matrix.slug }}
@@ -202,7 +246,7 @@ jobs:
     strategy:
       fail-fast: false
       max-parallel: 8
-      matrix: ${{ fromJson(needs.prepare-matrix.outputs.matrix || '{"include":[]}') }}
+      matrix: ${{ fromJson(needs.prepare-matrix.outputs.matrix) }}
 
     steps:
       - name: Sanitize inputs (trim whitespace)
@@ -333,11 +377,11 @@ jobs:
     name: Merge ${{ matrix.version }}
     timeout-minutes: 30
     needs: [prepare-matrix, build-platform]
-    if: ${{ !cancelled() && needs.prepare-matrix.result == 'success' }}
+    if: ${{ !cancelled() && needs.prepare-matrix.result == 'success' && needs.prepare-matrix.outputs.has_builds == 'true' }}
     runs-on: ${{ inputs.runner_version || 'ubuntu-latest' }}
     strategy:
       fail-fast: false
-      matrix: ${{ fromJson(needs.prepare-matrix.outputs.versions || '{"include":[]}') }}
+      matrix: ${{ fromJson(needs.prepare-matrix.outputs.versions) }}
 
     steps:
       - name: Download all platform digests
@@ -405,6 +449,7 @@ jobs:
           TAG_SUFFIX: ${{ inputs.tag_suffix }}
         run: |
           set -euo pipefail
+          source "$GITHUB_WORKSPACE/.github/scripts/lib-retry.sh"
 
           GHCR_REPO="$SANITIZED_GHCR_REPO"
           DH_REPO="$SANITIZED_DOCKERHUB_REPO"
@@ -426,7 +471,7 @@ jobs:
           done
 
           if [[ -z "$SOURCES" ]]; then
-            echo "No digests found — skipping manifest merge"
+            echo "No valid digests found — skipping manifest merge"
             exit 0
           fi
 
@@ -435,12 +480,13 @@ jobs:
           echo "  DH:   $DH_REPO:$VERSION, $DH_REPO:$IMAGE_TAG"
 
           # Create manifest list with all tags (GHCR + Docker Hub)
-          docker buildx imagetools create \
-            -t "${GHCR_REPO}:${VERSION}" \
-            -t "${GHCR_REPO}:${IMAGE_TAG}" \
-            -t "${DH_REPO}:${VERSION}" \
-            -t "${DH_REPO}:${IMAGE_TAG}" \
-            $SOURCES
+          run_with_retry "manifest merge ${VERSION}" \
+            docker buildx imagetools create \
+              -t "${GHCR_REPO}:${VERSION}" \
+              -t "${GHCR_REPO}:${IMAGE_TAG}" \
+              -t "${DH_REPO}:${VERSION}" \
+              -t "${DH_REPO}:${IMAGE_TAG}" \
+              $SOURCES
 
           echo "Multi-arch manifest created successfully"
 
