@@ -684,6 +684,8 @@ jobs:
         with:
           ref: main
           token: ${{ github.token }}
+          fetch-depth: 0
+          persist-credentials: true
 
       - name: Update version in README
         shell: bash
@@ -706,7 +708,26 @@ jobs:
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add README.md
           git commit -m "docs: update version to ${LATEST} in README"
-          git push
+
+          MAX_ATTEMPTS=5
+          for attempt in $(seq 1 "$MAX_ATTEMPTS"); do
+            if git push origin "HEAD:main"; then
+              echo "README pushed on attempt ${attempt}."
+              exit 0
+            fi
+            if [[ "$attempt" -eq "$MAX_ATTEMPTS" ]]; then
+              break
+            fi
+            echo "Push rejected on attempt ${attempt}; rebasing on origin/main..."
+            if ! git pull --rebase --autostash --strategy-option=theirs origin main; then
+              git rebase --abort >/dev/null 2>&1 || true
+              echo "::error::Rebase failed on attempt ${attempt}"
+              exit 1
+            fi
+            sleep "$(( (RANDOM % 4) + 2 ))"
+          done
+          echo "::error::Failed to push README after ${MAX_ATTEMPTS} attempts"
+          exit 1
 
   # ===========================================================================
   # Job 9: Sync README to Docker Hub
