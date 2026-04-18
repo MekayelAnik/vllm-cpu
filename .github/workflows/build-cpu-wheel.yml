@@ -724,25 +724,44 @@ jobs:
       matrix:
         include: ${{ fromJSON(needs.fetch-releases.outputs.versions_json || '[{"version":"skip"}]') }}
     steps:
-      - name: Download all wheel artifacts for this version
+      # Download PyPI-eligible artifacts by exact name.
+      # The aarch64_no_bf16 variant shares the same wheel filename
+      # (vllm_cpu-...-manylinux_2_28_aarch64.whl) as the aarch64 bf16 variant,
+      # so merging patterns into one dir collides and corrupts the file.
+      - name: Download x86_64 wheel
         uses: actions/download-artifact@v8
         with:
-          pattern: wheels-unified-*-${{ matrix.version }}${{ github.event.inputs.version_postfix || '' }}
-          merge-multiple: true
+          name: wheels-unified-x86_64-${{ matrix.version }}${{ github.event.inputs.version_postfix || '' }}
           path: dist/
 
-      - name: Remove no_bf16 wheels (GH Releases only, not PyPI)
+      - name: Download aarch64 (bf16) wheel
+        uses: actions/download-artifact@v8
+        with:
+          name: wheels-unified-aarch64-${{ matrix.version }}${{ github.event.inputs.version_postfix || '' }}
+          path: dist/
+
+      - name: Validate PyPI wheel set
         shell: bash
         run: |
           set -euo pipefail
-          for f in dist/*_no_bf16.whl; do
-            if [[ -f "$f" ]]; then
-              echo "Excluding from PyPI: $f"
-              rm "$f"
-            fi
-          done
           echo "Wheels for PyPI:"
           ls -la dist/
+          WHL_COUNT="$(find dist/ -maxdepth 1 -name '*.whl' | wc -l)"
+          if [[ "$WHL_COUNT" -ne 2 ]]; then
+            echo "ERROR: expected exactly 2 wheels (x86_64 + aarch64), got $WHL_COUNT"
+            exit 1
+          fi
+          # ZIP structural integrity — PyPI warehouse rejects mismatched sizes.
+          for w in dist/*.whl; do
+            echo "Checking ZIP: $w"
+            python3 -m zipfile -t "$w"
+          done
+          # Warehouse-parity check (fetches current validator from pypi/warehouse main).
+          curl -fsSL -o /tmp/warehouse_zipfiles.py \
+            https://raw.githubusercontent.com/pypi/warehouse/main/warehouse/utils/zipfiles.py
+          for w in dist/*.whl; do
+            WHL="$w" python3 -c 'import os,sys; sys.path.insert(0,"/tmp"); from warehouse_zipfiles import validate_zipfile; whl=os.environ["WHL"]; ok,err=validate_zipfile(whl); print(whl,"->","OK" if ok else "FAIL: "+str(err)); sys.exit(0 if ok else 1)'
+          done
 
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@v1.13.0
