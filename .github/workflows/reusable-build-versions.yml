@@ -245,7 +245,7 @@ jobs:
       cancel-in-progress: false
     strategy:
       fail-fast: false
-      max-parallel: 8
+      max-parallel: 20
       matrix: ${{ fromJson(needs.prepare-matrix.outputs.matrix) }}
 
     steps:
