@@ -152,7 +152,7 @@ No configuration needed — the correct `.so` is loaded automatically at `import
 pip3 install vllm-cpu
 
 # Specific version
-pip3 install vllm-cpu==0.19.1
+pip3 install vllm-cpu==0.20.0
 ```
 
 ### Docker
@@ -165,7 +165,7 @@ docker pull mekayelanik/vllm-cpu:latest
 docker pull ghcr.io/mekayelanik/vllm-cpu:latest
 
 # Specific version
-docker pull mekayelanik/vllm-cpu:0.19.1
+docker pull mekayelanik/vllm-cpu:0.20.0
 
 # ARM64 without BF16 (for Graviton 2, Pi 5, older Altra)
 docker pull mekayelanik/vllm-cpu:arm64-no-bf16-latest
