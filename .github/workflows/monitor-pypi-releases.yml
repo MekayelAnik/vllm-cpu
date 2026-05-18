@@ -551,6 +551,12 @@ jobs:
   promote-latest:
     name: Promote latest tag
     needs: [quick-check, fetch-releases, build-versions, smoke-test]
+    # Fire only when:
+    #   - explicit promote action requested, OR
+    #   - build-versions actually produced new images (has_builds=true) AND
+    #     smoke-test passed.
+    # Pure cron auto-check ticks where every version already exists in GHCR
+    # produce has_builds=false and skip this job (and everything downstream).
     if: |
       always() &&
       (needs.fetch-releases.outputs.latest_version != '' || needs.fetch-releases.outputs.normalized_action == 'force-promote-latest') &&
@@ -559,9 +565,7 @@ jobs:
         needs.fetch-releases.outputs.normalized_action == 'force-promote-latest' ||
         needs.fetch-releases.outputs.normalized_action == 'promote-stable' ||
         needs.fetch-releases.outputs.normalized_action == 'force-promote-stable' ||
-        (needs.build-versions.result == 'success' && needs.smoke-test.result == 'success' && needs.fetch-releases.outputs.normalized_auto_promote == 'true') ||
-        (needs.build-versions.result == 'success' && needs.smoke-test.result == 'success' && contains(needs.fetch-releases.outputs.versions_json, needs.fetch-releases.outputs.latest_version)) ||
-        needs.fetch-releases.outputs.normalized_action == 'auto-check'
+        (needs.build-versions.result == 'success' && needs.build-versions.outputs.has_builds == 'true' && needs.smoke-test.result == 'success')
       )
     uses: ./.github/workflows/reusable-promote-latest.yml
     with:
