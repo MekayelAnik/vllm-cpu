@@ -581,14 +581,16 @@ jobs:
   # ===========================================================================
   update-state:
     name: Update pipeline state
+    # Runs immediately after promote-latest. Fires only when a NEW latest
+    # version was actually built + promoted in this run (has_builds=true).
     needs: [fetch-releases, build-versions, promote-latest]
     if: |
-      always() &&
       needs.fetch-releases.outputs.latest_version != '' &&
+      needs.build-versions.result == 'success' &&
+      needs.build-versions.outputs.has_builds == 'true' &&
       needs.promote-latest.result == 'success' &&
-      (needs.build-versions.result == 'success' || needs.build-versions.result == 'skipped')
-    runs-on: ${{ vars.ACTION_RUNNER_VERSION || 'ubuntu-24.04' }}
-    timeout-minutes: 10
+      contains(needs.fetch-releases.outputs.versions_json, needs.fetch-releases.outputs.latest_version)
+    runs-on: ${{ vars.ACTION_RUNNER_VERSION || 'ubuntu-latest' }}
     steps:
       - name: Checkout state branch
         uses: actions/checkout@v6
@@ -601,26 +603,20 @@ jobs:
       - name: Initialize orphan branch if needed
         if: steps.checkout-state.outcome == 'failure'
         shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-          REPO: ${{ github.repository }}
         run: |
           git init
           git checkout --orphan pipeline-state
           git reset --hard
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git remote add origin "https://x-access-token:${GH_TOKEN}@github.com/${REPO}.git" 2>/dev/null || true
+          git remote add origin "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git" 2>/dev/null || true
 
       - name: Write and push state
         shell: bash
-        env:
-          LATEST: ${{ needs.fetch-releases.outputs.latest_version }}
-          GH_TOKEN: ${{ github.token }}
-          REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
 
+          LATEST="${{ needs.fetch-releases.outputs.latest_version }}"
           if [[ -z "$LATEST" ]]; then
             echo "No latest version to store"
             exit 0
@@ -631,15 +627,19 @@ jobs:
 
           NOW="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 
-          # Read existing state to preserve or reset latest_version_since
           EXISTING_VERSION=""
           EXISTING_SINCE=""
           if [[ -f state.json ]]; then
-            EXISTING_VERSION="$(jq -r '.pypi_latest_version // ""' state.json)"
+            EXISTING_VERSION="$(jq -r '.pypi_latest_version // .npm_latest_version // .pypi_latest_version // ""' state.json)"
             EXISTING_SINCE="$(jq -r '.latest_version_since // ""' state.json)"
           fi
 
-          # Determine latest_version_since
+          # Early-exit: version unchanged and state already initialized.
+          if [[ -n "$EXISTING_VERSION" && "$LATEST" == "$EXISTING_VERSION" && -n "$EXISTING_SINCE" ]]; then
+            echo "Version unchanged ($LATEST) and state already initialized — skipping commit"
+            exit 0
+          fi
+
           if [[ "$LATEST" != "$EXISTING_VERSION" || -z "$EXISTING_SINCE" ]]; then
             SINCE="$NOW"
             echo "Version changed or first run — setting latest_version_since to $SINCE"
@@ -656,24 +656,24 @@ jobs:
 
           git add state.json
 
-          # Check if staged content differs from HEAD
           if git diff --cached --quiet 2>/dev/null; then
             echo "State unchanged — skipping commit"
             exit 0
           fi
 
           git commit -m "state: update pypi_latest_version to ${LATEST}"
-          git push "https://x-access-token:${GH_TOKEN}@github.com/${REPO}.git" HEAD:pipeline-state
+          git push "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git" HEAD:pipeline-state
 
-  # ===========================================================================
-  # Job 8: Update README version
-  # ===========================================================================
   update-readme-version:
     name: Update README version
-    needs: [fetch-releases, promote-latest]
+    needs: [fetch-releases, build-versions, promote-latest, update-state]
     if: |
+      needs.fetch-releases.outputs.latest_version != '' &&
+      needs.build-versions.result == 'success' &&
+      needs.build-versions.outputs.has_builds == 'true' &&
       needs.promote-latest.result == 'success' &&
-      needs.fetch-releases.outputs.latest_version != ''
+      needs.update-state.result == 'success' &&
+      contains(needs.fetch-releases.outputs.versions_json, needs.fetch-releases.outputs.latest_version)
     runs-on: ${{ vars.ACTION_RUNNER_VERSION || 'ubuntu-24.04' }}
     timeout-minutes: 10
     permissions:
@@ -734,10 +734,14 @@ jobs:
   # ===========================================================================
   update-dockerhub-description:
     name: Update Docker Hub description
-    needs: [promote-latest, update-readme-version]
+    needs: [fetch-releases, build-versions, promote-latest, update-state, update-readme-version]
     if: |
-      always() &&
-      needs.promote-latest.result == 'success'
+      needs.build-versions.result == 'success' &&
+      needs.build-versions.outputs.has_builds == 'true' &&
+      needs.promote-latest.result == 'success' &&
+      needs.update-state.result == 'success' &&
+      needs.update-readme-version.result == 'success' &&
+      contains(needs.fetch-releases.outputs.versions_json, needs.fetch-releases.outputs.latest_version)
     runs-on: ${{ vars.ACTION_RUNNER_VERSION || 'ubuntu-24.04' }}
     timeout-minutes: 10
     steps:

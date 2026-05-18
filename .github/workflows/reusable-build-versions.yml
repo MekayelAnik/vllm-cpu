@@ -95,6 +95,10 @@ on:
       DOCKERHUB_TOKEN:
         description: Docker Hub token
         required: true
+    outputs:
+      has_builds:
+        description: 'true if at least one version needs building after pre-filter, false if all versions already exist in GHCR.'
+        value: ${{ jobs.prepare-matrix.outputs.has_builds }}
 
 permissions:
   contents: read
@@ -139,7 +143,7 @@ jobs:
             # Check all versions in parallel (up to 10 concurrent)
             echo "$VERSIONS_JSON" | jq -r '.[].version' | \
               xargs -P10 -I{} sh -c \
-                'DOCKER_CONFIG=/dev/null crane digest "'"${GHCR_REPO}"':{}" >/dev/null 2>&1 && echo "{}"' \
+                'crane digest "'"${GHCR_REPO}"':{}" >/dev/null 2>&1 && echo "{}"' \
               > "$EXISTING_FILE" || true
 
             # Filter out versions that exist
