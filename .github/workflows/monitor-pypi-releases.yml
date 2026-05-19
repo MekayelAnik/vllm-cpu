@@ -387,12 +387,21 @@ jobs:
       contents: read
       packages: read
     steps:
-      - name: Log in to GHCR
-        uses: docker/login-action@v4
+      - name: Log in to GHCR (with retry)
+        uses: nick-fields/retry@v4
+        env:
+          REG_USER: ${{ github.repository_owner }}
+          REG_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          registry: ghcr.io
-          username: ${{ github.repository_owner }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+          timeout_seconds: 30
+          max_attempts: 5
+          retry_wait_seconds: 2
+          warning_on_retry: true
+          shell: bash
+          command: |
+            set -euo pipefail
+            printf '%s' "$REG_TOKEN" | docker login ghcr.io \
+              --username "$REG_USER" --password-stdin
 
       - name: Pull Docker image
         shell: bash
@@ -476,12 +485,21 @@ jobs:
       contents: read
       packages: read
     steps:
-      - name: Log in to GHCR
-        uses: docker/login-action@v4
+      - name: Log in to GHCR (with retry)
+        uses: nick-fields/retry@v4
+        env:
+          REG_USER: ${{ github.repository_owner }}
+          REG_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          registry: ghcr.io
-          username: ${{ github.repository_owner }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+          timeout_seconds: 30
+          max_attempts: 5
+          retry_wait_seconds: 2
+          warning_on_retry: true
+          shell: bash
+          command: |
+            set -euo pipefail
+            printf '%s' "$REG_TOKEN" | docker login ghcr.io \
+              --username "$REG_USER" --password-stdin
 
       - name: Pull Docker image
         shell: bash
