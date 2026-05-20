@@ -355,6 +355,16 @@ jobs:
             WHEEL_SUFFIX=${{ inputs.wheel_suffix }}
           provenance: false
           sbom: false
+          annotations: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.description=vLLM CPU Inference Engine Docker
+            org.opencontainers.image.licenses=GPL-3.0
+            org.opencontainers.image.title=vllm-cpu
+            org.opencontainers.image.url=https://github.com/${{ github.repository }}
+            org.opencontainers.image.authors=MD. MEKAYEL ANIK <mekayel.anik@gmail.com>
+            org.opencontainers.image.vendor=MD. MEKAYEL ANIK
+            dev.mekayelanik.country-of-origin=Bangladesh
+            dev.mekayelanik.message=== Free Palestine ==
 
       - name: Export digest
         if: steps.check-existing.outputs.skip_build != 'true'
@@ -484,9 +494,21 @@ jobs:
           echo "  GHCR: $GHCR_REPO:$VERSION, $GHCR_REPO:$IMAGE_TAG"
           echo "  DH:   $DH_REPO:$VERSION, $DH_REPO:$IMAGE_TAG"
 
+          # OCI annotations for the manifest index
+          ANNO_ARGS=()
+          ANNO_ARGS+=(--annotation "index:org.opencontainers.image.source=https://github.com/${{ github.repository }}")
+          ANNO_ARGS+=(--annotation "index:org.opencontainers.image.description=vLLM CPU Inference Engine Docker")
+          ANNO_ARGS+=(--annotation "index:org.opencontainers.image.licenses=GPL-3.0")
+          ANNO_ARGS+=(--annotation "index:org.opencontainers.image.title=vllm-cpu")
+          ANNO_ARGS+=(--annotation "index:org.opencontainers.image.url=https://github.com/${{ github.repository }}")
+          ANNO_ARGS+=(--annotation "index:org.opencontainers.image.authors=MD. MEKAYEL ANIK <mekayel.anik@gmail.com>")
+          ANNO_ARGS+=(--annotation "index:org.opencontainers.image.vendor=MD. MEKAYEL ANIK")
+          ANNO_ARGS+=(--annotation "index:dev.mekayelanik.country-of-origin=Bangladesh")
+          ANNO_ARGS+=(--annotation "index:dev.mekayelanik.message=== Free Palestine ==")
           # Create manifest list with all tags (GHCR + Docker Hub)
           run_with_retry "manifest merge ${VERSION}" \
             docker buildx imagetools create \
+              "${ANNO_ARGS[@]}" \
               -t "${GHCR_REPO}:${VERSION}" \
               -t "${GHCR_REPO}:${IMAGE_TAG}" \
               -t "${DH_REPO}:${VERSION}" \
