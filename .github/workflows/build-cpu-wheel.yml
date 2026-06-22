@@ -173,7 +173,7 @@ jobs:
       should_build: ${{ steps.releases.outputs.should_build }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           ref: ${{ github.event.inputs.build_branch || github.event.client_payload.build_branch || 'main' }}
 
@@ -228,7 +228,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           ref: ${{ github.event.inputs.build_branch || github.event.client_payload.build_branch || 'main' }}
 
@@ -1043,7 +1043,7 @@ jobs:
     timeout-minutes: 10
     steps:
       - name: Checkout state branch
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           ref: pipeline-state
           fetch-depth: 1

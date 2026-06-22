@@ -268,7 +268,7 @@ jobs:
           echo "base_image_default=$(trim "$INPUT_BASE_IMAGE_DEFAULT")" >> "$GITHUB_OUTPUT"
 
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Install system compression headers
         run: |
@@ -436,7 +436,7 @@ jobs:
 
       - name: Checkout
         if: steps.check-digests.outputs.has_digests == 'true'
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Setup build environment
         if: steps.check-digests.outputs.has_digests == 'true'
