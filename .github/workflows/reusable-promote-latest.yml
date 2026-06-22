@@ -70,7 +70,7 @@ jobs:
           echo "date_tag=$(trim "$INPUT_DATE_TAG")" >> "$GITHUB_OUTPUT"
 
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Setup promotion environment
         uses: ./.github/actions/setup-build-env
