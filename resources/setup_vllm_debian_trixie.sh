@@ -261,7 +261,9 @@ install_system_deps() {
         lsof \
         vim \
         numactl \
-        xz-utils
+        xz-utils \
+        $(: ffmpeg Needed for 0.25.0 and higher) \
+        ffmpeg 
     
     # Set gcc-14 as default
     update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-14 10 \
