@@ -126,7 +126,9 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     binutils \
     gosu \
     build-essential \
-    zlib1g-dev && \
+    zlib1g-dev \
+    $(: ffmpeg Needed for 0.25.0) \
+    ffmpeg && \
     mkdir -p /vllm /data/models /data/cache/vllm /data/config/vllm
 
 # Install uv
