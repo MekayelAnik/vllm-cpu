@@ -498,7 +498,7 @@ jobs:
           echo "=== Smoke testing wheel on $(uname -m) (${PLATFORM}) ==="
 
           # Install and preload required libs (vLLM v0.18.0+ CPU worker requires these)
-          sudo apt-get update -qq && sudo apt-get install -y -qq libtcmalloc-minimal4 2>/dev/null || true
+          sudo apt-get update -qq && sudo apt-get install -y -qq libtcmalloc-minimal4 ffmpeg 2>/dev/null || true
           PRELOAD_LIBS=""
           # tcmalloc
           TCMALLOC_LIB="$(find /usr -name 'libtcmalloc_minimal.so*' 2>/dev/null | head -1)"
