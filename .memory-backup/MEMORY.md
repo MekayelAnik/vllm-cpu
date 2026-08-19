@@ -1,0 +1,9 @@
+- [User profile](user_profile.md) — MekayelAnik's background, expertise in CPU ISA variants, vllm contributor
+- [vLLM attribution dispute](project_attribution_dispute.md) — attribution ACHIEVED in v0.17.0 release notes + PR #35466 body (2026-04-17); Intel PM MyLinh DM'd acknowledgment; transfer declined; issue #38942 still open
+- [Unified CPU+GPU RFC](project_unified_cpu_gpu_rfc.md) — planned RFC for unified wheel build; unblocked now that attribution resolved, pending thesis deadline bandwidth
+- [No Claude in commits](feedback_no_claude_commits.md) — never add Co-Authored-By Claude or AI attribution in commit messages
+- [Iterative build-fix workflow](feedback_iterative_build_fix.md) — keep fixing and retrying until builds pass clean, check logs for subtle issues
+- [Wheel build fixes](project_wheel_build_fixes.md) — 23 issues fixed during wheel pipeline implementation (quoting, versioning, PyPI publish, smoke test)
+- [Docker image fixes](project_docker_image_fixes.md) — 19 issues fixed for Docker image (cleanup, torch headers, otel, g++, GHA cache)
+- [Non-unified build status](project_non_unified_build_status.md) — cpu-non-unified-build branch: v0.15.1 published, all fixes applied, smoke tests passing
+- [Inferact job & skill plan](reference_inferact_job.md) — youkaichao's company MTS role, skill gaps (CUDA/distributed), growth roadmap, apply after dispute resolves

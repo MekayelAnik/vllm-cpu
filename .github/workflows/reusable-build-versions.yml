@@ -107,6 +107,7 @@ permissions:
 jobs:
   # ── Prepare cross-product matrix: versions × platforms ──
   prepare-matrix:
+    timeout-minutes: 120
     name: Prepare build matrix
     runs-on: ${{ inputs.runner_version || 'ubuntu-latest' }}
     outputs:

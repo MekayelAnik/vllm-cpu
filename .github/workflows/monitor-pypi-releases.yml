@@ -602,6 +602,7 @@ jobs:
   # Job 7: Update pipeline state
   # ===========================================================================
   update-state:
+    timeout-minutes: 15
     name: Update pipeline state
     # Runs immediately after promote-latest. Fires only when a NEW latest
     # version was actually built + promoted in this run (has_builds=true).
