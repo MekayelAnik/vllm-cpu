@@ -52,6 +52,6 @@ t, direct_url_count = direct_url_req.subn(
 )
 
 p.write_text(t)
-print("Patched metadata: license=Apache-2.0, author=Mekayel Anik, URLs updated")
+print("Patched metadata: license=GPLv3, author=Mekayel Anik, URLs updated")
 if direct_url_count:
     print(f"Rewrote {direct_url_count} direct URL requirement(s) for PyPI compatibility")
