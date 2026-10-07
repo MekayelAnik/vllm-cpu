@@ -9,6 +9,47 @@ import re
 import pathlib
 import sys
 
+
+def rewrite_direct_url_requirements(text: str) -> tuple[str, int]:
+    """Rewrite direct URL requirements into plain package requirements."""
+    rewritten = 0
+    lines = []
+
+    quoted_req = re.compile(
+        r'^(?P<prefix>\s*)(?P<quote>["\'])'
+        r'(?P<name>[A-Za-z0-9_.-]+)\s*@\s*https?://\S+'
+        r'(?P<marker>\s*;.*)?(?P=quote)(?P<trailer>,?)(?P<tail>\s*(#.*)?)$'
+    )
+    plain_req = re.compile(
+        r'^(?P<prefix>\s*)(?P<name>[A-Za-z0-9_.-]+)\s*@\s*https?://\S+'
+        r'(?P<marker>\s*;[^#\n]+)?(?P<tail>\s*(#.*)?)$'
+    )
+
+    for line in text.splitlines(keepends=True):
+        raw = line.rstrip("\n")
+
+        m = quoted_req.match(raw)
+        if m:
+            lines.append(
+                f"{m.group('prefix')}{m.group('quote')}{m.group('name')}"
+                f"{m.group('marker') or ''}{m.group('quote')}"
+                f"{m.group('trailer')}{m.group('tail')}\n")
+            rewritten += 1
+            continue
+
+        m = plain_req.match(raw)
+        if m:
+            lines.append(
+                f"{m.group('prefix')}{m.group('name')}{m.group('marker') or ''}"
+                f"{m.group('tail')}\n")
+            rewritten += 1
+            continue
+
+        lines.append(line)
+
+    return "".join(lines), rewritten
+
+
 p = pathlib.Path("pyproject.toml")
 if not p.exists():
     print("ERROR: pyproject.toml not found", file=sys.stderr)
@@ -40,18 +81,18 @@ if "Bug Tracker" not in t:
     )
 
 # PyPI rejects direct URL requirements in Requires-Dist metadata.
-# Rewrite entries like:
-#   "pkg @ https://...whl ; marker"
-# to:
-#   "pkg ; marker"
-direct_url_req = re.compile(
-    r'"([A-Za-z0-9_.-]+)\s*@\s*https?://[^"\s]+(\s*;\s*[^"]+)?"'
-)
-t, direct_url_count = direct_url_req.subn(
-    lambda m: f'"{m.group(1)}{m.group(2) or ""}"', t
-)
+t, direct_url_count = rewrite_direct_url_requirements(t)
 
 p.write_text(t)
 print("Patched metadata: license=GPLv3, author=Mekayel Anik, URLs updated")
 if direct_url_count:
     print(f"Rewrote {direct_url_count} direct URL requirement(s) for PyPI compatibility")
+
+cpu_reqs = pathlib.Path("requirements/cpu.txt")
+if cpu_reqs.exists():
+    rt = cpu_reqs.read_text()
+    rt, cpu_direct_url_count = rewrite_direct_url_requirements(rt)
+    cpu_reqs.write_text(rt)
+    if cpu_direct_url_count:
+        print("Rewrote "
+              f"{cpu_direct_url_count} direct URL requirement(s) in requirements/cpu.txt")

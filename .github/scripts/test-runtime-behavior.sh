@@ -51,6 +51,19 @@ assert_file_not_empty() {
     fi
 }
 
+assert_file_not_contains() {
+    local name="$1"
+    local file="$2"
+    local needle="$3"
+
+    if grep -qF "$needle" "$file"; then
+        echo "FAIL: ${name} unexpected '${needle}' in ${file}" >&2
+        exit 1
+    else
+        echo "PASS: ${name}"
+    fi
+}
+
 # ---------------------------------------------------------------------------
 # DockerfileModifier.sh validation
 # ---------------------------------------------------------------------------
@@ -118,5 +131,43 @@ for registry in registry-1.docker.io ghcr.io; do
         echo "WARN: registry unreachable: ${registry} (non-fatal)"
     fi
 done
+
+# ---------------------------------------------------------------------------
+# metadata patcher direct URL rewrite regression checks
+# ---------------------------------------------------------------------------
+assert_file_exists "metadata patch script exists" ".github/scripts/patch-pyproject-metadata.py"
+TMP_PATCH_DIR="$(mktemp -d)"
+trap 'rm -rf "$TMP_PATCH_DIR"' EXIT
+
+cat > "$TMP_PATCH_DIR/pyproject.toml" <<'EOF'
+[project]
+name = "vllm"
+description = "test"
+authors = [{name = "Old Author"}]
+maintainers = [{name = "Old Maintainer"}]
+dependencies = [
+  'triton @ https://example.com/triton.whl ; platform_machine == "x86_64" and python_version == "3.10"',
+]
+
+[project.urls]
+Homepage = "https://github.com/vllm-project/vllm"
+Repository = "https://example.invalid/old-repo"
+Changelog = "https://example.invalid/old-changelog"
+EOF
+
+mkdir -p "$TMP_PATCH_DIR/requirements"
+cat > "$TMP_PATCH_DIR/requirements/cpu.txt" <<'EOF'
+triton @ https://example.com/triton.whl ; platform_machine == "x86_64" and python_version == "3.10"
+EOF
+
+(
+    cd "$TMP_PATCH_DIR"
+    python3 /home/runner/work/vllm-cpu/vllm-cpu/.github/scripts/patch-pyproject-metadata.py
+)
+
+assert_file_not_contains "pyproject URL deps removed" "$TMP_PATCH_DIR/pyproject.toml" "@ https://"
+assert_file_not_contains "cpu requirements URL deps removed" "$TMP_PATCH_DIR/requirements/cpu.txt" "@ https://"
+assert_file_contains "pyproject marker preserved" "$TMP_PATCH_DIR/pyproject.toml" 'triton ; platform_machine == "x86_64" and python_version == "3.10"'
+assert_file_contains "cpu requirements marker preserved" "$TMP_PATCH_DIR/requirements/cpu.txt" 'triton ; platform_machine == "x86_64" and python_version == "3.10"'
 
 echo "runtime_behavior_checks_ok"
