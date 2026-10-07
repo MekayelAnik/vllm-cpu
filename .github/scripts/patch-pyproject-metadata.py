@@ -39,5 +39,19 @@ if "Bug Tracker" not in t:
         '[project.urls]\n"Bug Tracker" = "https://github.com/MekayelAnik/vllm-cpu/issues"',
     )
 
+# PyPI rejects direct URL requirements in Requires-Dist metadata.
+# Rewrite entries like:
+#   "pkg @ https://...whl ; marker"
+# to:
+#   "pkg ; marker"
+direct_url_req = re.compile(
+    r'"([A-Za-z0-9_.-]+)\s*@\s*https?://[^"\s]+(\s*;\s*[^"]+)?"'
+)
+t, direct_url_count = direct_url_req.subn(
+    lambda m: f'"{m.group(1)}{m.group(2) or ""}"', t
+)
+
 p.write_text(t)
 print("Patched metadata: license=Apache-2.0, author=Mekayel Anik, URLs updated")
+if direct_url_count:
+    print(f"Rewrote {direct_url_count} direct URL requirement(s) for PyPI compatibility")
