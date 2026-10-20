@@ -296,6 +296,7 @@ jobs:
             -v "$PWD/dist:/output" \
             -v "$PWD/PYPI_README.md:/repo-readme/README.md:ro" \
             -v "$PWD/.github/scripts/patch-pyproject-metadata.py:/scripts/patch-pyproject-metadata.py:ro" \
+            -v "$PWD/.github/scripts/patch-cpu-triton-utils.py:/scripts/patch-cpu-triton-utils.py:ro" \
             -v "$PWD/ccache-cache:/root/.cache/ccache" \
             -e "VLLM_VERSION=${VERSION}" \
             -e "FULL_VERSION=${FULL_VERSION}" \
@@ -336,6 +337,12 @@ jobs:
 
               # --- Patch metadata: authors, URLs (license untouched) ---
               python3 /scripts/patch-pyproject-metadata.py
+
+              # --- Backport upstream fix: CPU slot-mapping fallback signature ---
+              # 0.32.0 changed the Triton kernel signature but not its CPU fallback,
+              # crashing inference with "Boolean value of Tensor ... is ambiguous".
+              # No-op for versions whose kernel and fallback already agree.
+              python3 /scripts/patch-cpu-triton-utils.py
 
               # --- Patch platform detection to recognize vllm-cpu package ---
               # vLLM detects CPU platform via version("vllm") containing "cpu".
@@ -432,6 +439,11 @@ jobs:
                   echo "Renamed to: $NEW_NAME"
                 fi
               done
+
+              # --- Guard: PyPI rejects direct-URL requirements (HTTP 400) ---
+              # Fail here, not at upload time after hours of building.
+              printf "%s\n" "import re,sys,zipfile" "bad=0" "for w in sys.argv[1:]:" "  z=zipfile.ZipFile(w)" "  m=[n for n in z.namelist() if n.endswith(\".dist-info/METADATA\")][0]" "  for l in z.read(m).decode().splitlines():" "    if re.match(r\"Requires-Dist: .+ @ \", l):" "      print(\"ERROR: direct URL dependency in\", w, \":\", l); bad=1" "sys.exit(bad)" > /tmp/check_meta.py
+              python3 /tmp/check_meta.py /tmp/wheel-out/*.whl
 
               # --- Copy wheels to output ---
               cp /tmp/wheel-out/*.whl /output/

@@ -2,6 +2,9 @@
 """Patch pyproject.toml metadata for vllm-cpu package.
 
 Updates authors, maintainers, and project URLs.
+Strips direct-URL requirements (PEP 508 "pkg @ https://...") from pyproject.toml
+AND requirements/*.txt, because PyPI rejects them in Requires-Dist metadata and
+vLLM's setup.py builds install_requires from requirements/cpu.txt.
 Does NOT touch license fields (upstream Apache-2.0 + PEP 639 format works as-is).
 Keeps Homepage pointing to upstream vllm-project/vllm.
 """
@@ -52,6 +55,26 @@ t, direct_url_count = direct_url_req.subn(
 )
 
 p.write_text(t)
-print("Patched metadata: license=GPLv3, author=Mekayel Anik, URLs updated")
+
+# setup.py reads requirements/cpu.txt (and the files it includes) into
+# install_requires, so the triton-cpu direct-URL lines live there, not in
+# pyproject.toml. Drop them entirely: rewriting to bare "triton" would make pip
+# pull the CUDA triton from PyPI onto a CPU install.
+# Matches e.g.: triton @ https://...whl ; platform_machine == "x86_64"
+req_direct_url = re.compile(r"^\s*[A-Za-z0-9_.\-]+(\[[^\]]*\])?\s*@\s*(https?|git\+\w+)://.*$")
+req_removed = 0
+req_dir = pathlib.Path("requirements")
+if req_dir.is_dir():
+    for rf in sorted(req_dir.glob("*.txt")):
+        lines = rf.read_text().splitlines(keepends=True)
+        kept = [ln for ln in lines if not req_direct_url.match(ln)]
+        if len(kept) != len(lines):
+            req_removed += len(lines) - len(kept)
+            rf.write_text("".join(kept))
+            print(f"  removed {len(lines) - len(kept)} direct-URL line(s) from {rf}")
+
+print("Patched metadata: author=Mekayel Anik, URLs updated")
 if direct_url_count:
-    print(f"Rewrote {direct_url_count} direct URL requirement(s) for PyPI compatibility")
+    print(f"Rewrote {direct_url_count} direct URL requirement(s) in pyproject.toml")
+if req_removed:
+    print(f"Removed {req_removed} direct URL requirement(s) from requirements/*.txt")
