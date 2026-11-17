@@ -533,6 +533,21 @@ jobs:
           # The wheel depends on torch==X.Y.Z+cpu which is only on the PyTorch index
           pip install dist/*.whl --extra-index-url https://download.pytorch.org/whl/cpu
 
+          # vLLM 0.34.0+ requires the Triton CPU backend on x86_64.
+          # PyPI rejects direct-URL dependencies, so replace the CUDA-enabled
+          # Triton wheel pulled transitively from PyTorch with triton-cpu.
+          if [[ "$(uname -m)" == "x86_64" ]]; then
+            pip uninstall -y triton
+            PYTHON_MINOR="$(python3 -c 'import sys; print(f"{sys.version_info.minor}")')"
+            if [[ "$PYTHON_MINOR" == "11" ]]; then
+              TRITON_CPU_URL="https://github.com/triton-lang/triton-cpu/releases/download/v3.8.0/triton-3.8.0+cpu-cp311-cp311-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl"
+            else
+              TRITON_CPU_URL="https://github.com/triton-lang/triton-cpu/releases/download/v3.8.0/triton-3.8.0+cpu-cp312-abi3-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl"
+            fi
+            pip install --no-deps "$TRITON_CPU_URL"
+            python3 -c "from vllm.triton_utils import HAS_TRITON; assert HAS_TRITON, 'triton-cpu backend was not detected'"
+          fi
+
           # vLLM v0.19.0+ detects CPU platform by checking version("vllm") for "cpu" substring.
           # Since our package is named "vllm-cpu" (not "vllm"), we create a vllm dist-info shim.
           VLLM_VER=$(python3 -c "from importlib.metadata import version; print(version('vllm-cpu'))")
