@@ -315,10 +315,10 @@ jobs:
               dnf install -y numactl-devel ccache jq git ninja-build wget
               source /opt/rh/gcc-toolset-14/enable
 
-              # --- Use Python 3.12 from manylinux (well-supported, stable ABI) ---
+              # --- Use Python 3.13 from manylinux (stable ABI) ---
               # With stable ABI (cp38-abi3), we only need one Python to build.
-              # Avoid 3.13+/3.14 which lack wheels for many build deps.
-              PYTHON_BIN="$(ls -d /opt/python/cp312-cp312/bin 2>/dev/null || ls -d /opt/python/cp311-cp311/bin)"
+              # Prefer 3.13, with a compatible fallback for older manylinux images.
+              PYTHON_BIN="$(ls -d /opt/python/cp313-cp313/bin 2>/dev/null || ls -d /opt/python/cp312-cp312/bin 2>/dev/null || ls -d /opt/python/cp311-cp311/bin)"
               export PATH="${PYTHON_BIN}:${PATH}"
               python3 --version
               pip3 install --upgrade pip
@@ -492,6 +492,11 @@ jobs:
             rm -rf "$TMPDIR"
           done
 
+      - name: Set up Python 3.13 for smoke test
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+
       - name: Smoke test wheel
         shell: bash
         env:
@@ -502,6 +507,9 @@ jobs:
           HF_HOME: /tmp/hf-cache-${{ matrix.platform }}
         run: |
           set -euo pipefail
+
+          # vLLM 0.34.0 declares Python 3.11-3.14 support; smoke-test with 3.13.
+          python3 --version
 
           # Use unique cache dirs per platform; sidesteps root-owned ~/.cache
           # left behind by Docker bind-mounts in the build step.
@@ -532,6 +540,21 @@ jobs:
           # Install our wheel with PyTorch CPU index
           # The wheel depends on torch==X.Y.Z+cpu which is only on the PyTorch index
           pip install dist/*.whl --extra-index-url https://download.pytorch.org/whl/cpu
+
+          # vLLM 0.34.0+ requires the Triton CPU backend on x86_64.
+          # PyPI rejects direct-URL dependencies, so replace the CUDA-enabled
+          # Triton wheel pulled transitively from PyTorch with triton-cpu.
+          if [[ "$(uname -m)" == "x86_64" ]]; then
+            pip uninstall -y triton
+            PYTHON_MINOR="$(python3 -c 'import sys; print(f"{sys.version_info.minor}")')"
+            if [[ "$PYTHON_MINOR" == "11" ]]; then
+              TRITON_CPU_URL="https://github.com/triton-lang/triton-cpu/releases/download/v3.8.0/triton-3.8.0+cpu-cp311-cp311-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl"
+            else
+              TRITON_CPU_URL="https://github.com/triton-lang/triton-cpu/releases/download/v3.8.0/triton-3.8.0+cpu-cp312-abi3-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl"
+            fi
+            pip install --no-deps "$TRITON_CPU_URL"
+            python3 -c "from vllm.triton_utils import HAS_TRITON; assert HAS_TRITON, 'triton-cpu backend was not detected'"
+          fi
 
           # vLLM v0.19.0+ detects CPU platform by checking version("vllm") for "cpu" substring.
           # Since our package is named "vllm-cpu" (not "vllm"), we create a vllm dist-info shim.
