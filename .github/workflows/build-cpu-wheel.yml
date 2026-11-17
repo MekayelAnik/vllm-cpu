@@ -315,10 +315,10 @@ jobs:
               dnf install -y numactl-devel ccache jq git ninja-build wget
               source /opt/rh/gcc-toolset-14/enable
 
-              # --- Use Python 3.12 from manylinux (well-supported, stable ABI) ---
+              # --- Use Python 3.13 from manylinux (stable ABI) ---
               # With stable ABI (cp38-abi3), we only need one Python to build.
-              # Avoid 3.13+/3.14 which lack wheels for many build deps.
-              PYTHON_BIN="$(ls -d /opt/python/cp312-cp312/bin 2>/dev/null || ls -d /opt/python/cp311-cp311/bin)"
+              # Prefer 3.13, with a compatible fallback for older manylinux images.
+              PYTHON_BIN="$(ls -d /opt/python/cp313-cp313/bin 2>/dev/null || ls -d /opt/python/cp312-cp312/bin 2>/dev/null || ls -d /opt/python/cp311-cp311/bin)"
               export PATH="${PYTHON_BIN}:${PATH}"
               python3 --version
               pip3 install --upgrade pip
@@ -492,6 +492,11 @@ jobs:
             rm -rf "$TMPDIR"
           done
 
+      - name: Set up Python 3.13 for smoke test
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+
       - name: Smoke test wheel
         shell: bash
         env:
@@ -502,6 +507,9 @@ jobs:
           HF_HOME: /tmp/hf-cache-${{ matrix.platform }}
         run: |
           set -euo pipefail
+
+          # vLLM 0.34.0 declares Python 3.11-3.14 support; smoke-test with 3.13.
+          python3 --version
 
           # Use unique cache dirs per platform; sidesteps root-owned ~/.cache
           # left behind by Docker bind-mounts in the build step.
