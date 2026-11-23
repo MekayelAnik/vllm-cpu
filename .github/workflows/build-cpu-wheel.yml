@@ -493,7 +493,7 @@ jobs:
           done
 
       - name: Set up Python 3.13 for smoke test
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@v7
         with:
           python-version: "3.13"
 
